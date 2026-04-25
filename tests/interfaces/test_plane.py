@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import pytest
 import torch
 from hypothesis import given, settings
 
-from ezgatr.interfaces.plane import encode
+from ezgatr.interfaces.plane import decode, encode
 from ezgatr.nn.functional import geometric_product, inner_product
+from tests.helpers import BATCH_DIMS, TOLERANCES
 from tests.utils import make_random_3d_vectors, strategy_batch_dims
 
 
@@ -33,3 +35,19 @@ def test_pga_plane_inner_eq_sq_norm(batch_dims):
         rtol=1e-4,
         atol=1e-4,
     )
+
+
+@pytest.mark.parametrize("batch_dims", BATCH_DIMS)
+def test_plane_normal_roundtrip(batch_dims):
+    """`decode(encode(...))` returns the (rescaled) input normal."""
+    normals = torch.randn(*batch_dims, 3)
+    normals = normals / torch.linalg.norm(normals, dim=-1, keepdim=True)
+    pos = torch.randn(*batch_dims, 3)
+
+    mv = encode(normals, pos)
+    extracted_normals, _ = decode(mv)
+    extracted_unit = extracted_normals / torch.linalg.norm(
+        extracted_normals, dim=-1, keepdim=True
+    )
+
+    torch.testing.assert_close(extracted_unit, normals, **TOLERANCES)

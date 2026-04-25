@@ -2,10 +2,10 @@ import pathlib
 import pytest
 import toml
 
-from tests.helpers import generate_random_data
+from tests.random_data import generate_random_data
 from tests.config import BasicConfig
 
-DIR_TEST = pathlib.Path(".").resolve().parent
+DIR_CONFIG = pathlib.Path(__file__).resolve().parent / "config"
 
 
 @pytest.fixture(scope="session")
@@ -20,7 +20,7 @@ def basic_config():
     BasicConfig
         An instance containing basic test configurations.
     """
-    with open(DIR_TEST / "config" / "core.toml") as f:
+    with open(DIR_CONFIG / "core.toml") as f:
         config_data = toml.load(f)
     return BasicConfig(**config_data)
 
