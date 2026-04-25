@@ -29,6 +29,9 @@ env/
 htmlcov/
 coverage.xml
 
+# Benchmark outputs
+benchmarks/results/
+
 # Jupyter / IPython
 *.ipynb_checkpoints
 
