@@ -1,6 +1,8 @@
 #include "pga_ops.h"
 #include "basis_data.h"
 
+#include <ATen/Dispatch.h>
+
 #include <map>
 #include <mutex>
 #include <tuple>
@@ -8,6 +10,67 @@
 namespace ezgatr { namespace opt {
 
 namespace {
+
+#include "gp_unrolled.inc"
+#include "join_unrolled.inc"
+
+template <typename T>
+static void gp_kernel_impl(const T* __restrict__ X,
+                           const T* __restrict__ Y,
+                           T* __restrict__ O,
+                           int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        o[0]  = gp_blade_00<T>(x, y);
+        o[1]  = gp_blade_01<T>(x, y);
+        o[2]  = gp_blade_02<T>(x, y);
+        o[3]  = gp_blade_03<T>(x, y);
+        o[4]  = gp_blade_04<T>(x, y);
+        o[5]  = gp_blade_05<T>(x, y);
+        o[6]  = gp_blade_06<T>(x, y);
+        o[7]  = gp_blade_07<T>(x, y);
+        o[8]  = gp_blade_08<T>(x, y);
+        o[9]  = gp_blade_09<T>(x, y);
+        o[10] = gp_blade_10<T>(x, y);
+        o[11] = gp_blade_11<T>(x, y);
+        o[12] = gp_blade_12<T>(x, y);
+        o[13] = gp_blade_13<T>(x, y);
+        o[14] = gp_blade_14<T>(x, y);
+        o[15] = gp_blade_15<T>(x, y);
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_impl(const T* __restrict__ X,
+                             const T* __restrict__ Y,
+                             const T* __restrict__ R,
+                             T* __restrict__ O,
+                             int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        const T s = HasRef ? R[16 * n + 14] : T(1);
+        o[0]  = s * join_blade_00<T>(x, y);
+        o[1]  = s * join_blade_01<T>(x, y);
+        o[2]  = s * join_blade_02<T>(x, y);
+        o[3]  = s * join_blade_03<T>(x, y);
+        o[4]  = s * join_blade_04<T>(x, y);
+        o[5]  = s * join_blade_05<T>(x, y);
+        o[6]  = s * join_blade_06<T>(x, y);
+        o[7]  = s * join_blade_07<T>(x, y);
+        o[8]  = s * join_blade_08<T>(x, y);
+        o[9]  = s * join_blade_09<T>(x, y);
+        o[10] = s * join_blade_10<T>(x, y);
+        o[11] = s * join_blade_11<T>(x, y);
+        o[12] = s * join_blade_12<T>(x, y);
+        o[13] = s * join_blade_13<T>(x, y);
+        o[14] = s * join_blade_14<T>(x, y);
+        o[15] = s * join_blade_15<T>(x, y);
+    }
+}
 
 using CacheKey = std::tuple<c10::DeviceType, c10::DeviceIndex, c10::ScalarType>;
 
@@ -139,8 +202,22 @@ torch::Tensor geometric_product(const torch::Tensor& x, const torch::Tensor& y) 
                 "geometric_product: x and y must share dtype");
     TORCH_CHECK(x.device() == y.device(),
                 "geometric_product: x and y must share device");
-    auto basis = load_gp_basis(x.device(), x.scalar_type());
-    return torch::einsum("ijk, ...j, ...k -> ...i", {basis, x, y});
+    TORCH_CHECK(x.device().is_cpu(),
+                "geometric_product: CPU-only kernel; got device ", x.device());
+
+    auto bcast = at::broadcast_tensors({x, y});
+    auto xc = bcast[0].contiguous();
+    auto yc = bcast[1].contiguous();
+    auto out = torch::empty_like(xc);
+    int64_t N = xc.numel() / 16;
+
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "geometric_product_cpu", [&]{
+        gp_kernel_impl<scalar_t>(xc.data_ptr<scalar_t>(),
+                                 yc.data_ptr<scalar_t>(),
+                                 out.data_ptr<scalar_t>(),
+                                 N);
+    });
+    return out;
 }
 
 torch::Tensor equi_join(const torch::Tensor& x,
@@ -152,15 +229,45 @@ torch::Tensor equi_join(const torch::Tensor& x,
                 "equi_join: x and y must share dtype");
     TORCH_CHECK(x.device() == y.device(),
                 "equi_join: x and y must share device");
-
-    auto kernel = compute_join_kernel(x.device(), x.scalar_type());
-    auto ret = torch::einsum("ijk, ...j, ...k -> ...i", {kernel, x, y});
-
+    TORCH_CHECK(x.device().is_cpu(),
+                "equi_join: CPU-only kernel; got device ", x.device());
     if (reference.has_value()) {
         check_multivector(*reference, "equi_join: reference");
-        ret = ret * reference->narrow(-1, 14, 1);
+        TORCH_CHECK(reference->scalar_type() == x.scalar_type(),
+                    "equi_join: reference must share dtype with x");
+        TORCH_CHECK(reference->device() == x.device(),
+                    "equi_join: reference must share device with x");
     }
-    return ret;
+
+    auto bcast = at::broadcast_tensors({x, y});
+    auto xc = bcast[0].contiguous();
+    auto yc = bcast[1].contiguous();
+    auto out = torch::empty_like(xc);
+    int64_t N = xc.numel() / 16;
+
+    torch::Tensor refc;
+    if (reference.has_value()) {
+        refc = reference->expand_as(xc).contiguous();
+    }
+
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "equi_join_cpu", [&]{
+        if (reference.has_value()) {
+            join_kernel_impl<scalar_t, true>(
+                xc.data_ptr<scalar_t>(),
+                yc.data_ptr<scalar_t>(),
+                refc.data_ptr<scalar_t>(),
+                out.data_ptr<scalar_t>(),
+                N);
+        } else {
+            join_kernel_impl<scalar_t, false>(
+                xc.data_ptr<scalar_t>(),
+                yc.data_ptr<scalar_t>(),
+                nullptr,
+                out.data_ptr<scalar_t>(),
+                N);
+        }
+    });
+    return out;
 }
 
 }}  // namespace ezgatr::opt
