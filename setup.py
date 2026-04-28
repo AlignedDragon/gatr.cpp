@@ -14,6 +14,7 @@ from torch.utils.cpp_extension import BuildExtension, CppExtension
 ext = CppExtension(
     name="ezgatr.opt._opt_ops",
     sources=[
+        "src/ezgatr/_csrc/attention_ops.cpp",
         "src/ezgatr/_csrc/pga_ops.cpp",
         "src/ezgatr/_csrc/bindings.cpp",
     ],
