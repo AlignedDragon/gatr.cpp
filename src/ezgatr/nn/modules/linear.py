@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 
 from ezgatr.nn.functional.linear import equi_linear
+from ezgatr.opt import equi_linear as equi_linear_cpp
 
 
 class EquiLinear(nn.Module):
@@ -69,3 +70,14 @@ class EquiLinear(nn.Module):
             f"in_channels={self.in_channels}, out_channels={self.out_channels}, "
             f"bias={self.bias is not None}, normalize_basis={self.normalize_basis}"
         )
+
+
+class ASLEquiLinear(EquiLinear):
+    r"""C++-backed Pin(3, 0, 1)-equivariant linear map.
+
+    Drop-in replacement for :class:`EquiLinear` that calls the optimized
+    unrolled C++ kernel instead of the Python einsum baseline.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return equi_linear_cpp(x, self.weight, self.bias, self.normalize_basis)

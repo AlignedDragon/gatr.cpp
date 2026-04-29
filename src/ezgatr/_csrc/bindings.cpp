@@ -11,4 +11,9 @@ PYBIND11_MODULE(_opt_ops, m) {
     m.def("equi_join", &ezgatr::opt::equi_join,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Equivariant join of two multi-vectors of shape (..., 16).");
+
+    m.def("equi_linear", &ezgatr::opt::equi_linear,
+          py::arg("x"), py::arg("weight"),
+          py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
+          "Pin(3,0,1)-equivariant linear map. x: (..., C_in, 16), weight: (C_out, C_in, 9).");
 }
