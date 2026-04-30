@@ -17,6 +17,7 @@ OUT = REPO / "src/ezgatr/_csrc/basis_data.h"
 
 DUAL_PERM = list(range(15, -1, -1))
 DUAL_SIGN = [1, -1, 1, -1, 1, 1, -1, 1, 1, -1, 1, -1, 1, -1, 1, 1]
+INNER_SELECTOR = [0, 2, 3, 4, 8, 9, 10, 14]
 
 
 def load_dense_int8(path: Path) -> torch.Tensor:
@@ -72,6 +73,7 @@ namespace ezgatr {{ namespace opt {{
 
 {fmt_1d("DUAL_PERM", "int64_t", DUAL_PERM)}
 {fmt_1d("DUAL_SIGN", "int8_t", DUAL_SIGN)}
+{fmt_1d("INNER_SELECTOR", "int64_t", INNER_SELECTOR)}
 
 }}}}  // namespace ezgatr::opt
 """

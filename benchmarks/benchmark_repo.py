@@ -11,6 +11,7 @@ import torch
 from ezgatr.nets.mv_only_gatr import MVOnlyGATrConfig, MVOnlyGATrModel
 from ezgatr.nn.functional import (
     equi_geometric_attention,
+    equi_geometric_attention_cpp,
     equi_linear,
     equi_rms_norm,
     geometric_product,
@@ -88,6 +89,14 @@ def build_target(name: str, device: torch.device, preset: str):
             kinds={"ipa": None, "daa": None},
             is_causal=False,
         )
+    if name == "equi_geometric_attention_cpp":
+        return lambda: equi_geometric_attention_cpp(
+            inputs["attn_q"],
+            inputs["attn_k"],
+            inputs["attn_v"],
+            kinds={"ipa": None, "daa": None},
+            is_causal=False,
+        )
     if name == "mv_only_gatr_model":
         model = build_model(device, preset)
         return lambda: model(inputs["model_in"])
@@ -103,6 +112,7 @@ def get_target_names() -> list[str]:
         "equi_linear",
         "equi_rms_norm",
         "equi_geometric_attention",
+        "equi_geometric_attention_cpp",
         "mv_only_gatr_model",
     ]
 
