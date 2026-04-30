@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from ezgatr.nets.mv_only_gatr import MVOnlyGATrConfig, MVOnlyGATrModel
+from ezgatr.nets.mv_only_gatr import MVOnlyGATrConfig, MVOnlyGATrModel, MVOnlyGATrModelASL
 
 from ezgatr.nn.functional import (
     geometric_product as geometric_product_py,
@@ -77,6 +77,20 @@ def build_model(device: torch.device, preset: str) -> MVOnlyGATrModel:
         attn_is_causal=False,
     )
     return MVOnlyGATrModel(model_cfg).to(device).eval()
+
+def build_modelASL(device: torch.device, preset: str) -> MVOnlyGATrModel:
+    cfg = PRESETS[preset]
+    model_cfg = MVOnlyGATrConfig(
+        num_layers=2,
+        size_context=cfg["tokens"],
+        size_channels_in=1,
+        size_channels_out=1,
+        size_channels_hidden=max(8, cfg["channels"]),
+        size_channels_intermediate=max(8, cfg["channels"]),
+        attn_num_heads=cfg["heads"],
+        attn_is_causal=False,
+    )
+    return MVOnlyGATrModelASL(model_cfg).to(device).eval()
 
 
 def build_target(name: str, device: torch.device, preset: str):
@@ -149,6 +163,10 @@ def build_target(name: str, device: torch.device, preset: str):
     if name == "mv_only_gatr_model":
         model = build_model(device, preset)
         return lambda: model(inputs["model_in"])
+    
+    if name == "mv_only_gatr_modelASL":
+        model = build_modelASL(device, preset)
+        return lambda: model(inputs["model_in"])
 
     raise ValueError(f"Unknown target: {name}")
 
@@ -169,7 +187,8 @@ def get_target_names() -> list[str]:
         "equi_geometric_attention_cpp",
         "scaler_gated_gelu",
         "scaler_gated_gelu_cpp",
-        "mv_only_gatr_model", 
+        "mv_only_gatr_model",
+        "mv_only_gatr_modelASL",
     ]
 
 
