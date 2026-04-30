@@ -1,5 +1,6 @@
 #include <torch/extension.h>
 #include "pga_ops.h"
+#include "rms_ops.h"
 
 PYBIND11_MODULE(_opt_ops, m) {
     m.doc() = "ezgatr.opt — C++ implementations of PGA primitives";
