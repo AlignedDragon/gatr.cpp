@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from ezgatr.nn import ASLEquiLinear, EquiRMSNorm
+from ezgatr.nn import EquiLinear, EquiRMSNorm
 from ezgatr.nn.functional import (
     equi_geometric_attention,
     equi_join,
@@ -86,14 +86,14 @@ class MVOnlyGATrEmbedding(nn.Module):
     """
 
     config: MVOnlyGATrConfig
-    embedding: ASLEquiLinear
+    embedding: EquiLinear
 
     def __init__(self, config: MVOnlyGATrConfig) -> None:
         super().__init__()
 
         self.config = config
 
-        self.embedding = ASLEquiLinear(
+        self.embedding = EquiLinear(
             config.size_channels_in, config.size_channels_hidden
         )
 
@@ -127,18 +127,18 @@ class MVOnlyGATrBilinear(nn.Module):
     """
 
     config: MVOnlyGATrConfig
-    proj_bil: ASLEquiLinear
-    proj_out: ASLEquiLinear
+    proj_bil: EquiLinear
+    proj_out: EquiLinear
 
     def __init__(self, config: MVOnlyGATrConfig) -> None:
         super().__init__()
 
         self.config = config
 
-        self.proj_bil = ASLEquiLinear(
+        self.proj_bil = EquiLinear(
             config.size_channels_hidden, config.size_channels_intermediate * 4
         )
-        self.proj_out = ASLEquiLinear(
+        self.proj_out = EquiLinear(
             config.size_channels_intermediate * 2, config.size_channels_hidden
         )
 
@@ -185,7 +185,7 @@ class MVOnlyGATrMLP(nn.Module):
     config: MVOnlyGATrConfig
     layer_norm: EquiRMSNorm
     equi_bil: MVOnlyGATrBilinear
-    proj_out: ASLEquiLinear
+    proj_out: EquiLinear
 
     def __init__(self, config: MVOnlyGATrConfig) -> None:
         super().__init__()
@@ -198,7 +198,7 @@ class MVOnlyGATrMLP(nn.Module):
             channelwise_rescale=config.norm_channelwise_rescale,
         )
         self.equi_bil = MVOnlyGATrBilinear(config)
-        self.proj_out = ASLEquiLinear(
+        self.proj_out = EquiLinear(
             config.size_channels_hidden, config.size_channels_hidden
         )
 
@@ -251,7 +251,7 @@ class MVOnlyGATrAttention(nn.Module):
     config: MVOnlyGATrConfig
     layer_norm: EquiRMSNorm
     attn_mix: dict[str, torch.Tensor]
-    proj_qkv: ASLEquiLinear
+    proj_qkv: EquiLinear
 
     def __init__(self, config: MVOnlyGATrConfig) -> None:
         super().__init__()
@@ -273,11 +273,11 @@ class MVOnlyGATrAttention(nn.Module):
             self.attn_mix[kind] = param
             self.register_parameter(f"attn_mix_{kind}", param)
 
-        self.proj_qkv = ASLEquiLinear(
+        self.proj_qkv = EquiLinear(
             config.size_channels_hidden,
             config.size_channels_hidden * config.attn_num_heads * 3,
         )
-        self.proj_out = ASLEquiLinear(
+        self.proj_out = EquiLinear(
             config.size_channels_hidden * config.attn_num_heads,
             config.size_channels_hidden,
         )
@@ -376,7 +376,7 @@ class MVOnlyGATrModel(nn.Module):
     config: MVOnlyGATrConfig
     embedding: MVOnlyGATrEmbedding
     blocks: nn.ModuleList
-    head: ASLEquiLinear
+    head: EquiLinear
 
     def __init__(self, config: MVOnlyGATrConfig) -> None:
         super().__init__()
@@ -387,7 +387,7 @@ class MVOnlyGATrModel(nn.Module):
         self.blocks = nn.ModuleList(
             MVOnlyGATrBlock(config, i) for i in range(config.num_layers)
         )
-        self.head = ASLEquiLinear(config.size_channels_hidden, config.size_channels_out)
+        self.head = EquiLinear(config.size_channels_hidden, config.size_channels_out)
         self.apply(self._init_params)
 
     def _init_params(self, module: nn.Module):
@@ -399,7 +399,7 @@ class MVOnlyGATrModel(nn.Module):
         module : nn.Module
             Module to initialize.
         """
-        if isinstance(module, ASLEquiLinear):
+        if isinstance(module, EquiLinear):
             nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
             module.weight.data /= math.sqrt(self.config.num_layers)
             if module.bias is not None:
