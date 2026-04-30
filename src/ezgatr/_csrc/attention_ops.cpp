@@ -2,8 +2,11 @@
 
 #include <cmath>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace ezgatr { namespace opt {
@@ -12,6 +15,23 @@ namespace {
 
 using torch::Tensor;
 using namespace torch::indexing;
+
+using FloatCacheKey = std::tuple<c10::DeviceType, c10::DeviceIndex, c10::ScalarType>;
+using LongCacheKey = std::tuple<c10::DeviceType, c10::DeviceIndex>;
+
+FloatCacheKey make_float_key(c10::Device device, c10::ScalarType dtype) {
+    return std::make_tuple(device.type(), device.index(), dtype);
+}
+
+LongCacheKey make_long_key(c10::Device device) {
+    return std::make_tuple(device.type(), device.index());
+}
+
+std::mutex g_cache_mu;
+std::map<LongCacheKey, Tensor> g_tri_vector_selector;
+std::map<LongCacheKey, Tensor> g_inner_product_selector;
+std::map<FloatCacheKey, Tensor> g_daa_query_basis;
+std::map<FloatCacheKey, Tensor> g_daa_key_basis;
 
 Tensor flatten_ck(const Tensor& mv) {
     return mv.flatten(-2, -1);
@@ -29,21 +49,49 @@ Tensor inflate_ck(const Tensor& mv) {
     return mv.view(sizes);
 }
 
-Tensor compute_tri_vector_selector(const torch::Device& device) {
-    return torch::tensor(
+Tensor load_tri_vector_selector(c10::Device device) {
+    auto key = make_long_key(device);
+    std::lock_guard<std::mutex> lock(g_cache_mu);
+    auto it = g_tri_vector_selector.find(key);
+    if (it != g_tri_vector_selector.end()) {
+        return it->second;
+    }
+
+    auto selector = torch::tensor(
         {11, 12, 13, 14},
         torch::TensorOptions().device(device).dtype(torch::kLong));
+    g_tri_vector_selector.emplace(key, selector);
+    return selector;
 }
 
-Tensor compute_inner_product_selector(const torch::Device& device) {
-    return torch::tensor(
+Tensor load_inner_product_selector(c10::Device device) {
+    auto key = make_long_key(device);
+    std::lock_guard<std::mutex> lock(g_cache_mu);
+    auto it = g_inner_product_selector.find(key);
+    if (it != g_inner_product_selector.end()) {
+        return it->second;
+    }
+
+    auto selector = torch::tensor(
         {0, 2, 3, 4, 8, 9, 10},
         torch::TensorOptions().device(device).dtype(torch::kLong));
+    g_inner_product_selector.emplace(key, selector);
+    return selector;
 }
 
 std::pair<Tensor, Tensor> compute_daa_basis(
     const torch::Device& device,
     c10::ScalarType dtype) {
+    auto key = make_float_key(device, dtype);
+    {
+        std::lock_guard<std::mutex> lock(g_cache_mu);
+        auto q_it = g_daa_query_basis.find(key);
+        auto k_it = g_daa_key_basis.find(key);
+        if (q_it != g_daa_query_basis.end() && k_it != g_daa_key_basis.end()) {
+            return {q_it->second, k_it->second};
+        }
+    }
+
     auto options = torch::TensorOptions().device(device).dtype(dtype);
     auto bq = torch::zeros({4, 4, 5}, options);
     auto bk = torch::zeros({4, 4, 5}, options);
@@ -65,6 +113,12 @@ std::pair<Tensor, Tensor> compute_daa_basis(
     bk.index_put_({1, 3, 3}, 2.0);
     bk.index_put_({2, 3, 4}, 2.0);
 
+    {
+        std::lock_guard<std::mutex> lock(g_cache_mu);
+        g_daa_query_basis.emplace(key, bq);
+        g_daa_key_basis.emplace(key, bk);
+    }
+
     return {bq, bk};
 }
 
@@ -73,7 +127,7 @@ Tensor linear_square_normalizer(const Tensor& e123, double eps) {
 }
 
 Tensor build_daa_qk(const Tensor& q_or_k, const Tensor& basis, double eps) {
-    auto selector = compute_tri_vector_selector(q_or_k.device());
+    auto selector = load_tri_vector_selector(q_or_k.device());
     auto tri = q_or_k.index_select(-1, selector);
     auto normalized =
         tri * linear_square_normalizer(tri.index({Ellipsis, Slice(3, 4)}), eps);
@@ -94,7 +148,7 @@ std::pair<Tensor, Tensor> compute_qk_for_daa(
 std::pair<Tensor, Tensor> compute_qk_for_ipa(
     const Tensor& query,
     const Tensor& key) {
-    auto selector = compute_inner_product_selector(query.device());
+    auto selector = load_inner_product_selector(query.device());
     return {
         query.index_select(-1, selector),
         key.index_select(-1, selector),
