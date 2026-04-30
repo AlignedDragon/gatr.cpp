@@ -197,9 +197,9 @@ torch::Tensor equi_linear(const torch::Tensor& x,
             T(EQUI_LINEAR_INV_NORMS[8]),
         };
 
-        auto xa = xf.accessor<T, 3>();   // [B, C_in,  16]
-        auto wa = wf.accessor<T, 3>();   // [C_out, C_in, 9]
-        auto oa = out.accessor<T, 3>();  // [B, C_out, 16]
+        auto xa = xf.accessor<T, 3>();   
+        auto wa = wf.accessor<T, 3>();   
+        auto oa = out.accessor<T, 3>();  
 
         for (int64_t b = 0; b < batch; ++b) {
             for (int64_t o = 0; o < out_ch; ++o) {
@@ -214,16 +214,13 @@ torch::Tensor equi_linear(const torch::Tensor& x,
                         w6 *= inv_norms[6]; w7 *= inv_norms[7]; w8 *= inv_norms[8];
                     }
 
-                    // basis 0: scalar
                     oa[b][o][0]  += w0 * xa[b][i][0];
 
-                    // basis 1: e1,e2,e3,e4
                     oa[b][o][1]  += w1 * xa[b][i][1];
                     oa[b][o][2]  += w1 * xa[b][i][2];
                     oa[b][o][3]  += w1 * xa[b][i][3];
                     oa[b][o][4]  += w1 * xa[b][i][4];
 
-                    // basis 2: e01,e02,e03,e12,e13,e23
                     oa[b][o][5]  += w2 * xa[b][i][5];
                     oa[b][o][6]  += w2 * xa[b][i][6];
                     oa[b][o][7]  += w2 * xa[b][i][7];
@@ -231,29 +228,23 @@ torch::Tensor equi_linear(const torch::Tensor& x,
                     oa[b][o][9]  += w2 * xa[b][i][9];
                     oa[b][o][10] += w2 * xa[b][i][10];
 
-                    // basis 3: e012,e013,e023,e123
                     oa[b][o][11] += w3 * xa[b][i][11];
                     oa[b][o][12] += w3 * xa[b][i][12];
                     oa[b][o][13] += w3 * xa[b][i][13];
                     oa[b][o][14] += w3 * xa[b][i][14];
 
-                    // basis 4: pseudoscalar
                     oa[b][o][15] += w4 * xa[b][i][15];
 
-                    // basis 5: scalar -> e1
                     oa[b][o][1]  += w5 * xa[b][i][0];
 
-                    // basis 6: e2,e3,e4 -> e01,e02,e03
                     oa[b][o][5]  += w6 * xa[b][i][2];
                     oa[b][o][6]  += w6 * xa[b][i][3];
                     oa[b][o][7]  += w6 * xa[b][i][4];
 
-                    // basis 7: e12,e13,e23 -> e012,e013,e023
                     oa[b][o][11] += w7 * xa[b][i][8];
                     oa[b][o][12] += w7 * xa[b][i][9];
                     oa[b][o][13] += w7 * xa[b][i][10];
 
-                    // basis 8: e123 -> pseudoscalar
                     oa[b][o][15] += w8 * xa[b][i][14];
                 }
             }
@@ -261,11 +252,9 @@ torch::Tensor equi_linear(const torch::Tensor& x,
     });
 
     if (bias.has_value()) {
-        // bias: (out_ch,) — added to scalar blade (index 0) of each output channel
         out.select(-1, 0).add_(bias.value());
     }
 
-    // Restore original batch shape: (..., out_ch, 16)
     auto out_shape = x.sizes().vec();
     out_shape[out_shape.size() - 2] = out_ch;
     return out.reshape(out_shape);
