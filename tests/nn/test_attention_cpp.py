@@ -4,7 +4,11 @@ import pytest
 import torch
 
 from ezgatr.nn.functional.attention import equi_geometric_attention
-from ezgatr.nn.functional.attention_cpp import equi_geometric_attention_cpp
+from ezgatr.nn.functional.attention_cpp import (
+    equi_geometric_attention_cpp,
+    equi_geometric_attention_cpp_base,
+    equi_geometric_attention_cpp_opt1,
+)
 
 
 def _make_inputs():
@@ -16,6 +20,14 @@ def _make_inputs():
 
 
 @pytest.mark.parametrize(
+    "impl",
+    [
+        equi_geometric_attention_cpp_base,
+        equi_geometric_attention_cpp_opt1,
+        equi_geometric_attention_cpp,
+    ],
+)
+@pytest.mark.parametrize(
     ("kinds", "weight"),
     [
         ({"ipa": None}, None),
@@ -23,7 +35,7 @@ def _make_inputs():
         ({"ipa": None, "daa": {"eps": 1e-3}}, [0.5, 1.25]),
     ],
 )
-def test_equi_geometric_attention_cpp_matches_python(kinds, weight):
+def test_equi_geometric_attention_cpp_matches_python(impl, kinds, weight):
     q, k, v = _make_inputs()
 
     expected, expected_scalar = equi_geometric_attention(
@@ -35,7 +47,7 @@ def test_equi_geometric_attention_cpp_matches_python(kinds, weight):
         dropout_p=0.0,
         is_causal=False,
     )
-    actual, actual_scalar = equi_geometric_attention_cpp(
+    actual, actual_scalar = impl(
         q,
         k,
         v,
@@ -49,8 +61,15 @@ def test_equi_geometric_attention_cpp_matches_python(kinds, weight):
     assert actual_scalar is None
     torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
 
-
-def test_equi_geometric_attention_cpp_supports_causal_attention():
+@pytest.mark.parametrize(
+    "impl",
+    [
+        equi_geometric_attention_cpp_base,
+        equi_geometric_attention_cpp_opt1,
+        equi_geometric_attention_cpp,
+    ],
+)
+def test_equi_geometric_attention_cpp_supports_causal_attention(impl):
     q, k, v = _make_inputs()
 
     expected, _ = equi_geometric_attention(
@@ -61,7 +80,7 @@ def test_equi_geometric_attention_cpp_supports_causal_attention():
         is_causal=True,
         dropout_p=0.0,
     )
-    actual, _ = equi_geometric_attention_cpp(
+    actual, _ = impl(
         q,
         k,
         v,

@@ -49,6 +49,12 @@ Tensor inflate_ck(const Tensor& mv) {
     return mv.view(sizes);
 }
 
+Tensor build_tri_vector_selector(c10::Device device) {
+    return torch::tensor(
+        {11, 12, 13, 14},
+        torch::TensorOptions().device(device).dtype(torch::kLong));
+}
+
 Tensor load_tri_vector_selector(c10::Device device) {
     auto key = make_long_key(device);
     std::lock_guard<std::mutex> lock(g_cache_mu);
@@ -57,11 +63,15 @@ Tensor load_tri_vector_selector(c10::Device device) {
         return it->second;
     }
 
-    auto selector = torch::tensor(
-        {11, 12, 13, 14},
-        torch::TensorOptions().device(device).dtype(torch::kLong));
+    auto selector = build_tri_vector_selector(device);
     g_tri_vector_selector.emplace(key, selector);
     return selector;
+}
+
+Tensor build_inner_product_selector(c10::Device device) {
+    return torch::tensor(
+        {0, 2, 3, 4, 8, 9, 10},
+        torch::TensorOptions().device(device).dtype(torch::kLong));
 }
 
 Tensor load_inner_product_selector(c10::Device device) {
@@ -72,26 +82,14 @@ Tensor load_inner_product_selector(c10::Device device) {
         return it->second;
     }
 
-    auto selector = torch::tensor(
-        {0, 2, 3, 4, 8, 9, 10},
-        torch::TensorOptions().device(device).dtype(torch::kLong));
+    auto selector = build_inner_product_selector(device);
     g_inner_product_selector.emplace(key, selector);
     return selector;
 }
 
-std::pair<Tensor, Tensor> compute_daa_basis(
-    const torch::Device& device,
+std::pair<Tensor, Tensor> build_daa_basis(
+    c10::Device device,
     c10::ScalarType dtype) {
-    auto key = make_float_key(device, dtype);
-    {
-        std::lock_guard<std::mutex> lock(g_cache_mu);
-        auto q_it = g_daa_query_basis.find(key);
-        auto k_it = g_daa_key_basis.find(key);
-        if (q_it != g_daa_query_basis.end() && k_it != g_daa_key_basis.end()) {
-            return {q_it->second, k_it->second};
-        }
-    }
-
     auto options = torch::TensorOptions().device(device).dtype(dtype);
     auto bq = torch::zeros({4, 4, 5}, options);
     auto bk = torch::zeros({4, 4, 5}, options);
@@ -113,6 +111,24 @@ std::pair<Tensor, Tensor> compute_daa_basis(
     bk.index_put_({1, 3, 3}, 2.0);
     bk.index_put_({2, 3, 4}, 2.0);
 
+    return {bq, bk};
+}
+
+std::pair<Tensor, Tensor> load_daa_basis(
+    const torch::Device& device,
+    c10::ScalarType dtype) {
+    auto key = make_float_key(device, dtype);
+    {
+        std::lock_guard<std::mutex> lock(g_cache_mu);
+        auto q_it = g_daa_query_basis.find(key);
+        auto k_it = g_daa_key_basis.find(key);
+        if (q_it != g_daa_query_basis.end() && k_it != g_daa_key_basis.end()) {
+            return {q_it->second, k_it->second};
+        }
+    }
+
+    auto [bq, bk] = build_daa_basis(device, dtype);
+
     {
         std::lock_guard<std::mutex> lock(g_cache_mu);
         g_daa_query_basis.emplace(key, bq);
@@ -126,8 +142,20 @@ Tensor linear_square_normalizer(const Tensor& e123, double eps) {
     return e123 / (e123.pow(2) + eps);
 }
 
-Tensor build_daa_qk(const Tensor& q_or_k, const Tensor& basis, double eps) {
-    auto selector = load_tri_vector_selector(q_or_k.device());
+Tensor get_tri_vector_selector(c10::Device device, bool use_cache) {
+    return use_cache ? load_tri_vector_selector(device) : build_tri_vector_selector(device);
+}
+
+Tensor get_inner_product_selector(c10::Device device, bool use_cache) {
+    return use_cache ? load_inner_product_selector(device) : build_inner_product_selector(device);
+}
+
+std::pair<Tensor, Tensor> get_daa_basis(c10::Device device, c10::ScalarType dtype, bool use_cache) {
+    return use_cache ? load_daa_basis(device, dtype) : build_daa_basis(device, dtype);
+}
+
+Tensor build_daa_qk(const Tensor& q_or_k, const Tensor& basis, double eps, bool use_cache) {
+    auto selector = get_tri_vector_selector(q_or_k.device(), use_cache);
     auto tri = q_or_k.index_select(-1, selector);
     auto normalized =
         tri * linear_square_normalizer(tri.index({Ellipsis, Slice(3, 4)}), eps);
@@ -137,18 +165,20 @@ Tensor build_daa_qk(const Tensor& q_or_k, const Tensor& basis, double eps) {
 std::pair<Tensor, Tensor> compute_qk_for_daa(
     const Tensor& query,
     const Tensor& key,
-    double eps) {
-    auto [bq, bk] = compute_daa_basis(query.device(), query.scalar_type());
+    double eps,
+    bool use_cache) {
+    auto [bq, bk] = get_daa_basis(query.device(), query.scalar_type(), use_cache);
     return {
-        build_daa_qk(query, bq, eps),
-        build_daa_qk(key, bk, eps),
+        build_daa_qk(query, bq, eps, use_cache),
+        build_daa_qk(key, bk, eps, use_cache),
     };
 }
 
 std::pair<Tensor, Tensor> compute_qk_for_ipa(
     const Tensor& query,
-    const Tensor& key) {
-    auto selector = load_inner_product_selector(query.device());
+    const Tensor& key,
+    bool use_cache) {
+    auto selector = get_inner_product_selector(query.device(), use_cache);
     return {
         query.index_select(-1, selector),
         key.index_select(-1, selector),
@@ -218,7 +248,7 @@ void check_mv_attention_tensor(const Tensor& tensor, const char* name) {
 
 }  // namespace
 
-torch::Tensor equi_geometric_attention_mv_only(
+torch::Tensor equi_geometric_attention_mv_only_impl(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,
@@ -227,7 +257,8 @@ torch::Tensor equi_geometric_attention_mv_only(
     const py::object& attn_mask,
     double dropout_p,
     bool is_causal,
-    const py::object& scale) {
+    const py::object& scale,
+    bool use_cache) {
     check_mv_attention_tensor(query, "equi_geometric_attention_mv_only: query");
     check_mv_attention_tensor(key, "equi_geometric_attention_mv_only: key");
     check_mv_attention_tensor(value, "equi_geometric_attention_mv_only: value");
@@ -263,7 +294,7 @@ torch::Tensor equi_geometric_attention_mv_only(
         Tensor q_part;
         Tensor k_part;
         if (kind == "ipa") {
-            std::tie(q_part, k_part) = compute_qk_for_ipa(query, key);
+            std::tie(q_part, k_part) = compute_qk_for_ipa(query, key, use_cache);
         } else if (kind == "daa") {
             double eps = 1e-3;
             if (!kwargs_obj.is_none()) {
@@ -272,7 +303,7 @@ torch::Tensor equi_geometric_attention_mv_only(
                     eps = py::cast<double>(kwargs["eps"]);
                 }
             }
-            std::tie(q_part, k_part) = compute_qk_for_daa(query, key, eps);
+            std::tie(q_part, k_part) = compute_qk_for_daa(query, key, eps, use_cache);
         } else {
             TORCH_CHECK(false, "equi_geometric_attention_mv_only: unsupported attention kind: ", kind);
         }
@@ -295,6 +326,48 @@ torch::Tensor equi_geometric_attention_mv_only(
         is_causal,
         scale);
     return inflate_ck(ret);
+}
+
+torch::Tensor equi_geometric_attention_mv_only_base(
+    const torch::Tensor& query,
+    const torch::Tensor& key,
+    const torch::Tensor& value,
+    const py::dict& kinds,
+    const py::object& weight,
+    const py::object& attn_mask,
+    double dropout_p,
+    bool is_causal,
+    const py::object& scale) {
+    return equi_geometric_attention_mv_only_impl(
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, false);
+}
+
+torch::Tensor equi_geometric_attention_mv_only_opt1(
+    const torch::Tensor& query,
+    const torch::Tensor& key,
+    const torch::Tensor& value,
+    const py::dict& kinds,
+    const py::object& weight,
+    const py::object& attn_mask,
+    double dropout_p,
+    bool is_causal,
+    const py::object& scale) {
+    return equi_geometric_attention_mv_only_impl(
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true);
+}
+
+torch::Tensor equi_geometric_attention_mv_only(
+    const torch::Tensor& query,
+    const torch::Tensor& key,
+    const torch::Tensor& value,
+    const py::dict& kinds,
+    const py::object& weight,
+    const py::object& attn_mask,
+    double dropout_p,
+    bool is_causal,
+    const py::object& scale) {
+    return equi_geometric_attention_mv_only_opt1(
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale);
 }
 
 }}  // namespace ezgatr::opt

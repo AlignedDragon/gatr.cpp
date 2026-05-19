@@ -24,7 +24,31 @@ def equi_geometric_attention_cpp(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""C++ port of the multivector-only geometric attention forward pass.
+    return equi_geometric_attention_cpp_opt1(
+        query,
+        key,
+        value,
+        kinds,
+        weight,
+        attn_mask,
+        dropout_p,
+        is_causal,
+        scale,
+    )
+
+
+def equi_geometric_attention_cpp_base(
+    query: GeometricQKVType,
+    key: GeometricQKVType,
+    value: GeometricQKVType,
+    kinds: dict[GeometricAttnKindType, dict[str, object] | None],
+    weight: list[torch.Tensor | float] | None = None,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+) -> GeometricQKVType:
+    r"""Baseline C++ port of the multivector-only geometric attention forward pass.
 
     This mirrors the path used by ``MVOnlyGATrModel``. Scalar side channels are
     intentionally left to the Python implementation for now.
@@ -36,7 +60,40 @@ def equi_geometric_attention_cpp(
         )
 
     ext = _load_attention_cpp_extension()
-    ret = ext.equi_geometric_attention_mv_only(
+    ret = ext.equi_geometric_attention_mv_only_base(
+        query,
+        key,
+        value,
+        kinds,
+        weight,
+        attn_mask,
+        dropout_p,
+        is_causal,
+        scale,
+    )
+    return ret, None
+
+
+def equi_geometric_attention_cpp_opt1(
+    query: GeometricQKVType,
+    key: GeometricQKVType,
+    value: GeometricQKVType,
+    kinds: dict[GeometricAttnKindType, dict[str, object] | None],
+    weight: list[torch.Tensor | float] | None = None,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+) -> GeometricQKVType:
+    r"""Cache-optimized C++ port of the multivector-only geometric attention."""
+
+    if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
+        raise NotImplementedError(
+            "The C++ port currently supports the multivector-only attention path."
+        )
+
+    ext = _load_attention_cpp_extension()
+    ret = ext.equi_geometric_attention_mv_only_opt1(
         query,
         key,
         value,
