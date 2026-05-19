@@ -24,7 +24,7 @@ def equi_geometric_attention_cpp(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    return equi_geometric_attention_cpp_opt1(
+    return equi_geometric_attention_cpp_opt2(
         query,
         key,
         value,
@@ -94,6 +94,39 @@ def equi_geometric_attention_cpp_opt1(
 
     ext = _load_attention_cpp_extension()
     ret = ext.equi_geometric_attention_mv_only_opt1(
+        query,
+        key,
+        value,
+        kinds,
+        weight,
+        attn_mask,
+        dropout_p,
+        is_causal,
+        scale,
+    )
+    return ret, None
+
+
+def equi_geometric_attention_cpp_opt2(
+    query: GeometricQKVType,
+    key: GeometricQKVType,
+    value: GeometricQKVType,
+    kinds: dict[GeometricAttnKindType, dict[str, object] | None],
+    weight: list[torch.Tensor | float] | None = None,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+) -> GeometricQKVType:
+    r"""Math-optimized C++ port using explicit DAA formulas."""
+
+    if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
+        raise NotImplementedError(
+            "The C++ port currently supports the multivector-only attention path."
+        )
+
+    ext = _load_attention_cpp_extension()
+    ret = ext.equi_geometric_attention_mv_only_opt2(
         query,
         key,
         value,

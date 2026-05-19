@@ -162,6 +162,27 @@ Tensor build_daa_qk(const Tensor& q_or_k, const Tensor& basis, double eps, bool 
     return torch::einsum("ijk, ...i, ...j -> ...k", {basis, normalized, normalized});
 }
 
+Tensor build_daa_qk_explicit(const Tensor& q_or_k, double eps, bool is_query, bool use_cache) {
+    auto selector = get_tri_vector_selector(q_or_k.device(), use_cache);
+    auto tri = q_or_k.index_select(-1, selector);
+    auto normalized =
+        tri * linear_square_normalizer(tri.index({Ellipsis, Slice(3, 4)}), eps);
+
+    auto x0 = normalized.index({Ellipsis, Slice(0, 1)});
+    auto x1 = normalized.index({Ellipsis, Slice(1, 2)});
+    auto x2 = normalized.index({Ellipsis, Slice(2, 3)});
+    auto x3 = normalized.index({Ellipsis, Slice(3, 4)});
+
+    auto sum012 = x0 * x0 + x1 * x1 + x2 * x2;
+    if (is_query) {
+        return torch::cat({sum012, x3 * x3, x0 * x3, x1 * x3, x2 * x3}, -1);
+    }
+
+    return torch::cat(
+        {-(x3 * x3), -sum012, 2.0 * x0 * x3, 2.0 * x1 * x3, 2.0 * x2 * x3},
+        -1);
+}
+
 std::pair<Tensor, Tensor> compute_qk_for_daa(
     const Tensor& query,
     const Tensor& key,
@@ -182,6 +203,17 @@ std::pair<Tensor, Tensor> compute_qk_for_ipa(
     return {
         query.index_select(-1, selector),
         key.index_select(-1, selector),
+    };
+}
+
+std::pair<Tensor, Tensor> compute_qk_for_daa_opt2(
+    const Tensor& query,
+    const Tensor& key,
+    double eps,
+    bool use_cache) {
+    return {
+        build_daa_qk_explicit(query, eps, true, use_cache),
+        build_daa_qk_explicit(key, eps, false, use_cache),
     };
 }
 
@@ -258,7 +290,8 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
     double dropout_p,
     bool is_causal,
     const py::object& scale,
-    bool use_cache) {
+    bool use_cache,
+    bool use_direct_daa) {
     check_mv_attention_tensor(query, "equi_geometric_attention_mv_only: query");
     check_mv_attention_tensor(key, "equi_geometric_attention_mv_only: key");
     check_mv_attention_tensor(value, "equi_geometric_attention_mv_only: value");
@@ -303,7 +336,11 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
                     eps = py::cast<double>(kwargs["eps"]);
                 }
             }
-            std::tie(q_part, k_part) = compute_qk_for_daa(query, key, eps, use_cache);
+            if (use_direct_daa) {
+                std::tie(q_part, k_part) = compute_qk_for_daa_opt2(query, key, eps, use_cache);
+            } else {
+                std::tie(q_part, k_part) = compute_qk_for_daa(query, key, eps, use_cache);
+            }
         } else {
             TORCH_CHECK(false, "equi_geometric_attention_mv_only: unsupported attention kind: ", kind);
         }
@@ -339,7 +376,7 @@ torch::Tensor equi_geometric_attention_mv_only_base(
     bool is_causal,
     const py::object& scale) {
     return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, false);
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, false, false);
 }
 
 torch::Tensor equi_geometric_attention_mv_only_opt1(
@@ -353,7 +390,21 @@ torch::Tensor equi_geometric_attention_mv_only_opt1(
     bool is_causal,
     const py::object& scale) {
     return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true);
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, false);
+}
+
+torch::Tensor equi_geometric_attention_mv_only_opt2(
+    const torch::Tensor& query,
+    const torch::Tensor& key,
+    const torch::Tensor& value,
+    const py::dict& kinds,
+    const py::object& weight,
+    const py::object& attn_mask,
+    double dropout_p,
+    bool is_causal,
+    const py::object& scale) {
+    return equi_geometric_attention_mv_only_impl(
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true);
 }
 
 torch::Tensor equi_geometric_attention_mv_only(
@@ -366,7 +417,7 @@ torch::Tensor equi_geometric_attention_mv_only(
     double dropout_p,
     bool is_causal,
     const py::object& scale) {
-    return equi_geometric_attention_mv_only_opt1(
+    return equi_geometric_attention_mv_only_opt2(
         query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale);
 }
 
