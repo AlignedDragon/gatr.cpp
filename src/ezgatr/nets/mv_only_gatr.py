@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from ezgatr.nn import EquiLinear, EquiRMSNorm#, EquiLinearASL_ver_0, EquiRMSNormASL_ver_0, EquiLinearASL_ver_1, EquiRMSNormASL_ver_1,EquiLinearASL_ver_2, EquiRMSNormASL_ver_2, EquiLinearASL_ver_3, EquiRMSNormASL_ver_3
+from ezgatr.nn import ASLEquiLinear, EquiLinear, EquiRMSNorm#, EquiLinearASL_ver_0, EquiRMSNormASL_ver_0, EquiLinearASL_ver_1, EquiRMSNormASL_ver_1,EquiLinearASL_ver_2, EquiRMSNormASL_ver_2, EquiLinearASL_ver_3, EquiRMSNormASL_ver_3
 from ezgatr.nn.functional import (
     equi_geometric_attention as equi_geometric_attention_py,
     equi_join as equi_join_py,
