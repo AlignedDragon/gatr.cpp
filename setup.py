@@ -16,6 +16,7 @@ ext = CppExtension(
     sources=[
         "src/ezgatr/_csrc/attention_ops.cpp",
         "src/ezgatr/_csrc/pga_ops.cpp",
+        "src/ezgatr/_csrc/rms_ops.cpp",
         "src/ezgatr/_csrc/bindings.cpp",
     ],
     include_dirs=["src/ezgatr/_csrc"],
