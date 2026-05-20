@@ -163,4 +163,101 @@ torch::Tensor equi_join(const torch::Tensor& x,
     return ret;
 }
 
+
+static constexpr double EQUI_LINEAR_INV_NORMS[9] = {
+    1.0, 0.5, 0.40824829046386302, 0.5, 1.0,
+    1.0, 0.5773502691896258, 0.5773502691896258, 1.0,
+};
+
+torch::Tensor equi_linear(const torch::Tensor& x,
+                           const torch::Tensor& weight,
+                           const c10::optional<torch::Tensor>& bias,
+                           bool normalize_basis) {
+    TORCH_CHECK(x.dim() >= 2,        "equi_linear: x needs at least 2 dims");
+    TORCH_CHECK(x.size(-1) == 16,    "equi_linear: x last dim must be 16");
+    TORCH_CHECK(weight.dim() == 3,   "equi_linear: weight must be 3-D (out, in, 9)");
+    TORCH_CHECK(weight.size(2) == 9, "equi_linear: weight last dim must be 9");
+    TORCH_CHECK(x.size(-2) == weight.size(1), "equi_linear: in_channels mismatch");
+
+    const int64_t out_ch = weight.size(0);
+    const int64_t in_ch  = weight.size(1);
+    const int64_t batch  = x.numel() / (in_ch * 16);
+
+    auto xf  = x.reshape({batch, in_ch, 16}).contiguous();
+    auto wf  = weight.contiguous();
+    auto out = torch::zeros({batch, out_ch, 16}, x.options());
+
+    AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "equi_linear", [&] {
+        using T = scalar_t;
+        const T inv_norms[9] = {
+            T(EQUI_LINEAR_INV_NORMS[0]), T(EQUI_LINEAR_INV_NORMS[1]),
+            T(EQUI_LINEAR_INV_NORMS[2]), T(EQUI_LINEAR_INV_NORMS[3]),
+            T(EQUI_LINEAR_INV_NORMS[4]), T(EQUI_LINEAR_INV_NORMS[5]),
+            T(EQUI_LINEAR_INV_NORMS[6]), T(EQUI_LINEAR_INV_NORMS[7]),
+            T(EQUI_LINEAR_INV_NORMS[8]),
+        };
+
+        auto xa = xf.accessor<T, 3>();   
+        auto wa = wf.accessor<T, 3>();   
+        auto oa = out.accessor<T, 3>();  
+
+        for (int64_t b = 0; b < batch; ++b) {
+            for (int64_t o = 0; o < out_ch; ++o) {
+                for (int64_t i = 0; i < in_ch; ++i) {
+                    T w0 = wa[o][i][0], w1 = wa[o][i][1], w2 = wa[o][i][2];
+                    T w3 = wa[o][i][3], w4 = wa[o][i][4], w5 = wa[o][i][5];
+                    T w6 = wa[o][i][6], w7 = wa[o][i][7], w8 = wa[o][i][8];
+
+                    if (normalize_basis) {
+                        w0 *= inv_norms[0]; w1 *= inv_norms[1]; w2 *= inv_norms[2];
+                        w3 *= inv_norms[3]; w4 *= inv_norms[4]; w5 *= inv_norms[5];
+                        w6 *= inv_norms[6]; w7 *= inv_norms[7]; w8 *= inv_norms[8];
+                    }
+
+                    oa[b][o][0]  += w0 * xa[b][i][0];
+
+                    oa[b][o][1]  += w1 * xa[b][i][1];
+                    oa[b][o][2]  += w1 * xa[b][i][2];
+                    oa[b][o][3]  += w1 * xa[b][i][3];
+                    oa[b][o][4]  += w1 * xa[b][i][4];
+
+                    oa[b][o][5]  += w2 * xa[b][i][5];
+                    oa[b][o][6]  += w2 * xa[b][i][6];
+                    oa[b][o][7]  += w2 * xa[b][i][7];
+                    oa[b][o][8]  += w2 * xa[b][i][8];
+                    oa[b][o][9]  += w2 * xa[b][i][9];
+                    oa[b][o][10] += w2 * xa[b][i][10];
+
+                    oa[b][o][11] += w3 * xa[b][i][11];
+                    oa[b][o][12] += w3 * xa[b][i][12];
+                    oa[b][o][13] += w3 * xa[b][i][13];
+                    oa[b][o][14] += w3 * xa[b][i][14];
+
+                    oa[b][o][15] += w4 * xa[b][i][15];
+
+                    oa[b][o][1]  += w5 * xa[b][i][0];
+
+                    oa[b][o][5]  += w6 * xa[b][i][2];
+                    oa[b][o][6]  += w6 * xa[b][i][3];
+                    oa[b][o][7]  += w6 * xa[b][i][4];
+
+                    oa[b][o][11] += w7 * xa[b][i][8];
+                    oa[b][o][12] += w7 * xa[b][i][9];
+                    oa[b][o][13] += w7 * xa[b][i][10];
+
+                    oa[b][o][15] += w8 * xa[b][i][14];
+                }
+            }
+        }
+    });
+
+    if (bias.has_value()) {
+        out.select(-1, 0).add_(bias.value());
+    }
+
+    auto out_shape = x.sizes().vec();
+    out_shape[out_shape.size() - 2] = out_ch;
+    return out.reshape(out_shape);
+}
+
 }}  // namespace ezgatr::opt

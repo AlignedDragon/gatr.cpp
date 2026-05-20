@@ -134,7 +134,7 @@ def _compute_pin_equi_linear_basis(
 
     basis = []
     for elements in basis_elements:
-        w = torch.zeros((16, 16))
+        w = torch.zeros((16, 16), device=device, dtype=dtype)
         for element in elements:  # type: ignore[attr-defined]
             try:
                 i, j = element
@@ -148,7 +148,7 @@ def _compute_pin_equi_linear_basis(
         w = w.unsqueeze(0)
         basis.append(w)
 
-    return torch.cat(basis, dim=0).to(device, dtype)
+    return torch.cat(basis, dim=0)
 
 
 def geometric_product(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
