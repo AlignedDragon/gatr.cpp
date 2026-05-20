@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from ezgatr.nn.functional.norm import equi_rms_norm
+from ezgatr.opt import equi_rms_norm_ver_0,equi_rms_norm_ver_1,equi_rms_norm_ver_2,equi_rms_norm_ver_3
 
 
 class EquiRMSNorm(nn.Module):
@@ -60,3 +61,50 @@ class EquiRMSNorm(nn.Module):
             f"eps={self.eps}, "
             f"channelwise_rescale={self.channelwise_rescale}"
         )
+    
+class EquiRMSNormASL_ver_0(EquiRMSNorm):
+    r"""C++-backed Pin(3, 0, 1)-equivariant linear map.
+
+    Drop-in replacement for :class:`EquiLinear` that calls the optimized
+    unrolled C++ kernel instead of the Python einsum baseline.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return equi_rms_norm_ver_0(x, self.weight, self.eps)
+    
+
+    
+class EquiRMSNormASL_ver_1(EquiRMSNorm):
+    r"""C++-backed Pin(3, 0, 1)-equivariant linear map.
+
+    Drop-in replacement for :class:`EquiLinear` that calls the optimized
+    unrolled C++ kernel instead of the Python einsum baseline.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return equi_rms_norm_ver_1(x, self.weight, self.eps)
+    
+    
+class EquiRMSNormASL_ver_2(EquiRMSNorm):
+    r"""C++-backed Pin(3, 0, 1)-equivariant linear map.
+
+    Drop-in replacement for :class:`EquiLinear` that calls the optimized
+    unrolled C++ kernel instead of the Python einsum baseline.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return equi_rms_norm_ver_2(x, self.weight, self.eps)
+    
+
+class EquiRMSNormASL_ver_3(EquiRMSNorm):
+    r"""C++-backed Pin(3, 0, 1)-equivariant linear map.
+
+    Drop-in replacement for :class:`EquiLinear` that calls the optimized
+    unrolled C++ kernel instead of the Python einsum baseline.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return equi_rms_norm_ver_3(x, self.weight, self.eps)
+
+
+
