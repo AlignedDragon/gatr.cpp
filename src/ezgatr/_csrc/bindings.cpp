@@ -6,57 +6,222 @@
 PYBIND11_MODULE(_opt_ops, m) {
     m.doc() = "ezgatr.opt — C++ implementations of PGA primitives";
 
-//     m.def("inner_product_ver_0", &ezgatr::opt::inner_product_ver_0,
-//           py::arg("x"), py::arg("y"),
-//           "Inner Product of two multi-vectors of shape (..., 16).");
-    
-//     m.def("inner_product_ver_1", &ezgatr::opt::inner_product_ver_1,
-//           py::arg("x"), py::arg("y"),
-//           "Inner Product of two multi-vectors of shape (..., 16).");
+    m.def("geometric_product", &ezgatr::opt::geometric_product,
+          py::arg("x"), py::arg("y"),
+          "Geometric product of two multi-vectors of shape (..., 16).");
 
-//     m.def("inner_product_ver_2", &ezgatr::opt::inner_product_ver_2,
-//           py::arg("x"), py::arg("y"),
-//           "Inner Product of two multi-vectors of shape (..., 16).");
+    m.def("geometric_product_ver_0", &ezgatr::opt::geometric_product,
+          py::arg("x"), py::arg("y"),
+          "Geometric product baseline alias.");
+    m.def("geometric_product_ver_1", &ezgatr::opt::geometric_product,
+          py::arg("x"), py::arg("y"),
+          "Geometric product version 1 alias.");
+    m.def("geometric_product_ver_2", &ezgatr::opt::geometric_product,
+          py::arg("x"), py::arg("y"),
+          "Geometric product version 2 alias.");
+    m.def("geometric_product_ver_3", &ezgatr::opt::geometric_product,
+          py::arg("x"), py::arg("y"),
+          "Geometric product version 3 alias.");
 
-//     m.def("inner_product_ver_3", &ezgatr::opt::inner_product_ver_3,
-//           py::arg("x"), py::arg("y"),
-//           "Inner Product of two multi-vectors of shape (..., 16).");      
+    m.def("equi_join", &ezgatr::opt::equi_join,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Equivariant join of two multi-vectors of shape (..., 16).");
 
-//     m.def("equi_rms_norm_ver_0", &ezgatr::opt::equi_rms_norm_ver_0,
-//           py::arg("x"), py::arg("weight") = py::none(), py::arg("eps_opt") = py::none(),
-//           "Equi rms norm of two multivectors of shape (...,16).");
+    m.def("equi_join_ver_0", &ezgatr::opt::equi_join,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Equivariant join version 0 alias.");
+    m.def("equi_join_ver_1", &ezgatr::opt::equi_join,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Equivariant join version 1 alias.");
+    m.def("equi_join_ver_2", &ezgatr::opt::equi_join,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Equivariant join version 2 alias.");
+    m.def("equi_join_ver_3", &ezgatr::opt::equi_join,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Equivariant join version 3 alias.");
 
-//     m.def("equi_rms_norm_ver_1", &ezgatr::opt::equi_rms_norm_ver_1,
-//           py::arg("x"), py::arg("weight") = py::none(), py::arg("eps_opt") = py::none(),
-//           "Equi rms norm of two multivectors of shape (...,16).");
+    m.def("outer_product", &ezgatr::opt::outer_product,
+          py::arg("x"), py::arg("y"),
+          "Outer product of two multi-vectors of shape (..., 16).");
+    m.def("outer_product_ver_0", &ezgatr::opt::outer_product,
+          py::arg("x"), py::arg("y"),
+          "Outer product version 0 alias.");
+    m.def("outer_product_ver_1", &ezgatr::opt::outer_product,
+          py::arg("x"), py::arg("y"),
+          "Outer product version 1 alias.");
+    m.def("outer_product_ver_2", &ezgatr::opt::outer_product,
+          py::arg("x"), py::arg("y"),
+          "Outer product version 2 alias.");
+    m.def("outer_product_ver_3", &ezgatr::opt::outer_product,
+          py::arg("x"), py::arg("y"),
+          "Outer product version 3 alias.");
 
-//     m.def("equi_rms_norm_ver_1", &ezgatr::opt::equi_rms_norm_ver_2,
-//           py::arg("x"), py::arg("weight") = py::none(), py::arg("eps_opt") = py::none(),
-//           "Equi rms norm of two multivectors of shape (...,16).");
+    m.def("equi_geometric_attention_mv_only_ver_0",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_0,
+          py::arg("query"),
+          py::arg("key"),
+          py::arg("value"),
+          py::arg("kinds"),
+          py::arg("weight") = py::none(),
+          py::arg("attn_mask") = py::none(),
+          py::arg("dropout_p") = 0.0,
+          py::arg("is_causal") = false,
+          py::arg("scale") = py::none(),
+          "Equivariant geometric attention forward pass for mv-only inputs, baseline version.");
+    m.def("equi_geometric_attention_ver_0",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_0,
+          py::arg("query"),
+          py::arg("key"),
+          py::arg("value"),
+          py::arg("kinds"),
+          py::arg("weight") = py::none(),
+          py::arg("attn_mask") = py::none(),
+          py::arg("dropout_p") = 0.0,
+          py::arg("is_causal") = false,
+          py::arg("scale") = py::none(),
+          "Equivariant geometric attention version 0 alias.");
 
-//     m.def("equi_rms_norm_ver_3", &ezgatr::opt::equi_rms_norm_ver_3,
-//           py::arg("x"), py::arg("weight") = py::none(), py::arg("eps_opt") = py::none(),
-//           "Equi rms norm of two multivectors of shape (...,16).");
+    m.def("equi_geometric_attention_mv_only_ver_1",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_1,
+          py::arg("query"),
+          py::arg("key"),
+          py::arg("value"),
+          py::arg("kinds"),
+          py::arg("weight") = py::none(),
+          py::arg("attn_mask") = py::none(),
+          py::arg("dropout_p") = 0.0,
+          py::arg("is_causal") = false,
+          py::arg("scale") = py::none(),
+          "Equivariant geometric attention forward pass for mv-only inputs, cache-optimized version.");
+    m.def("equi_geometric_attention_ver_1",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_1,
+          py::arg("query"),
+          py::arg("key"),
+          py::arg("value"),
+          py::arg("kinds"),
+          py::arg("weight") = py::none(),
+          py::arg("attn_mask") = py::none(),
+          py::arg("dropout_p") = 0.0,
+          py::arg("is_causal") = false,
+          py::arg("scale") = py::none(),
+          "Equivariant geometric attention version 1 alias.");
 
-//     m.def("scaler_gated_gelu_ver_0", &ezgatr::opt::scaler_gated_gelu_ver_0,
-//           py::arg("x"),
-//           py::arg("approximate") = "tanh",
-//           "Scaler gated gelu for multivectors of shape (..., 16).");
+    m.def("equi_geometric_attention_mv_only_ver_2",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_2,
+          py::arg("query"),
+          py::arg("key"),
+          py::arg("value"),
+          py::arg("kinds"),
+          py::arg("weight") = py::none(),
+          py::arg("attn_mask") = py::none(),
+          py::arg("dropout_p") = 0.0,
+          py::arg("is_causal") = false,
+          py::arg("scale") = py::none(),
+          "Equivariant geometric attention forward pass for mv-only inputs, explicit-DAA version.");
+    m.def("equi_geometric_attention_ver_2",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_2,
+          py::arg("query"),
+          py::arg("key"),
+          py::arg("value"),
+          py::arg("kinds"),
+          py::arg("weight") = py::none(),
+          py::arg("attn_mask") = py::none(),
+          py::arg("dropout_p") = 0.0,
+          py::arg("is_causal") = false,
+          py::arg("scale") = py::none(),
+          "Equivariant geometric attention version 2 alias.");
 
-//     m.def("scaler_gated_gelu_ver_1", &ezgatr::opt::scaler_gated_gelu_ver_1,
-//           py::arg("x"),
-//           py::arg("approximate") = "tanh",
-//           "Scaler gated gelu for multivectors of shape (..., 16).");
+    m.def("equi_geometric_attention_mv_only_ver_3",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_3,
+          py::arg("query"),
+          py::arg("key"),
+          py::arg("value"),
+          py::arg("kinds"),
+          py::arg("weight") = py::none(),
+          py::arg("attn_mask") = py::none(),
+          py::arg("dropout_p") = 0.0,
+          py::arg("is_causal") = false,
+          py::arg("scale") = py::none(),
+          "Equivariant geometric attention forward pass for mv-only inputs, fast-path assembly version.");
+    m.def("equi_geometric_attention_ver_3",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_3,
+          py::arg("query"),
+          py::arg("key"),
+          py::arg("value"),
+          py::arg("kinds"),
+          py::arg("weight") = py::none(),
+          py::arg("attn_mask") = py::none(),
+          py::arg("dropout_p") = 0.0,
+          py::arg("is_causal") = false,
+          py::arg("scale") = py::none(),
+          "Equivariant geometric attention version 3 alias.");
 
-//     m.def("scaler_gated_gelu_ver_2", &ezgatr::opt::scaler_gated_gelu_ver_2,
-//           py::arg("x"),
-//           py::arg("approximate") = "tanh",
-//           "Scaler gated gelu for multivectors of shape (..., 16).");
+    m.def("inner_product", &ezgatr::opt::inner_product_ver_2,
+          py::arg("x"), py::arg("y"),
+          "Inner Product of two multi-vectors of shape (..., 16).");
+    m.def("inner_product_ver_0", &ezgatr::opt::inner_product_ver_0,
+          py::arg("x"), py::arg("y"),
+          "Inner product version 0.");
+    m.def("inner_product_ver_1", &ezgatr::opt::inner_product_ver_1,
+          py::arg("x"), py::arg("y"),
+          "Inner product version 1.");
+    m.def("inner_product_ver_2", &ezgatr::opt::inner_product_ver_2,
+          py::arg("x"), py::arg("y"),
+          "Inner product version 2.");
+    m.def("inner_product_ver_3", &ezgatr::opt::inner_product_ver_2,
+          py::arg("x"), py::arg("y"),
+          "Inner product version 3 fallback alias.");
 
-//     m.def("scaler_gated_gelu_ver_3", &ezgatr::opt::scaler_gated_gelu_ver_3,
-//           py::arg("x"),
-//           py::arg("approximate") = "tanh",
-//           "Scaler gated gelu for multivectors of shape (..., 16).");
+    m.def("equi_rms_norm", &ezgatr::opt::equi_rms_norm_ver_2,
+          py::arg("x"), py::arg("weight") = py::none(), py::arg("eps_opt") = py::none(),
+          "Equi rms norm of two multivectors of shape (...,16).");
+    m.def("equi_rms_norm_ver_0", &ezgatr::opt::equi_rms_norm_ver_0,
+          py::arg("x"), py::arg("weight") = py::none(), py::arg("eps_opt") = py::none(),
+          "Equi RMS norm version 0.");
+    m.def("equi_rms_norm_ver_1", &ezgatr::opt::equi_rms_norm_ver_1,
+          py::arg("x"), py::arg("weight") = py::none(), py::arg("eps_opt") = py::none(),
+          "Equi RMS norm version 1.");
+    m.def("equi_rms_norm_ver_2", &ezgatr::opt::equi_rms_norm_ver_2,
+          py::arg("x"), py::arg("weight") = py::none(), py::arg("eps_opt") = py::none(),
+          "Equi RMS norm version 2.");
+    m.def("equi_rms_norm_ver_3", &ezgatr::opt::equi_rms_norm_ver_2,
+          py::arg("x"), py::arg("weight") = py::none(), py::arg("eps_opt") = py::none(),
+          "Equi RMS norm version 3 fallback alias.");
+
+    m.def("scaler_gated_gelu", &ezgatr::opt::scaler_gated_gelu_ver_2,
+          py::arg("x"),
+          py::arg("approximate") = "tanh",
+          "Scaler gated gelu for multivectors of shape (..., 16).");
+    m.def("scaler_gated_gelu_ver_0", &ezgatr::opt::scaler_gated_gelu_ver_0,
+          py::arg("x"),
+          py::arg("approximate") = "tanh",
+          "Scalar gated GELU version 0.");
+    m.def("scaler_gated_gelu_ver_1", &ezgatr::opt::scaler_gated_gelu_ver_1,
+          py::arg("x"),
+          py::arg("approximate") = "tanh",
+          "Scalar gated GELU version 1.");
+    m.def("scaler_gated_gelu_ver_2", &ezgatr::opt::scaler_gated_gelu_ver_2,
+          py::arg("x"),
+          py::arg("approximate") = "tanh",
+          "Scalar gated GELU version 2.");
+    m.def("scaler_gated_gelu_ver_3", &ezgatr::opt::scaler_gated_gelu_ver_2,
+          py::arg("x"),
+          py::arg("approximate") = "tanh",
+          "Scalar gated GELU version 3 fallback alias.");
+
+    m.def("equi_geometric_attention_mv_only",
+          &ezgatr::opt::equi_geometric_attention_mv_only,
+          py::arg("query"),
+          py::arg("key"),
+          py::arg("value"),
+          py::arg("kinds"),
+          py::arg("weight") = py::none(),
+          py::arg("attn_mask") = py::none(),
+          py::arg("dropout_p") = 0.0,
+          py::arg("is_causal") = false,
+          py::arg("scale") = py::none(),
+          "Equivariant geometric attention forward pass for mv-only inputs.");
+
     m.def("equi_linear", &ezgatr::opt::equi_linear,
           py::arg("x"), py::arg("weight"),
           py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
@@ -69,19 +234,35 @@ PYBIND11_MODULE(_opt_ops, m) {
           py::arg("x"), py::arg("weight"),
           py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
           "Pin(3,0,1)-equivariant linear map, dense baseline.");
+    m.def("equi_linear_ver_0", &ezgatr::opt::equi_linear_v0,
+          py::arg("x"), py::arg("weight"),
+          py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
+          "Pin(3,0,1)-equivariant linear map version 0 alias.");
 
     m.def("equi_linear_v1", &ezgatr::opt::equi_linear_v1,
           py::arg("x"), py::arg("weight"),
           py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
           "Pin(3,0,1)-equivariant linear map, math-optimized kernel.");
+    m.def("equi_linear_ver_1", &ezgatr::opt::equi_linear_v1,
+          py::arg("x"), py::arg("weight"),
+          py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
+          "Pin(3,0,1)-equivariant linear map version 1 alias.");
 
     m.def("equi_linear_v2", &ezgatr::opt::equi_linear_v2,
           py::arg("x"), py::arg("weight"),
           py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
           "Pin(3,0,1)-equivariant linear map, scalar pre-SIMD kernel.");
+    m.def("equi_linear_ver_2", &ezgatr::opt::equi_linear_v2,
+          py::arg("x"), py::arg("weight"),
+          py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
+          "Pin(3,0,1)-equivariant linear map version 2 alias.");
 
     m.def("equi_linear_v3", &ezgatr::opt::equi_linear_v3,
           py::arg("x"), py::arg("weight"),
           py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
           "Pin(3,0,1)-equivariant linear map, SIMD placeholder.");
+    m.def("equi_linear_ver_3", &ezgatr::opt::equi_linear_v3,
+          py::arg("x"), py::arg("weight"),
+          py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
+          "Pin(3,0,1)-equivariant linear map version 3 alias.");
 }

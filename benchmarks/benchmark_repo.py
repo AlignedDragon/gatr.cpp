@@ -8,8 +8,7 @@ from pathlib import Path
 
 import torch
 
-from ezgatr.nets.mv_only_gatr import MVOnlyGATrConfig, MVOnlyGATrModel#, MVOnlyGATrModelASL_ver_0, MVOnlyGATrModelASL_ver_1, MVOnlyGATrModelASL_ver_2, MVOnlyGATrModelASL_ver_3
-
+from ezgatr.nets.mv_only_gatr import MVOnlyGATrConfig, MVOnlyGATrModel
 from ezgatr.nn.functional import (
     geometric_product as geometric_product_py,
     equi_join as equi_join_py,
@@ -19,12 +18,14 @@ from ezgatr.nn.functional import (
     equi_rms_norm as equi_rms_norm_py,
     scaler_gated_gelu as scaler_gated_gelu_py,
     equi_geometric_attention as equi_geometric_attention_py,
-    equi_geometric_attention_cpp as equi_geometric_attention_cpp,  # bleibt optional
+    equi_geometric_attention_cpp,
+    equi_geometric_attention_cpp_ver_0,
+    equi_geometric_attention_cpp_ver_1,
+    equi_geometric_attention_cpp_ver_2,
+    equi_geometric_attention_cpp_ver_3,
 )
 
-# C++ implementations
 from ezgatr.opt import (
-
     geometric_product_ver_0,
     equi_join_ver_0,
     outer_product_ver_0,
@@ -33,7 +34,6 @@ from ezgatr.opt import (
     equi_rms_norm_ver_0,
     scaler_gated_gelu_ver_0,
     equi_geometric_attention_ver_0,
-
     geometric_product_ver_1,
     equi_join_ver_1,
     outer_product_ver_1,
@@ -42,7 +42,6 @@ from ezgatr.opt import (
     equi_rms_norm_ver_1,
     scaler_gated_gelu_ver_1,
     equi_geometric_attention_ver_1,
-
     geometric_product_ver_2,
     equi_join_ver_2,
     outer_product_ver_2,
@@ -51,7 +50,6 @@ from ezgatr.opt import (
     equi_rms_norm_ver_2,
     scaler_gated_gelu_ver_2,
     equi_geometric_attention_ver_2,
-
     geometric_product_ver_3,
     equi_join_ver_3,
     outer_product_ver_3,
@@ -59,7 +57,7 @@ from ezgatr.opt import (
     equi_linear_ver_3,
     equi_rms_norm_ver_3,
     scaler_gated_gelu_ver_3,
-    equi_geometric_attention_ver_3,    
+    equi_geometric_attention_ver_3,
 )
 
 
@@ -109,75 +107,15 @@ def build_model(device: torch.device, preset: str) -> MVOnlyGATrModel:
     )
     return MVOnlyGATrModel(model_cfg).to(device).eval()
 
-def build_modelASL_ver_0(device: torch.device, preset: str) -> MVOnlyGATrModel:
-    cfg = PRESETS[preset]
-    model_cfg = MVOnlyGATrConfig(
-        num_layers=2,
-        size_context=cfg["tokens"],
-        size_channels_in=1,
-        size_channels_out=1,
-        size_channels_hidden=max(8, cfg["channels"]),
-        size_channels_intermediate=max(8, cfg["channels"]),
-        attn_num_heads=cfg["heads"],
-        attn_is_causal=False,
-    )
-    return MVOnlyGATrModelASL_ver_0(model_cfg).to(device).eval()
-
-def build_modelASL_ver_1(device: torch.device, preset: str) -> MVOnlyGATrModel:
-    cfg = PRESETS[preset]
-    model_cfg = MVOnlyGATrConfig(
-        num_layers=2,
-        size_context=cfg["tokens"],
-        size_channels_in=1,
-        size_channels_out=1,
-        size_channels_hidden=max(8, cfg["channels"]),
-        size_channels_intermediate=max(8, cfg["channels"]),
-        attn_num_heads=cfg["heads"],
-        attn_is_causal=False,
-    )
-    return MVOnlyGATrModelASL_ver_1(model_cfg).to(device).eval()
-
-def build_modelASL_ver_2(device: torch.device, preset: str) -> MVOnlyGATrModel:
-    cfg = PRESETS[preset]
-    model_cfg = MVOnlyGATrConfig(
-        num_layers=2,
-        size_context=cfg["tokens"],
-        size_channels_in=1,
-        size_channels_out=1,
-        size_channels_hidden=max(8, cfg["channels"]),
-        size_channels_intermediate=max(8, cfg["channels"]),
-        attn_num_heads=cfg["heads"],
-        attn_is_causal=False,
-    )
-    return MVOnlyGATrModelASL_ver_2(model_cfg).to(device).eval()
-
-def build_modelASL_ver_3(device: torch.device, preset: str) -> MVOnlyGATrModel:
-    cfg = PRESETS[preset]
-    model_cfg = MVOnlyGATrConfig(
-        num_layers=2,
-        size_context=cfg["tokens"],
-        size_channels_in=1,
-        size_channels_out=1,
-        size_channels_hidden=max(8, cfg["channels"]),
-        size_channels_intermediate=max(8, cfg["channels"]),
-        attn_num_heads=cfg["heads"],
-        attn_is_causal=False,
-    )
-    return MVOnlyGATrModelASL_ver_3(model_cfg).to(device).eval()
-
 
 def build_target(name: str, device: torch.device, preset: str):
     inputs = make_inputs(device, preset)
     model = None
-    #python implementation
+
     if name == "geometric_product":
         return lambda: geometric_product_py(inputs["mv"], inputs["mv2"])
     if name == "equi_join":
-        return lambda: equi_join_py(
-            inputs["mv"],
-            inputs["mv2"],
-            None,
-        )
+        return lambda: equi_join_py(inputs["mv"], inputs["mv2"], None)
     if name == "outer_product":
         return lambda: outer_product_py(inputs["mv"], inputs["mv2"])
     if name == "inner_product":
@@ -187,10 +125,7 @@ def build_target(name: str, device: torch.device, preset: str):
     if name == "equi_rms_norm":
         return lambda: equi_rms_norm_py(inputs["mv"], inputs["norm_w"])
     if name == "scaler_gated_gelu":
-        return lambda: scaler_gated_gelu_py(
-            inputs["mv"],
-            "tanh",
-        )
+        return lambda: scaler_gated_gelu_py(inputs["mv"], "tanh")
     if name == "equi_geometric_attention":
         return lambda: equi_geometric_attention_py(
             inputs["attn_q"],
@@ -199,49 +134,65 @@ def build_target(name: str, device: torch.device, preset: str):
             kinds={"ipa": None, "daa": None},
             is_causal=False,
         )
+    if name == "equi_geometric_attention_cpp":
+        return lambda: equi_geometric_attention_cpp(
+            inputs["attn_q"],
+            inputs["attn_k"],
+            inputs["attn_v"],
+            kinds={"ipa": None, "daa": None},
+            is_causal=False,
+        )
+    if name == "equi_geometric_attention_cpp_ver_0":
+        return lambda: equi_geometric_attention_cpp_ver_0(
+            inputs["attn_q"],
+            inputs["attn_k"],
+            inputs["attn_v"],
+            kinds={"ipa": None, "daa": None},
+            is_causal=False,
+        )
+    if name == "equi_geometric_attention_cpp_ver_1":
+        return lambda: equi_geometric_attention_cpp_ver_1(
+            inputs["attn_q"],
+            inputs["attn_k"],
+            inputs["attn_v"],
+            kinds={"ipa": None, "daa": None},
+            is_causal=False,
+        )
+    if name == "equi_geometric_attention_cpp_ver_2":
+        return lambda: equi_geometric_attention_cpp_ver_2(
+            inputs["attn_q"],
+            inputs["attn_k"],
+            inputs["attn_v"],
+            kinds={"ipa": None, "daa": None},
+            is_causal=False,
+        )
+    if name == "equi_geometric_attention_cpp_ver_3":
+        return lambda: equi_geometric_attention_cpp_ver_3(
+            inputs["attn_q"],
+            inputs["attn_k"],
+            inputs["attn_v"],
+            kinds={"ipa": None, "daa": None},
+            is_causal=False,
+        )
+
     if name == "mv_only_gatr_model":
         model = build_model(device, preset)
         return lambda: model(inputs["model_in"])
-    
 
-
-
-
-    #base c++ implementation
     if name == "geometric_product_ver_0":
         return lambda: geometric_product_ver_0(inputs["mv"], inputs["mv2"])
     if name == "equi_join_ver_0":
-        return lambda: equi_join_ver_0(
-            inputs["mv"],
-            inputs["mv2"],
-            None,
-        )
+        return lambda: equi_join_ver_0(inputs["mv"], inputs["mv2"], None)
     if name == "outer_product_ver_0":
-        return lambda: inner_product_ver_0(
-            inputs["mv"],
-            inputs["mv2"],
-        )
+        return lambda: outer_product_ver_0(inputs["mv"], inputs["mv2"])
     if name == "inner_product_ver_0":
-        return lambda: inner_product_ver_0(
-            inputs["mv"],
-            inputs["mv2"],
-        )
+        return lambda: inner_product_ver_0(inputs["mv"], inputs["mv2"])
     if name == "equi_linear_ver_0":
-        return lambda: equi_linear_ver_0(
-            inputs["mv"], 
-            inputs["lin_w"], 
-            inputs["lin_b"])
+        return lambda: equi_linear_ver_0(inputs["mv"], inputs["lin_w"], inputs["lin_b"])
     if name == "equi_rms_norm_ver_0":
-        return lambda: equi_rms_norm_ver_0(
-            inputs["mv"],
-            inputs["norm_w"],
-            1e-7,
-        )
+        return lambda: equi_rms_norm_ver_0(inputs["mv"], inputs["norm_w"], 1e-7)
     if name == "scaler_gated_gelu_ver_0":
-        return lambda: scaler_gated_gelu_ver_0(
-            inputs["mv"],
-            "tanh",
-        )
+        return lambda: scaler_gated_gelu_ver_0(inputs["mv"], "tanh")
     if name == "equi_geometric_attention_ver_0":
         return lambda: equi_geometric_attention_ver_0(
             inputs["attn_q"],
@@ -250,48 +201,21 @@ def build_target(name: str, device: torch.device, preset: str):
             kinds={"ipa": None, "daa": None},
             is_causal=False,
         )
-    if name == "mv_only_gatr_modelASL_ver_0":
-        model = build_modelASL_ver_0(device, preset)
-        return lambda: model(inputs["model_in"])
-    
 
-
-
-    #c++ implementation optimized version 1
     if name == "geometric_product_ver_1":
         return lambda: geometric_product_ver_1(inputs["mv"], inputs["mv2"])
     if name == "equi_join_ver_1":
-        return lambda: equi_join_ver_1(
-            inputs["mv"],
-            inputs["mv2"],
-            None,
-        )
+        return lambda: equi_join_ver_1(inputs["mv"], inputs["mv2"], None)
     if name == "outer_product_ver_1":
-        return lambda: inner_product_ver_1(
-            inputs["mv"],
-            inputs["mv2"],
-        )
+        return lambda: outer_product_ver_1(inputs["mv"], inputs["mv2"])
     if name == "inner_product_ver_1":
-        return lambda: inner_product_ver_1(
-            inputs["mv"],
-            inputs["mv2"],
-        )
+        return lambda: inner_product_ver_1(inputs["mv"], inputs["mv2"])
     if name == "equi_linear_ver_1":
-        return lambda: equi_linear_ver_1(
-            inputs["mv"], 
-            inputs["lin_w"], 
-            inputs["lin_b"])
+        return lambda: equi_linear_ver_1(inputs["mv"], inputs["lin_w"], inputs["lin_b"])
     if name == "equi_rms_norm_ver_1":
-        return lambda: equi_rms_norm_ver_1(
-            inputs["mv"],
-            inputs["norm_w"],
-            1e-7,
-        )
+        return lambda: equi_rms_norm_ver_1(inputs["mv"], inputs["norm_w"], 1e-7)
     if name == "scaler_gated_gelu_ver_1":
-        return lambda: scaler_gated_gelu_ver_1(
-            inputs["mv"],
-            "tanh",
-        )
+        return lambda: scaler_gated_gelu_ver_1(inputs["mv"], "tanh")
     if name == "equi_geometric_attention_ver_1":
         return lambda: equi_geometric_attention_ver_1(
             inputs["attn_q"],
@@ -300,49 +224,21 @@ def build_target(name: str, device: torch.device, preset: str):
             kinds={"ipa": None, "daa": None},
             is_causal=False,
         )
-    if name == "mv_only_gatr_modelASL_ver_1":
-        model = build_modelASL_ver_1(device, preset)
-        return lambda: model(inputs["model_in"])
-    
 
-
-
-
-    #c++ implementation optimized version 2
     if name == "geometric_product_ver_2":
         return lambda: geometric_product_ver_2(inputs["mv"], inputs["mv2"])
     if name == "equi_join_ver_2":
-        return lambda: equi_join_ver_2(
-            inputs["mv"],
-            inputs["mv2"],
-            None,
-        )
+        return lambda: equi_join_ver_2(inputs["mv"], inputs["mv2"], None)
     if name == "outer_product_ver_2":
-        return lambda: inner_product_ver_2(
-            inputs["mv"],
-            inputs["mv2"],
-        )
+        return lambda: outer_product_ver_2(inputs["mv"], inputs["mv2"])
     if name == "inner_product_ver_2":
-        return lambda: inner_product_ver_2(
-            inputs["mv"],
-            inputs["mv2"],
-        )
+        return lambda: inner_product_ver_2(inputs["mv"], inputs["mv2"])
     if name == "equi_linear_ver_2":
-        return lambda: equi_linear_ver_2(
-            inputs["mv"], 
-            inputs["lin_w"], 
-            inputs["lin_b"])
+        return lambda: equi_linear_ver_2(inputs["mv"], inputs["lin_w"], inputs["lin_b"])
     if name == "equi_rms_norm_ver_2":
-        return lambda: equi_rms_norm_ver_2(
-            inputs["mv"],
-            inputs["norm_w"],
-            1e-7,
-        )
+        return lambda: equi_rms_norm_ver_2(inputs["mv"], inputs["norm_w"], 1e-7)
     if name == "scaler_gated_gelu_ver_2":
-        return lambda: scaler_gated_gelu_ver_2(
-            inputs["mv"],
-            "tanh",
-        )
+        return lambda: scaler_gated_gelu_ver_2(inputs["mv"], "tanh")
     if name == "equi_geometric_attention_ver_2":
         return lambda: equi_geometric_attention_ver_2(
             inputs["attn_q"],
@@ -351,49 +247,21 @@ def build_target(name: str, device: torch.device, preset: str):
             kinds={"ipa": None, "daa": None},
             is_causal=False,
         )
-    if name == "mv_only_gatr_modelASL_ver_2":
-        model = build_modelASL_ver_2(device, preset)
-        return lambda: model(inputs["model_in"])
-    
 
-
-
-
-    #c++ implementation optimized version 3
     if name == "geometric_product_ver_3":
         return lambda: geometric_product_ver_3(inputs["mv"], inputs["mv2"])
     if name == "equi_join_ver_3":
-        return lambda: equi_join_ver_3(
-            inputs["mv"],
-            inputs["mv2"],
-            None,
-        )
+        return lambda: equi_join_ver_3(inputs["mv"], inputs["mv2"], None)
     if name == "outer_product_ver_3":
-        return lambda: inner_product_ver_3(
-            inputs["mv"],
-            inputs["mv2"],
-        )
+        return lambda: outer_product_ver_3(inputs["mv"], inputs["mv2"])
     if name == "inner_product_ver_3":
-        return lambda: inner_product_ver_3(
-            inputs["mv"],
-            inputs["mv2"],
-        )
+        return lambda: inner_product_ver_3(inputs["mv"], inputs["mv2"])
     if name == "equi_linear_ver_3":
-        return lambda: equi_linear_ver_3(
-            inputs["mv"], 
-            inputs["lin_w"], 
-            inputs["lin_b"])
+        return lambda: equi_linear_ver_3(inputs["mv"], inputs["lin_w"], inputs["lin_b"])
     if name == "equi_rms_norm_ver_3":
-        return lambda: equi_rms_norm_ver_3(
-            inputs["mv"],
-            inputs["norm_w"],
-            1e-7,
-        )
+        return lambda: equi_rms_norm_ver_3(inputs["mv"], inputs["norm_w"], 1e-7)
     if name == "scaler_gated_gelu_ver_3":
-        return lambda: scaler_gated_gelu_ver_3(
-            inputs["mv"],
-            "tanh",
-        )
+        return lambda: scaler_gated_gelu_ver_3(inputs["mv"], "tanh")
     if name == "equi_geometric_attention_ver_3":
         return lambda: equi_geometric_attention_ver_3(
             inputs["attn_q"],
@@ -402,14 +270,8 @@ def build_target(name: str, device: torch.device, preset: str):
             kinds={"ipa": None, "daa": None},
             is_causal=False,
         )
-    if name == "mv_only_gatr_modelASL_ver_3":
-        model = build_modelASL_ver_3(device, preset)
-        return lambda: model(inputs["model_in"])
-    
-    
+
     raise ValueError(f"Unknown target: {name}")
-
-
 
 
 def get_target_names() -> list[str]:
@@ -445,6 +307,11 @@ def get_target_names() -> list[str]:
         "equi_rms_norm_ver_2",
         "equi_rms_norm_ver_3",
         "equi_geometric_attention",
+        "equi_geometric_attention_cpp",
+        "equi_geometric_attention_cpp_ver_0",
+        "equi_geometric_attention_cpp_ver_1",
+        "equi_geometric_attention_cpp_ver_2",
+        "equi_geometric_attention_cpp_ver_3",
         "equi_geometric_attention_ver_0",
         "equi_geometric_attention_ver_1",
         "equi_geometric_attention_ver_2",
@@ -455,10 +322,6 @@ def get_target_names() -> list[str]:
         "scaler_gated_gelu_ver_2",
         "scaler_gated_gelu_ver_3",
         "mv_only_gatr_model",
-        "mv_only_gatr_modelASL_ver_0",
-        "mv_only_gatr_modelASL_ver_1",
-        "mv_only_gatr_modelASL_ver_2",
-        "mv_only_gatr_modelASL_ver_3",
     ]
 
 

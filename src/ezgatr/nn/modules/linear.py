@@ -112,3 +112,6 @@ class EquiLinearASL_ver_3(EquiLinear):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return equi_linear_ver_3(x, self.weight, self.bias, self.normalize_basis)
 
+
+# Backward-compatible alias used throughout the model code.
+ASLEquiLinear = EquiLinearASL_ver_0

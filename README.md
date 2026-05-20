@@ -42,6 +42,14 @@ Alternatively, one can directly install it from PyPI.
 $ pip install ezgatr
 ```
 
+### Building the C++ extension
+The optimized operators live in `ezgatr.opt._opt_ops` and need to be rebuilt
+after changing the sources under `src/ezgatr/_csrc/`.
+
+```bash
+$ python setup.py build_ext --inplace
+```
+
 ## Usage
 The quick start example shown below demonstrates how to use EzGATr to build a equivariant network with one input/output channel (e.g., a point cloud) and four hidden channels. The mock input data contains a batch of eight samples, each with 256 3D objects embedded as multi-vectors.
 
