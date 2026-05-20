@@ -7,9 +7,6 @@ authors = [
     {name = "M4D-SC1ENTIST", email = "xiatao.sun@yale.edu"}
 ]
 readme = "README.md"
-packages = [
-    { include = "ezgatr", from = "src" }
-]
 requires-python = ">=3.10"
 dependencies = [
     "torch (>=2.1.0,<2.4.1)",
