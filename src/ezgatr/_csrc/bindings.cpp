@@ -43,5 +43,28 @@ PYBIND11_MODULE(_opt_ops, m) {
     m.def("equi_linear", &ezgatr::opt::equi_linear,
           py::arg("x"), py::arg("weight"),
           py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
-          "Pin(3,0,1)-equivariant linear map. x: (..., C_in, 16), weight: (C_out, C_in, 9).");
+          py::arg("version") = 0,
+          "Pin(3,0,1)-equivariant linear map. x: (..., C_in, 16), "
+          "weight: (C_out, C_in, 9). version: 0=no-opt (default), "
+          "1=math, 2=pre-SIMD, 3=SIMD placeholder.");
+
+    m.def("equi_linear_v0", &ezgatr::opt::equi_linear_v0,
+          py::arg("x"), py::arg("weight"),
+          py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
+          "Pin(3,0,1)-equivariant linear map, dense baseline.");
+
+    m.def("equi_linear_v1", &ezgatr::opt::equi_linear_v1,
+          py::arg("x"), py::arg("weight"),
+          py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
+          "Pin(3,0,1)-equivariant linear map, math-optimized kernel.");
+
+    m.def("equi_linear_v2", &ezgatr::opt::equi_linear_v2,
+          py::arg("x"), py::arg("weight"),
+          py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
+          "Pin(3,0,1)-equivariant linear map, scalar pre-SIMD kernel.");
+
+    m.def("equi_linear_v3", &ezgatr::opt::equi_linear_v3,
+          py::arg("x"), py::arg("weight"),
+          py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
+          "Pin(3,0,1)-equivariant linear map, SIMD placeholder.");
 }

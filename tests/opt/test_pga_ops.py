@@ -1,4 +1,5 @@
 import hypothesis.strategies as st
+import pytest
 import torch
 from hypothesis import given, settings
 
@@ -8,6 +9,10 @@ from ezgatr.nn.functional import equi_linear as el_py
 from ezgatr.opt import equi_join as join_cpp
 from ezgatr.opt import geometric_product as gp_cpp
 from ezgatr.opt import equi_linear as el_cpp
+from ezgatr.opt import equi_linear_v0 as el_cpp_v0
+from ezgatr.opt import equi_linear_v1 as el_cpp_v1
+from ezgatr.opt import equi_linear_v2 as el_cpp_v2
+from ezgatr.opt import equi_linear_v3 as el_cpp_v3
 
 
 batch_shape = st.lists(st.integers(min_value=1, max_value=4), min_size=0, max_size=3)
@@ -87,6 +92,28 @@ def test_equi_linear_float32():
     w = torch.randn(out_ch, in_ch, 9)
     b = torch.randn(out_ch)
     torch.testing.assert_close(el_cpp(x, w, b), el_py(x, w, b), rtol=1e-5, atol=1e-6)
+
+
+def test_equi_linear_version_exports_and_dispatch_match_python():
+    torch.manual_seed(0)
+    in_ch, out_ch = 3, 5
+    x = torch.randn(2, in_ch, 16, dtype=torch.float64)
+    w = torch.randn(out_ch, in_ch, 9, dtype=torch.float64)
+    b = torch.randn(out_ch, dtype=torch.float64)
+
+    versioned = (el_cpp_v0, el_cpp_v1, el_cpp_v2, el_cpp_v3)
+    for version, fn in enumerate(versioned):
+        for normalize_basis in (False, True):
+            expected = el_py(x, w, b, normalize_basis=normalize_basis)
+            named = fn(x, w, b, normalize_basis=normalize_basis)
+            dispatched = el_cpp(x, w, b, normalize_basis=normalize_basis, version=version)
+
+            torch.testing.assert_close(named, expected, rtol=1e-10, atol=1e-12)
+            torch.testing.assert_close(dispatched, expected, rtol=1e-10, atol=1e-12)
+
+    torch.testing.assert_close(el_cpp(x, w, b), el_cpp_v0(x, w, b), rtol=1e-10, atol=1e-12)
+    with pytest.raises(RuntimeError, match="unknown version"):
+        el_cpp(x, w, b, version=4)
 
 
 def test_caches_warm_up_idempotently():
