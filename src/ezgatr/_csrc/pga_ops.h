@@ -18,6 +18,20 @@ torch::Tensor outer_product(const torch::Tensor& x, const torch::Tensor& y);
 torch::Tensor equi_linear(const torch::Tensor& x,
                            const torch::Tensor& weight,
                            const c10::optional<torch::Tensor>& bias,
-                           bool normalize_basis);
+                           bool normalize_basis,
+                           int64_t version);
+
+torch::Tensor equi_linear_v0(const torch::Tensor& x, const torch::Tensor& weight,
+                             const c10::optional<torch::Tensor>& bias,
+                             bool normalize_basis);
+torch::Tensor equi_linear_v1(const torch::Tensor& x, const torch::Tensor& weight,
+                             const c10::optional<torch::Tensor>& bias,
+                             bool normalize_basis);
+torch::Tensor equi_linear_v2(const torch::Tensor& x, const torch::Tensor& weight,
+                             const c10::optional<torch::Tensor>& bias,
+                             bool normalize_basis);
+torch::Tensor equi_linear_v3(const torch::Tensor& x, const torch::Tensor& weight,
+                             const c10::optional<torch::Tensor>& bias,
+                             bool normalize_basis);
 
 }}  // namespace ezgatr::opt
