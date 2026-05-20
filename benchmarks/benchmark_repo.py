@@ -11,12 +11,14 @@ import torch
 from ezgatr.nets.mv_only_gatr import MVOnlyGATrConfig, MVOnlyGATrModel
 from ezgatr.nn.functional import (
     equi_geometric_attention,
+    equi_join,
     equi_linear,
     equi_rms_norm,
     geometric_product,
     inner_product,
     outer_product,
 )
+from ezgatr import opt as _opt
 
 
 PRESETS = {
@@ -72,6 +74,20 @@ def build_target(name: str, device: torch.device, preset: str):
 
     if name == "geometric_product":
         return lambda: geometric_product(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_dense":
+        return lambda: _opt.geometric_product_dense(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_sparse_rt":
+        return lambda: _opt.geometric_product_sparse_rt(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_unrolled":
+        return lambda: _opt.geometric_product(inputs["mv"], inputs["mv2"])
+    if name == "equi_join":
+        return lambda: equi_join(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_dense":
+        return lambda: _opt.equi_join_dense(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_sparse_rt":
+        return lambda: _opt.equi_join_sparse_rt(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_unrolled":
+        return lambda: _opt.equi_join(inputs["mv"], inputs["mv2"], inputs["mv"])
     if name == "outer_product":
         return lambda: outer_product(inputs["mv"], inputs["mv2"])
     if name == "inner_product":
@@ -98,6 +114,13 @@ def build_target(name: str, device: torch.device, preset: str):
 def get_target_names() -> list[str]:
     return [
         "geometric_product",
+        "geometric_product_dense",
+        "geometric_product_sparse_rt",
+        "geometric_product_unrolled",
+        "equi_join",
+        "equi_join_dense",
+        "equi_join_sparse_rt",
+        "equi_join_unrolled",
         "outer_product",
         "inner_product",
         "equi_linear",
@@ -149,7 +172,9 @@ def measure_target(
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", choices=["all", *get_target_names()], default="all")
+    parser.add_argument("--target", choices=["all", *get_target_names()],
+                        action="append", default=None,
+                        help="Repeat for multiple targets, or 'all' for everything.")
     parser.add_argument("--preset", choices=sorted(PRESETS), default="small")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--warmup", type=int, default=5)
@@ -185,7 +210,11 @@ def main() -> None:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available.")
 
-    target_names = get_target_names() if args.target == "all" else [args.target]
+    targets = args.target or ["all"]
+    if "all" in targets:
+        target_names = get_target_names()
+    else:
+        target_names = targets
     results = [
         measure_target(
             target_name=name,
