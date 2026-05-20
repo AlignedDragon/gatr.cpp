@@ -310,3 +310,5 @@ def dense_linear(
         Output with shape (..., out_channels).
     """
     return F.linear(torch.flatten(x[..., :2], -2), weight, bias)
+
+

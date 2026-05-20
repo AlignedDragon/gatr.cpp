@@ -5,9 +5,10 @@ from hypothesis import given, settings
 from ezgatr.nn.functional import inner_product as inner_py
 from ezgatr.nn.functional import equi_rms_norm as rms_py
 from ezgatr.nn.functional import scaler_gated_gelu as gelu_py
-from ezgatr.opt import inner_product as inner_cpp
-from ezgatr.opt import equi_rms_norm as rms_cpp
-from ezgatr.opt import scaler_gated_gelu as gelu_cpp
+from ezgatr.opt import inner_product_ver_1 as inner_cpp
+#from ezgatr.opt import equi_rms_norm as rms_cpp
+from ezgatr.opt import equi_rms_norm_ver_2 as rms_cpp
+from ezgatr.opt import scaler_gated_gelu_ver_1 as gelu_cpp
 
 
 batch_shape = st.lists(st.integers(min_value=1, max_value=4), min_size=0, max_size=3)
