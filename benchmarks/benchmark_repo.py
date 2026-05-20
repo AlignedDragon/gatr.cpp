@@ -22,7 +22,6 @@ from ezgatr.nn.functional import (
     equi_geometric_attention_cpp_ver_0,
     equi_geometric_attention_cpp_ver_1,
     equi_geometric_attention_cpp_ver_2,
-    equi_geometric_attention_cpp_ver_3,
 )
 
 from ezgatr.opt import (
@@ -57,7 +56,6 @@ from ezgatr.opt import (
     equi_linear_ver_3,
     equi_rms_norm_ver_3,
     scaler_gated_gelu_ver_3,
-    equi_geometric_attention_ver_3,
 )
 
 
@@ -166,15 +164,6 @@ def build_target(name: str, device: torch.device, preset: str):
             kinds={"ipa": None, "daa": None},
             is_causal=False,
         )
-    if name == "equi_geometric_attention_cpp_ver_3":
-        return lambda: equi_geometric_attention_cpp_ver_3(
-            inputs["attn_q"],
-            inputs["attn_k"],
-            inputs["attn_v"],
-            kinds={"ipa": None, "daa": None},
-            is_causal=False,
-        )
-
     if name == "mv_only_gatr_model":
         model = build_model(device, preset)
         return lambda: model(inputs["model_in"])
@@ -262,15 +251,6 @@ def build_target(name: str, device: torch.device, preset: str):
         return lambda: equi_rms_norm_ver_3(inputs["mv"], inputs["norm_w"], 1e-7)
     if name == "scaler_gated_gelu_ver_3":
         return lambda: scaler_gated_gelu_ver_3(inputs["mv"], "tanh")
-    if name == "equi_geometric_attention_ver_3":
-        return lambda: equi_geometric_attention_ver_3(
-            inputs["attn_q"],
-            inputs["attn_k"],
-            inputs["attn_v"],
-            kinds={"ipa": None, "daa": None},
-            is_causal=False,
-        )
-
     raise ValueError(f"Unknown target: {name}")
 
 
@@ -311,11 +291,9 @@ def get_target_names() -> list[str]:
         "equi_geometric_attention_cpp_ver_0",
         "equi_geometric_attention_cpp_ver_1",
         "equi_geometric_attention_cpp_ver_2",
-        "equi_geometric_attention_cpp_ver_3",
         "equi_geometric_attention_ver_0",
         "equi_geometric_attention_ver_1",
         "equi_geometric_attention_ver_2",
-        "equi_geometric_attention_ver_3",
         "scaler_gated_gelu",
         "scaler_gated_gelu_ver_0",
         "scaler_gated_gelu_ver_1",
