@@ -14,8 +14,8 @@ PYBIND11_MODULE(_opt_ops, m) {
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Equivariant join of two multi-vectors of shape (..., 16).");
 
-    m.def("equi_geometric_attention_mv_only_base",
-          &ezgatr::opt::equi_geometric_attention_mv_only_base,
+    m.def("equi_geometric_attention_mv_only_ver_0",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_0,
           py::arg("query"),
           py::arg("key"),
           py::arg("value"),
@@ -27,8 +27,8 @@ PYBIND11_MODULE(_opt_ops, m) {
           py::arg("scale") = py::none(),
           "Equivariant geometric attention forward pass for mv-only inputs, baseline version.");
 
-    m.def("equi_geometric_attention_mv_only_opt1",
-          &ezgatr::opt::equi_geometric_attention_mv_only_opt1,
+    m.def("equi_geometric_attention_mv_only_ver_1",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_1,
           py::arg("query"),
           py::arg("key"),
           py::arg("value"),
@@ -40,8 +40,8 @@ PYBIND11_MODULE(_opt_ops, m) {
           py::arg("scale") = py::none(),
           "Equivariant geometric attention forward pass for mv-only inputs, cache-optimized version.");
 
-    m.def("equi_geometric_attention_mv_only_opt2",
-          &ezgatr::opt::equi_geometric_attention_mv_only_opt2,
+    m.def("equi_geometric_attention_mv_only_ver_2",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_2,
           py::arg("query"),
           py::arg("key"),
           py::arg("value"),
@@ -53,8 +53,8 @@ PYBIND11_MODULE(_opt_ops, m) {
           py::arg("scale") = py::none(),
           "Equivariant geometric attention forward pass for mv-only inputs, explicit-DAA version.");
 
-    m.def("equi_geometric_attention_mv_only_opt3",
-          &ezgatr::opt::equi_geometric_attention_mv_only_opt3,
+    m.def("equi_geometric_attention_mv_only_ver_3",
+          &ezgatr::opt::equi_geometric_attention_mv_only_ver_3,
           py::arg("query"),
           py::arg("key"),
           py::arg("value"),

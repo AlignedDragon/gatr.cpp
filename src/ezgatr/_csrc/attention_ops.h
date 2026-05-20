@@ -6,7 +6,7 @@ namespace py = pybind11;
 
 namespace ezgatr { namespace opt {
 
-torch::Tensor equi_geometric_attention_mv_only_base(
+torch::Tensor equi_geometric_attention_mv_only_ver_0(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,
@@ -17,7 +17,7 @@ torch::Tensor equi_geometric_attention_mv_only_base(
     bool is_causal = false,
     const py::object& scale = py::none());
 
-torch::Tensor equi_geometric_attention_mv_only_opt1(
+torch::Tensor equi_geometric_attention_mv_only_ver_1(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,
@@ -28,7 +28,7 @@ torch::Tensor equi_geometric_attention_mv_only_opt1(
     bool is_causal = false,
     const py::object& scale = py::none());
 
-torch::Tensor equi_geometric_attention_mv_only_opt2(
+torch::Tensor equi_geometric_attention_mv_only_ver_2(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,
@@ -39,7 +39,7 @@ torch::Tensor equi_geometric_attention_mv_only_opt2(
     bool is_causal = false,
     const py::object& scale = py::none());
 
-torch::Tensor equi_geometric_attention_mv_only_opt3(
+torch::Tensor equi_geometric_attention_mv_only_ver_3(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,

@@ -24,7 +24,7 @@ def equi_geometric_attention_cpp(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    return equi_geometric_attention_cpp_opt3(
+    return equi_geometric_attention_cpp_ver_3(
         query,
         key,
         value,
@@ -37,7 +37,7 @@ def equi_geometric_attention_cpp(
     )
 
 
-def equi_geometric_attention_cpp_base(
+def equi_geometric_attention_cpp_ver_0(
     query: GeometricQKVType,
     key: GeometricQKVType,
     value: GeometricQKVType,
@@ -60,7 +60,7 @@ def equi_geometric_attention_cpp_base(
         )
 
     ext = _load_attention_cpp_extension()
-    ret = ext.equi_geometric_attention_mv_only_base(
+    ret = ext.equi_geometric_attention_mv_only_ver_0(
         query,
         key,
         value,
@@ -74,7 +74,7 @@ def equi_geometric_attention_cpp_base(
     return ret, None
 
 
-def equi_geometric_attention_cpp_opt1(
+def equi_geometric_attention_cpp_ver_1(
     query: GeometricQKVType,
     key: GeometricQKVType,
     value: GeometricQKVType,
@@ -93,7 +93,7 @@ def equi_geometric_attention_cpp_opt1(
         )
 
     ext = _load_attention_cpp_extension()
-    ret = ext.equi_geometric_attention_mv_only_opt1(
+    ret = ext.equi_geometric_attention_mv_only_ver_1(
         query,
         key,
         value,
@@ -107,7 +107,7 @@ def equi_geometric_attention_cpp_opt1(
     return ret, None
 
 
-def equi_geometric_attention_cpp_opt2(
+def equi_geometric_attention_cpp_ver_2(
     query: GeometricQKVType,
     key: GeometricQKVType,
     value: GeometricQKVType,
@@ -126,7 +126,7 @@ def equi_geometric_attention_cpp_opt2(
         )
 
     ext = _load_attention_cpp_extension()
-    ret = ext.equi_geometric_attention_mv_only_opt2(
+    ret = ext.equi_geometric_attention_mv_only_ver_2(
         query,
         key,
         value,
@@ -140,7 +140,7 @@ def equi_geometric_attention_cpp_opt2(
     return ret, None
 
 
-def equi_geometric_attention_cpp_opt3(
+def equi_geometric_attention_cpp_ver_3(
     query: GeometricQKVType,
     key: GeometricQKVType,
     value: GeometricQKVType,
@@ -159,7 +159,7 @@ def equi_geometric_attention_cpp_opt3(
         )
 
     ext = _load_attention_cpp_extension()
-    ret = ext.equi_geometric_attention_mv_only_opt3(
+    ret = ext.equi_geometric_attention_mv_only_ver_3(
         query,
         key,
         value,

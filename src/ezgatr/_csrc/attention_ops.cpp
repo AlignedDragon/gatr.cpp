@@ -201,7 +201,7 @@ Tensor build_ipa_qk_sliced(const Tensor& q_or_k) {
         -1);
 }
 
-std::pair<Tensor, Tensor> compute_qk_for_ipa_opt3(
+std::pair<Tensor, Tensor> compute_qk_for_ipa_ver_3(
     const Tensor& query,
     const Tensor& key) {
     return {
@@ -210,7 +210,7 @@ std::pair<Tensor, Tensor> compute_qk_for_ipa_opt3(
     };
 }
 
-std::pair<Tensor, Tensor> compute_qk_for_daa_opt2(
+std::pair<Tensor, Tensor> compute_qk_for_daa_ver_2(
     const Tensor& query,
     const Tensor& key,
     double eps,
@@ -302,7 +302,7 @@ std::optional<std::pair<Tensor, Tensor>> try_build_fast_path_qk(
         if (kind_names[0] == "ipa") {
             Tensor q_part;
             Tensor k_part;
-            std::tie(q_part, k_part) = compute_qk_for_ipa_opt3(query, key);
+            std::tie(q_part, k_part) = compute_qk_for_ipa_ver_3(query, key);
             return std::make_pair(
                 flatten_ck(apply_query_weight(q_part, weights[0])),
                 flatten_ck(k_part));
@@ -320,7 +320,7 @@ std::optional<std::pair<Tensor, Tensor>> try_build_fast_path_qk(
             Tensor q_part;
             Tensor k_part;
             if (use_direct_daa) {
-                std::tie(q_part, k_part) = compute_qk_for_daa_opt2(query, key, eps, use_cache);
+                std::tie(q_part, k_part) = compute_qk_for_daa_ver_2(query, key, eps, use_cache);
             } else {
                 std::tie(q_part, k_part) = compute_qk_for_daa(query, key, eps, use_cache);
             }
@@ -355,7 +355,7 @@ std::optional<std::pair<Tensor, Tensor>> try_build_fast_path_qk(
         Tensor q_part;
         Tensor k_part;
         if (kind_names[i] == "ipa") {
-            std::tie(q_part, k_part) = compute_qk_for_ipa_opt3(query, key);
+            std::tie(q_part, k_part) = compute_qk_for_ipa_ver_3(query, key);
         } else if (kind_names[i] == "daa") {
             double eps = 1e-3;
             if (!kind_kwargs[i].is_none()) {
@@ -366,7 +366,7 @@ std::optional<std::pair<Tensor, Tensor>> try_build_fast_path_qk(
             }
 
             if (use_direct_daa) {
-                std::tie(q_part, k_part) = compute_qk_for_daa_opt2(query, key, eps, use_cache);
+                std::tie(q_part, k_part) = compute_qk_for_daa_ver_2(query, key, eps, use_cache);
             } else {
                 std::tie(q_part, k_part) = compute_qk_for_daa(query, key, eps, use_cache);
             }
@@ -464,7 +464,7 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
                 }
             }
             if (use_direct_daa) {
-                std::tie(q_part, k_part) = compute_qk_for_daa_opt2(query, key, eps, use_cache);
+                std::tie(q_part, k_part) = compute_qk_for_daa_ver_2(query, key, eps, use_cache);
             } else {
                 std::tie(q_part, k_part) = compute_qk_for_daa(query, key, eps, use_cache);
             }
@@ -490,7 +490,7 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
                 Tensor q_part;
                 Tensor k_part;
                 if (kind_names[i] == "ipa") {
-                    std::tie(q_part, k_part) = compute_qk_for_ipa_opt3(query, key);
+                    std::tie(q_part, k_part) = compute_qk_for_ipa_ver_3(query, key);
                 } else if (kind_names[i] == "daa") {
                     double eps = 1e-3;
                     if (!kind_kwargs[i].is_none()) {
@@ -500,7 +500,7 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
                         }
                     }
                     if (use_direct_daa) {
-                        std::tie(q_part, k_part) = compute_qk_for_daa_opt2(query, key, eps, use_cache);
+                        std::tie(q_part, k_part) = compute_qk_for_daa_ver_2(query, key, eps, use_cache);
                     } else {
                         std::tie(q_part, k_part) = compute_qk_for_daa(query, key, eps, use_cache);
                     }
@@ -531,7 +531,7 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
     return inflate_ck(ret);
 }
 
-torch::Tensor equi_geometric_attention_mv_only_base(
+torch::Tensor equi_geometric_attention_mv_only_ver_0(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,
@@ -545,7 +545,7 @@ torch::Tensor equi_geometric_attention_mv_only_base(
         query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, false, false, false);
 }
 
-torch::Tensor equi_geometric_attention_mv_only_opt1(
+torch::Tensor equi_geometric_attention_mv_only_ver_1(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,
@@ -559,7 +559,7 @@ torch::Tensor equi_geometric_attention_mv_only_opt1(
         query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, false, false);
 }
 
-torch::Tensor equi_geometric_attention_mv_only_opt2(
+torch::Tensor equi_geometric_attention_mv_only_ver_2(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,
@@ -573,7 +573,7 @@ torch::Tensor equi_geometric_attention_mv_only_opt2(
         query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true, false);
 }
 
-torch::Tensor equi_geometric_attention_mv_only_opt3(
+torch::Tensor equi_geometric_attention_mv_only_ver_3(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,
@@ -597,7 +597,7 @@ torch::Tensor equi_geometric_attention_mv_only(
     double dropout_p,
     bool is_causal,
     const py::object& scale) {
-    return equi_geometric_attention_mv_only_opt3(
+    return equi_geometric_attention_mv_only_ver_3(
         query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale);
 }
 

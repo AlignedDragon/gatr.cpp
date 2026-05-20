@@ -6,10 +6,10 @@ import torch
 from ezgatr.nn.functional.attention import equi_geometric_attention
 from ezgatr.nn.functional.attention_cpp import (
     equi_geometric_attention_cpp,
-    equi_geometric_attention_cpp_base,
-    equi_geometric_attention_cpp_opt1,
-    equi_geometric_attention_cpp_opt2,
-    equi_geometric_attention_cpp_opt3,
+    equi_geometric_attention_cpp_ver_0,
+    equi_geometric_attention_cpp_ver_1,
+    equi_geometric_attention_cpp_ver_2,
+    equi_geometric_attention_cpp_ver_3,
 )
 
 
@@ -24,10 +24,10 @@ def _make_inputs():
 @pytest.mark.parametrize(
     "impl",
     [
-        equi_geometric_attention_cpp_base,
-        equi_geometric_attention_cpp_opt1,
-        equi_geometric_attention_cpp_opt2,
-        equi_geometric_attention_cpp_opt3,
+        equi_geometric_attention_cpp_ver_0,
+        equi_geometric_attention_cpp_ver_1,
+        equi_geometric_attention_cpp_ver_2,
+        equi_geometric_attention_cpp_ver_3,
         equi_geometric_attention_cpp,
     ],
 )
@@ -68,10 +68,10 @@ def test_equi_geometric_attention_cpp_matches_python(impl, kinds, weight):
 @pytest.mark.parametrize(
     "impl",
     [
-        equi_geometric_attention_cpp_base,
-        equi_geometric_attention_cpp_opt1,
-        equi_geometric_attention_cpp_opt2,
-        equi_geometric_attention_cpp_opt3,
+        equi_geometric_attention_cpp_ver_0,
+        equi_geometric_attention_cpp_ver_1,
+        equi_geometric_attention_cpp_ver_2,
+        equi_geometric_attention_cpp_ver_3,
         equi_geometric_attention_cpp,
     ],
 )
