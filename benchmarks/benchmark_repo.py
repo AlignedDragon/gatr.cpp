@@ -216,21 +216,21 @@ def build_target(name: str, device: torch.device, preset: str):
             inputs["mv2"],
             None,
         )
-    # if name == "outer_product_ver_0":
-    #     return lambda: inner_product_ver_0(
-    #         inputs["mv"],
-    #         inputs["mv2"],
-    #     )
+    if name == "outer_product_ver_0":
+        return lambda: inner_product_ver_0(
+            inputs["mv"],
+            inputs["mv2"],
+        )
     if name == "inner_product_ver_0":
         return lambda: inner_product_ver_0(
             inputs["mv"],
             inputs["mv2"],
         )
-    # if name == "equi_linear_ver_0":
-    #     return lambda: equi_linear_ver_0(
-    #         inputs["mv"], 
-    #         inputs["lin_w"], 
-    #         inputs["lin_b"])
+    if name == "equi_linear_ver_0":
+        return lambda: equi_linear_ver_0(
+            inputs["mv"], 
+            inputs["lin_w"], 
+            inputs["lin_b"])
     if name == "equi_rms_norm_ver_0":
         return lambda: equi_rms_norm_ver_0(
             inputs["mv"],
@@ -266,21 +266,21 @@ def build_target(name: str, device: torch.device, preset: str):
             inputs["mv2"],
             None,
         )
-    # if name == "outer_product_ver_1":
-    #     return lambda: inner_product_ver_1(
-    #         inputs["mv"],
-    #         inputs["mv2"],
-    #     )
+    if name == "outer_product_ver_1":
+        return lambda: inner_product_ver_1(
+            inputs["mv"],
+            inputs["mv2"],
+        )
     if name == "inner_product_ver_1":
         return lambda: inner_product_ver_1(
             inputs["mv"],
             inputs["mv2"],
         )
-    # if name == "equi_linear_ver_1":
-    #     return lambda: equi_linear_ver_1(
-    #         inputs["mv"], 
-    #         inputs["lin_w"], 
-    #         inputs["lin_b"])
+    if name == "equi_linear_ver_1":
+        return lambda: equi_linear_ver_1(
+            inputs["mv"], 
+            inputs["lin_w"], 
+            inputs["lin_b"])
     if name == "equi_rms_norm_ver_1":
         return lambda: equi_rms_norm_ver_1(
             inputs["mv"],
@@ -317,21 +317,21 @@ def build_target(name: str, device: torch.device, preset: str):
             inputs["mv2"],
             None,
         )
-    # if name == "outer_product_ver_2":
-    #     return lambda: inner_product_ver_2(
-    #         inputs["mv"],
-    #         inputs["mv2"],
-    #     )
+    if name == "outer_product_ver_2":
+        return lambda: inner_product_ver_2(
+            inputs["mv"],
+            inputs["mv2"],
+        )
     if name == "inner_product_ver_2":
         return lambda: inner_product_ver_2(
             inputs["mv"],
             inputs["mv2"],
         )
-    # if name == "equi_linear_ver_2":
-    #     return lambda: equi_linear_ver_2(
-    #         inputs["mv"], 
-    #         inputs["lin_w"], 
-    #         inputs["lin_b"])
+    if name == "equi_linear_ver_2":
+        return lambda: equi_linear_ver_2(
+            inputs["mv"], 
+            inputs["lin_w"], 
+            inputs["lin_b"])
     if name == "equi_rms_norm_ver_2":
         return lambda: equi_rms_norm_ver_2(
             inputs["mv"],
@@ -368,21 +368,21 @@ def build_target(name: str, device: torch.device, preset: str):
             inputs["mv2"],
             None,
         )
-    # if name == "outer_product_ver_3":
-    #     return lambda: inner_product_ver_3(
-    #         inputs["mv"],
-    #         inputs["mv2"],
-    #     )
+    if name == "outer_product_ver_3":
+        return lambda: inner_product_ver_3(
+            inputs["mv"],
+            inputs["mv2"],
+        )
     if name == "inner_product_ver_3":
         return lambda: inner_product_ver_3(
             inputs["mv"],
             inputs["mv2"],
         )
-    # if name == "equi_linear_ver_3":
-    #     return lambda: equi_linear_ver_3(
-    #         inputs["mv"], 
-    #         inputs["lin_w"], 
-    #         inputs["lin_b"])
+    if name == "equi_linear_ver_3":
+        return lambda: equi_linear_ver_3(
+            inputs["mv"], 
+            inputs["lin_w"], 
+            inputs["lin_b"])
     if name == "equi_rms_norm_ver_3":
         return lambda: equi_rms_norm_ver_3(
             inputs["mv"],
