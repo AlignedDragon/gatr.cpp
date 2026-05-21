@@ -8,12 +8,16 @@ torch::Tensor geometric_product_dense(const torch::Tensor& x, const torch::Tenso
 torch::Tensor geometric_product_sparse_rt(const torch::Tensor& x, const torch::Tensor& y);
 torch::Tensor geometric_product_ilp2(const torch::Tensor& x, const torch::Tensor& y);
 torch::Tensor geometric_product_ilp4(const torch::Tensor& x, const torch::Tensor& y);
+torch::Tensor geometric_product_acc2(const torch::Tensor& x, const torch::Tensor& y);
+torch::Tensor geometric_product_acc4(const torch::Tensor& x, const torch::Tensor& y);
 
 torch::Tensor equi_join(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 torch::Tensor equi_join_dense(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 torch::Tensor equi_join_sparse_rt(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 torch::Tensor equi_join_ilp2(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 torch::Tensor equi_join_ilp4(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
+torch::Tensor equi_join_acc2(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
+torch::Tensor equi_join_acc4(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 
 torch::Tensor load_gp_basis(c10::Device device, c10::ScalarType dtype);
 torch::Tensor load_op_basis(c10::Device device, c10::ScalarType dtype);

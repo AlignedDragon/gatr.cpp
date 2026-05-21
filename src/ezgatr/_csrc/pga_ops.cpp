@@ -20,6 +20,10 @@ namespace {
 #include "gp_block_ilp4.inc"
 #include "join_block_ilp2.inc"
 #include "join_block_ilp4.inc"
+#include "gp_unrolled_acc2.inc"
+#include "gp_unrolled_acc4.inc"
+#include "join_unrolled_acc2.inc"
+#include "join_unrolled_acc4.inc"
 
 using BasisTable = int8_t[16][16][16];
 
@@ -233,6 +237,162 @@ static void join_kernel_impl(const T* __restrict__ X,
             o[13] = join_blade_13<T>(x, y);
             o[14] = join_blade_14<T>(x, y);
             o[15] = join_blade_15<T>(x, y);
+        }
+    }
+}
+
+template <typename T>
+static void gp_kernel_acc2_impl(const T* __restrict__ X,
+                                const T* __restrict__ Y,
+                                T* __restrict__ O,
+                                int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        o[0]  = gp_blade_00_acc2<T>(x, y);
+        o[1]  = gp_blade_01_acc2<T>(x, y);
+        o[2]  = gp_blade_02_acc2<T>(x, y);
+        o[3]  = gp_blade_03_acc2<T>(x, y);
+        o[4]  = gp_blade_04_acc2<T>(x, y);
+        o[5]  = gp_blade_05_acc2<T>(x, y);
+        o[6]  = gp_blade_06_acc2<T>(x, y);
+        o[7]  = gp_blade_07_acc2<T>(x, y);
+        o[8]  = gp_blade_08_acc2<T>(x, y);
+        o[9]  = gp_blade_09_acc2<T>(x, y);
+        o[10] = gp_blade_10_acc2<T>(x, y);
+        o[11] = gp_blade_11_acc2<T>(x, y);
+        o[12] = gp_blade_12_acc2<T>(x, y);
+        o[13] = gp_blade_13_acc2<T>(x, y);
+        o[14] = gp_blade_14_acc2<T>(x, y);
+        o[15] = gp_blade_15_acc2<T>(x, y);
+    }
+}
+
+template <typename T>
+static void gp_kernel_acc4_impl(const T* __restrict__ X,
+                                const T* __restrict__ Y,
+                                T* __restrict__ O,
+                                int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        o[0]  = gp_blade_00_acc4<T>(x, y);
+        o[1]  = gp_blade_01_acc4<T>(x, y);
+        o[2]  = gp_blade_02_acc4<T>(x, y);
+        o[3]  = gp_blade_03_acc4<T>(x, y);
+        o[4]  = gp_blade_04_acc4<T>(x, y);
+        o[5]  = gp_blade_05_acc4<T>(x, y);
+        o[6]  = gp_blade_06_acc4<T>(x, y);
+        o[7]  = gp_blade_07_acc4<T>(x, y);
+        o[8]  = gp_blade_08_acc4<T>(x, y);
+        o[9]  = gp_blade_09_acc4<T>(x, y);
+        o[10] = gp_blade_10_acc4<T>(x, y);
+        o[11] = gp_blade_11_acc4<T>(x, y);
+        o[12] = gp_blade_12_acc4<T>(x, y);
+        o[13] = gp_blade_13_acc4<T>(x, y);
+        o[14] = gp_blade_14_acc4<T>(x, y);
+        o[15] = gp_blade_15_acc4<T>(x, y);
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_acc2_impl(const T* __restrict__ X,
+                                  const T* __restrict__ Y,
+                                  const T* __restrict__ R,
+                                  T* __restrict__ O,
+                                  int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            o[0]  = s * join_blade_00_acc2<T>(x, y);
+            o[1]  = s * join_blade_01_acc2<T>(x, y);
+            o[2]  = s * join_blade_02_acc2<T>(x, y);
+            o[3]  = s * join_blade_03_acc2<T>(x, y);
+            o[4]  = s * join_blade_04_acc2<T>(x, y);
+            o[5]  = s * join_blade_05_acc2<T>(x, y);
+            o[6]  = s * join_blade_06_acc2<T>(x, y);
+            o[7]  = s * join_blade_07_acc2<T>(x, y);
+            o[8]  = s * join_blade_08_acc2<T>(x, y);
+            o[9]  = s * join_blade_09_acc2<T>(x, y);
+            o[10] = s * join_blade_10_acc2<T>(x, y);
+            o[11] = s * join_blade_11_acc2<T>(x, y);
+            o[12] = s * join_blade_12_acc2<T>(x, y);
+            o[13] = s * join_blade_13_acc2<T>(x, y);
+            o[14] = s * join_blade_14_acc2<T>(x, y);
+            o[15] = s * join_blade_15_acc2<T>(x, y);
+        } else {
+            (void)R;
+            o[0]  = join_blade_00_acc2<T>(x, y);
+            o[1]  = join_blade_01_acc2<T>(x, y);
+            o[2]  = join_blade_02_acc2<T>(x, y);
+            o[3]  = join_blade_03_acc2<T>(x, y);
+            o[4]  = join_blade_04_acc2<T>(x, y);
+            o[5]  = join_blade_05_acc2<T>(x, y);
+            o[6]  = join_blade_06_acc2<T>(x, y);
+            o[7]  = join_blade_07_acc2<T>(x, y);
+            o[8]  = join_blade_08_acc2<T>(x, y);
+            o[9]  = join_blade_09_acc2<T>(x, y);
+            o[10] = join_blade_10_acc2<T>(x, y);
+            o[11] = join_blade_11_acc2<T>(x, y);
+            o[12] = join_blade_12_acc2<T>(x, y);
+            o[13] = join_blade_13_acc2<T>(x, y);
+            o[14] = join_blade_14_acc2<T>(x, y);
+            o[15] = join_blade_15_acc2<T>(x, y);
+        }
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_acc4_impl(const T* __restrict__ X,
+                                  const T* __restrict__ Y,
+                                  const T* __restrict__ R,
+                                  T* __restrict__ O,
+                                  int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            o[0]  = s * join_blade_00_acc4<T>(x, y);
+            o[1]  = s * join_blade_01_acc4<T>(x, y);
+            o[2]  = s * join_blade_02_acc4<T>(x, y);
+            o[3]  = s * join_blade_03_acc4<T>(x, y);
+            o[4]  = s * join_blade_04_acc4<T>(x, y);
+            o[5]  = s * join_blade_05_acc4<T>(x, y);
+            o[6]  = s * join_blade_06_acc4<T>(x, y);
+            o[7]  = s * join_blade_07_acc4<T>(x, y);
+            o[8]  = s * join_blade_08_acc4<T>(x, y);
+            o[9]  = s * join_blade_09_acc4<T>(x, y);
+            o[10] = s * join_blade_10_acc4<T>(x, y);
+            o[11] = s * join_blade_11_acc4<T>(x, y);
+            o[12] = s * join_blade_12_acc4<T>(x, y);
+            o[13] = s * join_blade_13_acc4<T>(x, y);
+            o[14] = s * join_blade_14_acc4<T>(x, y);
+            o[15] = s * join_blade_15_acc4<T>(x, y);
+        } else {
+            (void)R;
+            o[0]  = join_blade_00_acc4<T>(x, y);
+            o[1]  = join_blade_01_acc4<T>(x, y);
+            o[2]  = join_blade_02_acc4<T>(x, y);
+            o[3]  = join_blade_03_acc4<T>(x, y);
+            o[4]  = join_blade_04_acc4<T>(x, y);
+            o[5]  = join_blade_05_acc4<T>(x, y);
+            o[6]  = join_blade_06_acc4<T>(x, y);
+            o[7]  = join_blade_07_acc4<T>(x, y);
+            o[8]  = join_blade_08_acc4<T>(x, y);
+            o[9]  = join_blade_09_acc4<T>(x, y);
+            o[10] = join_blade_10_acc4<T>(x, y);
+            o[11] = join_blade_11_acc4<T>(x, y);
+            o[12] = join_blade_12_acc4<T>(x, y);
+            o[13] = join_blade_13_acc4<T>(x, y);
+            o[14] = join_blade_14_acc4<T>(x, y);
+            o[15] = join_blade_15_acc4<T>(x, y);
         }
     }
 }
@@ -638,6 +798,44 @@ torch::Tensor equi_join_ilp4(const torch::Tensor& x,
             using T = std::remove_pointer_t<decltype(O)>;
             if (has_ref) join_kernel_ilp4_impl<T, true>(X, Y, R, O, N);
             else         join_kernel_ilp4_impl<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor geometric_product_acc2(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_acc2",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_acc2_impl<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor geometric_product_acc4(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_acc4",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_acc4_impl<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor equi_join_acc2(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_acc2",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_acc2_impl<T, true>(X, Y, R, O, N);
+            else         join_kernel_acc2_impl<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_acc4(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_acc4",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_acc4_impl<T, true>(X, Y, R, O, N);
+            else         join_kernel_acc4_impl<T, false>(X, Y, nullptr, O, N);
         });
 }
 

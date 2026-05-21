@@ -84,6 +84,10 @@ def build_target(name: str, device: torch.device, preset: str):
         return lambda: _opt.geometric_product_ilp2(inputs["mv"], inputs["mv2"])
     if name == "geometric_product_ilp4":
         return lambda: _opt.geometric_product_ilp4(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_acc2":
+        return lambda: _opt.geometric_product_acc2(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_acc4":
+        return lambda: _opt.geometric_product_acc4(inputs["mv"], inputs["mv2"])
     if name == "equi_join":
         return lambda: equi_join(inputs["mv"], inputs["mv2"], inputs["mv"])
     if name == "equi_join_dense":
@@ -96,6 +100,10 @@ def build_target(name: str, device: torch.device, preset: str):
         return lambda: _opt.equi_join_ilp2(inputs["mv"], inputs["mv2"], inputs["mv"])
     if name == "equi_join_ilp4":
         return lambda: _opt.equi_join_ilp4(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_acc2":
+        return lambda: _opt.equi_join_acc2(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_acc4":
+        return lambda: _opt.equi_join_acc4(inputs["mv"], inputs["mv2"], inputs["mv"])
     if name == "outer_product":
         return lambda: outer_product(inputs["mv"], inputs["mv2"])
     if name == "inner_product":
@@ -127,12 +135,16 @@ def get_target_names() -> list[str]:
         "geometric_product_unrolled",
         "geometric_product_ilp2",
         "geometric_product_ilp4",
+        "geometric_product_acc2",
+        "geometric_product_acc4",
         "equi_join",
         "equi_join_dense",
         "equi_join_sparse_rt",
         "equi_join_unrolled",
         "equi_join_ilp2",
         "equi_join_ilp4",
+        "equi_join_acc2",
+        "equi_join_acc4",
         "outer_product",
         "inner_product",
         "equi_linear",

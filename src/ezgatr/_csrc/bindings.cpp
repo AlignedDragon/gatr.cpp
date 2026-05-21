@@ -43,4 +43,20 @@ PYBIND11_MODULE(_opt_ops, m) {
     m.def("equi_join_ilp4", &ezgatr::opt::equi_join_ilp4,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Equivariant join with K=4 accumulators per blade in a single inlined block.");
+
+    m.def("geometric_product_acc2", &ezgatr::opt::geometric_product_acc2,
+          py::arg("x"), py::arg("y"),
+          "Per-blade unrolled geometric product with K=2 internal accumulators.");
+
+    m.def("geometric_product_acc4", &ezgatr::opt::geometric_product_acc4,
+          py::arg("x"), py::arg("y"),
+          "Per-blade unrolled geometric product with K=4 internal accumulators.");
+
+    m.def("equi_join_acc2", &ezgatr::opt::equi_join_acc2,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Per-blade unrolled equivariant join with K=2 internal accumulators.");
+
+    m.def("equi_join_acc4", &ezgatr::opt::equi_join_acc4,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Per-blade unrolled equivariant join with K=4 internal accumulators.");
 }
