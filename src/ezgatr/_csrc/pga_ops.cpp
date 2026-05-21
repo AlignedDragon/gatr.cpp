@@ -16,6 +16,10 @@ namespace {
 
 #include "gp_unrolled.inc"
 #include "join_unrolled.inc"
+#include "gp_block_ilp2.inc"
+#include "gp_block_ilp4.inc"
+#include "join_block_ilp2.inc"
+#include "join_block_ilp4.inc"
 
 using BasisTable = int8_t[16][16][16];
 
@@ -229,6 +233,62 @@ static void join_kernel_impl(const T* __restrict__ X,
             o[13] = join_blade_13<T>(x, y);
             o[14] = join_blade_14<T>(x, y);
             o[15] = join_blade_15<T>(x, y);
+        }
+    }
+}
+
+template <typename T>
+static void gp_kernel_ilp2_impl(const T* __restrict__ X,
+                                const T* __restrict__ Y,
+                                T* __restrict__ O,
+                                int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        gp_block_ilp2<T>(X + 16 * n, Y + 16 * n, O + 16 * n);
+    }
+}
+
+template <typename T>
+static void gp_kernel_ilp4_impl(const T* __restrict__ X,
+                                const T* __restrict__ Y,
+                                T* __restrict__ O,
+                                int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        gp_block_ilp4<T>(X + 16 * n, Y + 16 * n, O + 16 * n);
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_ilp2_impl(const T* __restrict__ X,
+                                  const T* __restrict__ Y,
+                                  const T* __restrict__ R,
+                                  T* __restrict__ O,
+                                  int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        T* o = O + 16 * n;
+        join_block_ilp2<T>(X + 16 * n, Y + 16 * n, o);
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            for (int i = 0; i < 16; ++i) o[i] *= s;
+        } else {
+            (void)R;
+        }
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_ilp4_impl(const T* __restrict__ X,
+                                  const T* __restrict__ Y,
+                                  const T* __restrict__ R,
+                                  T* __restrict__ O,
+                                  int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        T* o = O + 16 * n;
+        join_block_ilp4<T>(X + 16 * n, Y + 16 * n, o);
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            for (int i = 0; i < 16; ++i) o[i] *= s;
+        } else {
+            (void)R;
         }
     }
 }
@@ -540,6 +600,44 @@ torch::Tensor equi_join_sparse_rt(const torch::Tensor& x,
             using T = std::remove_pointer_t<decltype(O)>;
             if (has_ref) join_kernel_sparse_rt_impl<T, true>(X, Y, R, O, N);
             else         join_kernel_sparse_rt_impl<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor geometric_product_ilp2(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_ilp2",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_ilp2_impl<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor geometric_product_ilp4(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_ilp4",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_ilp4_impl<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor equi_join_ilp2(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_ilp2",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_ilp2_impl<T, true>(X, Y, R, O, N);
+            else         join_kernel_ilp2_impl<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_ilp4(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_ilp4",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_ilp4_impl<T, true>(X, Y, R, O, N);
+            else         join_kernel_ilp4_impl<T, false>(X, Y, nullptr, O, N);
         });
 }
 

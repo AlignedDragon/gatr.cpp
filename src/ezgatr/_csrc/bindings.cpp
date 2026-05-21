@@ -27,4 +27,20 @@ PYBIND11_MODULE(_opt_ops, m) {
     m.def("equi_join_sparse_rt", &ezgatr::opt::equi_join_sparse_rt,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Sparse-but-non-unrolled equivariant join (zero-mul elimination only).");
+
+    m.def("geometric_product_ilp2", &ezgatr::opt::geometric_product_ilp2,
+          py::arg("x"), py::arg("y"),
+          "Geometric product with K=2 accumulators per blade in a single inlined block.");
+
+    m.def("geometric_product_ilp4", &ezgatr::opt::geometric_product_ilp4,
+          py::arg("x"), py::arg("y"),
+          "Geometric product with K=4 accumulators per blade in a single inlined block.");
+
+    m.def("equi_join_ilp2", &ezgatr::opt::equi_join_ilp2,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Equivariant join with K=2 accumulators per blade in a single inlined block.");
+
+    m.def("equi_join_ilp4", &ezgatr::opt::equi_join_ilp4,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Equivariant join with K=4 accumulators per blade in a single inlined block.");
 }
