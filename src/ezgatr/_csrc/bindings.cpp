@@ -215,7 +215,7 @@ PYBIND11_MODULE(_opt_ops, m) {
           py::arg("version") = 0,
           "Pin(3,0,1)-equivariant linear map. x: (..., C_in, 16), "
           "weight: (C_out, C_in, 9). version: 0=no-opt (default), "
-          "1=math, 2=pre-SIMD, 3=SIMD placeholder.");
+          "1=math, 2=pre-SIMD, 3=AVX2/FMA SIMD.");
 
     m.def("equi_linear_v0", &ezgatr::opt::equi_linear_v0,
           py::arg("x"), py::arg("weight"),
@@ -247,9 +247,9 @@ PYBIND11_MODULE(_opt_ops, m) {
     m.def("equi_linear_v3", &ezgatr::opt::equi_linear_v3,
           py::arg("x"), py::arg("weight"),
           py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
-          "Pin(3,0,1)-equivariant linear map, SIMD placeholder.");
+          "Pin(3,0,1)-equivariant linear map, AVX2/FMA SIMD kernel.");
     m.def("equi_linear_ver_3", &ezgatr::opt::equi_linear_v3,
           py::arg("x"), py::arg("weight"),
           py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
-          "Pin(3,0,1)-equivariant linear map version 3 alias.");
+          "Pin(3,0,1)-equivariant linear map version 3 alias (AVX2/FMA SIMD).");
 }
