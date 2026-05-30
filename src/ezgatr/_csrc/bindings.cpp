@@ -8,55 +8,63 @@ PYBIND11_MODULE(_opt_ops, m) {
           py::arg("x"), py::arg("y"),
           "Geometric product of two multi-vectors of shape (..., 16).");
 
-    m.def("geometric_product_dense", &ezgatr::opt::geometric_product_dense,
+    m.def("geometric_product_v0", &ezgatr::opt::geometric_product_v0,
           py::arg("x"), py::arg("y"),
           "Dense triple-loop geometric product (pre-optimization baseline).");
 
-    m.def("geometric_product_sparse_rt", &ezgatr::opt::geometric_product_sparse_rt,
+    m.def("geometric_product_v1", &ezgatr::opt::geometric_product_v1,
           py::arg("x"), py::arg("y"),
           "Sparse-but-non-unrolled geometric product (zero-mul elimination only).");
+
+    m.def("geometric_product_v2", &ezgatr::opt::geometric_product_v2,
+          py::arg("x"), py::arg("y"),
+          "Per-blade unrolled geometric product (base unrolled kernel).");
 
     m.def("equi_join", &ezgatr::opt::equi_join,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Equivariant join of two multi-vectors of shape (..., 16).");
 
-    m.def("equi_join_dense", &ezgatr::opt::equi_join_dense,
+    m.def("equi_join_v0", &ezgatr::opt::equi_join_v0,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Dense triple-loop equivariant join (pre-optimization baseline).");
 
-    m.def("equi_join_sparse_rt", &ezgatr::opt::equi_join_sparse_rt,
+    m.def("equi_join_v1", &ezgatr::opt::equi_join_v1,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Sparse-but-non-unrolled equivariant join (zero-mul elimination only).");
 
-    m.def("geometric_product_ilp2", &ezgatr::opt::geometric_product_ilp2,
+    m.def("equi_join_v2", &ezgatr::opt::equi_join_v2,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Per-blade unrolled equivariant join (base unrolled kernel).");
+
+    m.def("geometric_product_v2_3", &ezgatr::opt::geometric_product_v2_3,
           py::arg("x"), py::arg("y"),
           "Geometric product with K=2 accumulators per blade in a single inlined block.");
 
-    m.def("geometric_product_ilp4", &ezgatr::opt::geometric_product_ilp4,
+    m.def("geometric_product_v2_4", &ezgatr::opt::geometric_product_v2_4,
           py::arg("x"), py::arg("y"),
           "Geometric product with K=4 accumulators per blade in a single inlined block.");
 
-    m.def("equi_join_ilp2", &ezgatr::opt::equi_join_ilp2,
+    m.def("equi_join_v2_3", &ezgatr::opt::equi_join_v2_3,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Equivariant join with K=2 accumulators per blade in a single inlined block.");
 
-    m.def("equi_join_ilp4", &ezgatr::opt::equi_join_ilp4,
+    m.def("equi_join_v2_4", &ezgatr::opt::equi_join_v2_4,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Equivariant join with K=4 accumulators per blade in a single inlined block.");
 
-    m.def("geometric_product_acc2", &ezgatr::opt::geometric_product_acc2,
+    m.def("geometric_product_v2_1", &ezgatr::opt::geometric_product_v2_1,
           py::arg("x"), py::arg("y"),
           "Per-blade unrolled geometric product with K=2 internal accumulators.");
 
-    m.def("geometric_product_acc4", &ezgatr::opt::geometric_product_acc4,
+    m.def("geometric_product_v2_2", &ezgatr::opt::geometric_product_v2_2,
           py::arg("x"), py::arg("y"),
           "Per-blade unrolled geometric product with K=4 internal accumulators.");
 
-    m.def("equi_join_acc2", &ezgatr::opt::equi_join_acc2,
+    m.def("equi_join_v2_1", &ezgatr::opt::equi_join_v2_1,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Per-blade unrolled equivariant join with K=2 internal accumulators.");
 
-    m.def("equi_join_acc4", &ezgatr::opt::equi_join_acc4,
+    m.def("equi_join_v2_2", &ezgatr::opt::equi_join_v2_2,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Per-blade unrolled equivariant join with K=4 internal accumulators.");
 }

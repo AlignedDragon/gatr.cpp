@@ -74,36 +74,36 @@ def build_target(name: str, device: torch.device, preset: str):
 
     if name == "geometric_product":
         return lambda: geometric_product(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_dense":
-        return lambda: _opt.geometric_product_dense(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_sparse_rt":
-        return lambda: _opt.geometric_product_sparse_rt(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_unrolled":
-        return lambda: _opt.geometric_product(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_ilp2":
-        return lambda: _opt.geometric_product_ilp2(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_ilp4":
-        return lambda: _opt.geometric_product_ilp4(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_acc2":
-        return lambda: _opt.geometric_product_acc2(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_acc4":
-        return lambda: _opt.geometric_product_acc4(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v0":
+        return lambda: _opt.geometric_product_v0(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v1":
+        return lambda: _opt.geometric_product_v1(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2":
+        return lambda: _opt.geometric_product_v2(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_3":
+        return lambda: _opt.geometric_product_v2_3(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_4":
+        return lambda: _opt.geometric_product_v2_4(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_1":
+        return lambda: _opt.geometric_product_v2_1(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_2":
+        return lambda: _opt.geometric_product_v2_2(inputs["mv"], inputs["mv2"])
     if name == "equi_join":
         return lambda: equi_join(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_dense":
-        return lambda: _opt.equi_join_dense(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_sparse_rt":
-        return lambda: _opt.equi_join_sparse_rt(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_unrolled":
-        return lambda: _opt.equi_join(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_ilp2":
-        return lambda: _opt.equi_join_ilp2(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_ilp4":
-        return lambda: _opt.equi_join_ilp4(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_acc2":
-        return lambda: _opt.equi_join_acc2(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_acc4":
-        return lambda: _opt.equi_join_acc4(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v0":
+        return lambda: _opt.equi_join_v0(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v1":
+        return lambda: _opt.equi_join_v1(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2":
+        return lambda: _opt.equi_join_v2(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2_3":
+        return lambda: _opt.equi_join_v2_3(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2_4":
+        return lambda: _opt.equi_join_v2_4(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2_1":
+        return lambda: _opt.equi_join_v2_1(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2_2":
+        return lambda: _opt.equi_join_v2_2(inputs["mv"], inputs["mv2"], inputs["mv"])
     if name == "outer_product":
         return lambda: outer_product(inputs["mv"], inputs["mv2"])
     if name == "inner_product":
@@ -130,21 +130,21 @@ def build_target(name: str, device: torch.device, preset: str):
 def get_target_names() -> list[str]:
     return [
         "geometric_product",
-        "geometric_product_dense",
-        "geometric_product_sparse_rt",
-        "geometric_product_unrolled",
-        "geometric_product_ilp2",
-        "geometric_product_ilp4",
-        "geometric_product_acc2",
-        "geometric_product_acc4",
+        "geometric_product_v0",
+        "geometric_product_v1",
+        "geometric_product_v2",
+        "geometric_product_v2_3",
+        "geometric_product_v2_4",
+        "geometric_product_v2_1",
+        "geometric_product_v2_2",
         "equi_join",
-        "equi_join_dense",
-        "equi_join_sparse_rt",
-        "equi_join_unrolled",
-        "equi_join_ilp2",
-        "equi_join_ilp4",
-        "equi_join_acc2",
-        "equi_join_acc4",
+        "equi_join_v0",
+        "equi_join_v1",
+        "equi_join_v2",
+        "equi_join_v2_3",
+        "equi_join_v2_4",
+        "equi_join_v2_1",
+        "equi_join_v2_2",
         "outer_product",
         "inner_product",
         "equi_linear",

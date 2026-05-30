@@ -76,7 +76,7 @@ static const std::vector<SparseEntry>& get_join_sparse_entries() {
 }
 
 template <typename T>
-static void gp_kernel_dense_impl(const T* __restrict__ X,
+static void gp_kernel_v0(const T* __restrict__ X,
                                  const T* __restrict__ Y,
                                  T* __restrict__ O,
                                  int64_t N) {
@@ -97,7 +97,7 @@ static void gp_kernel_dense_impl(const T* __restrict__ X,
 }
 
 template <typename T>
-static void gp_kernel_sparse_rt_impl(const T* __restrict__ X,
+static void gp_kernel_v1(const T* __restrict__ X,
                                      const T* __restrict__ Y,
                                      T* __restrict__ O,
                                      int64_t N) {
@@ -116,7 +116,7 @@ static void gp_kernel_sparse_rt_impl(const T* __restrict__ X,
 }
 
 template <typename T, bool HasRef>
-static void join_kernel_dense_impl(const T* __restrict__ X,
+static void join_kernel_v0(const T* __restrict__ X,
                                    const T* __restrict__ Y,
                                    const T* __restrict__ R,
                                    T* __restrict__ O,
@@ -140,7 +140,7 @@ static void join_kernel_dense_impl(const T* __restrict__ X,
 }
 
 template <typename T, bool HasRef>
-static void join_kernel_sparse_rt_impl(const T* __restrict__ X,
+static void join_kernel_v1(const T* __restrict__ X,
                                        const T* __restrict__ Y,
                                        const T* __restrict__ R,
                                        T* __restrict__ O,
@@ -164,7 +164,7 @@ static void join_kernel_sparse_rt_impl(const T* __restrict__ X,
 }
 
 template <typename T>
-static void gp_kernel_impl(const T* __restrict__ X,
+static void gp_kernel_v2(const T* __restrict__ X,
                            const T* __restrict__ Y,
                            T* __restrict__ O,
                            int64_t N) {
@@ -192,7 +192,7 @@ static void gp_kernel_impl(const T* __restrict__ X,
 }
 
 template <typename T, bool HasRef>
-static void join_kernel_impl(const T* __restrict__ X,
+static void join_kernel_v2(const T* __restrict__ X,
                              const T* __restrict__ Y,
                              const T* __restrict__ R,
                              T* __restrict__ O,
@@ -242,7 +242,7 @@ static void join_kernel_impl(const T* __restrict__ X,
 }
 
 template <typename T>
-static void gp_kernel_acc2_impl(const T* __restrict__ X,
+static void gp_kernel_v2_1(const T* __restrict__ X,
                                 const T* __restrict__ Y,
                                 T* __restrict__ O,
                                 int64_t N) {
@@ -270,7 +270,7 @@ static void gp_kernel_acc2_impl(const T* __restrict__ X,
 }
 
 template <typename T>
-static void gp_kernel_acc4_impl(const T* __restrict__ X,
+static void gp_kernel_v2_2(const T* __restrict__ X,
                                 const T* __restrict__ Y,
                                 T* __restrict__ O,
                                 int64_t N) {
@@ -298,7 +298,7 @@ static void gp_kernel_acc4_impl(const T* __restrict__ X,
 }
 
 template <typename T, bool HasRef>
-static void join_kernel_acc2_impl(const T* __restrict__ X,
+static void join_kernel_v2_1(const T* __restrict__ X,
                                   const T* __restrict__ Y,
                                   const T* __restrict__ R,
                                   T* __restrict__ O,
@@ -348,7 +348,7 @@ static void join_kernel_acc2_impl(const T* __restrict__ X,
 }
 
 template <typename T, bool HasRef>
-static void join_kernel_acc4_impl(const T* __restrict__ X,
+static void join_kernel_v2_2(const T* __restrict__ X,
                                   const T* __restrict__ Y,
                                   const T* __restrict__ R,
                                   T* __restrict__ O,
@@ -398,7 +398,7 @@ static void join_kernel_acc4_impl(const T* __restrict__ X,
 }
 
 template <typename T>
-static void gp_kernel_ilp2_impl(const T* __restrict__ X,
+static void gp_kernel_v2_3(const T* __restrict__ X,
                                 const T* __restrict__ Y,
                                 T* __restrict__ O,
                                 int64_t N) {
@@ -408,7 +408,7 @@ static void gp_kernel_ilp2_impl(const T* __restrict__ X,
 }
 
 template <typename T>
-static void gp_kernel_ilp4_impl(const T* __restrict__ X,
+static void gp_kernel_v2_4(const T* __restrict__ X,
                                 const T* __restrict__ Y,
                                 T* __restrict__ O,
                                 int64_t N) {
@@ -418,7 +418,7 @@ static void gp_kernel_ilp4_impl(const T* __restrict__ X,
 }
 
 template <typename T, bool HasRef>
-static void join_kernel_ilp2_impl(const T* __restrict__ X,
+static void join_kernel_v2_3(const T* __restrict__ X,
                                   const T* __restrict__ Y,
                                   const T* __restrict__ R,
                                   T* __restrict__ O,
@@ -436,7 +436,7 @@ static void join_kernel_ilp2_impl(const T* __restrict__ X,
 }
 
 template <typename T, bool HasRef>
-static void join_kernel_ilp4_impl(const T* __restrict__ X,
+static void join_kernel_v2_4(const T* __restrict__ X,
                                   const T* __restrict__ Y,
                                   const T* __restrict__ R,
                                   T* __restrict__ O,
@@ -593,7 +593,7 @@ torch::Tensor geometric_product(const torch::Tensor& x, const torch::Tensor& y) 
     int64_t N = xc.numel() / 16;
 
     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "geometric_product_cpu", [&]{
-        gp_kernel_impl<scalar_t>(xc.data_ptr<scalar_t>(),
+        gp_kernel_v2<scalar_t>(xc.data_ptr<scalar_t>(),
                                  yc.data_ptr<scalar_t>(),
                                  out.data_ptr<scalar_t>(),
                                  N);
@@ -633,14 +633,14 @@ torch::Tensor equi_join(const torch::Tensor& x,
 
     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "equi_join_cpu", [&]{
         if (reference.has_value()) {
-            join_kernel_impl<scalar_t, true>(
+            join_kernel_v2<scalar_t, true>(
                 xc.data_ptr<scalar_t>(),
                 yc.data_ptr<scalar_t>(),
                 refc.data_ptr<scalar_t>(),
                 out.data_ptr<scalar_t>(),
                 N);
         } else {
-            join_kernel_impl<scalar_t, false>(
+            join_kernel_v2<scalar_t, false>(
                 xc.data_ptr<scalar_t>(),
                 yc.data_ptr<scalar_t>(),
                 nullptr,
@@ -725,117 +725,136 @@ torch::Tensor run_join_variant(const torch::Tensor& x, const torch::Tensor& y,
 
 }  // namespace
 
-torch::Tensor geometric_product_dense(const torch::Tensor& x, const torch::Tensor& y) {
-    return run_gp_variant(x, y, "geometric_product_dense",
+torch::Tensor geometric_product_v0(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v0",
         [](auto X, auto Y, auto O, int64_t N){
             using T = std::remove_pointer_t<decltype(O)>;
-            gp_kernel_dense_impl<T>(X, Y, O, N);
+            gp_kernel_v0<T>(X, Y, O, N);
         });
 }
 
-torch::Tensor geometric_product_sparse_rt(const torch::Tensor& x, const torch::Tensor& y) {
-    return run_gp_variant(x, y, "geometric_product_sparse_rt",
+torch::Tensor geometric_product_v1(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v1",
         [](auto X, auto Y, auto O, int64_t N){
             using T = std::remove_pointer_t<decltype(O)>;
-            gp_kernel_sparse_rt_impl<T>(X, Y, O, N);
+            gp_kernel_v1<T>(X, Y, O, N);
         });
 }
 
-torch::Tensor equi_join_dense(const torch::Tensor& x,
+torch::Tensor equi_join_v0(const torch::Tensor& x,
                               const torch::Tensor& y,
                               const c10::optional<torch::Tensor>& reference) {
-    return run_join_variant(x, y, reference, "equi_join_dense",
+    return run_join_variant(x, y, reference, "equi_join_v0",
         [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
             using T = std::remove_pointer_t<decltype(O)>;
-            if (has_ref) join_kernel_dense_impl<T, true>(X, Y, R, O, N);
-            else         join_kernel_dense_impl<T, false>(X, Y, nullptr, O, N);
+            if (has_ref) join_kernel_v0<T, true>(X, Y, R, O, N);
+            else         join_kernel_v0<T, false>(X, Y, nullptr, O, N);
         });
 }
 
-torch::Tensor equi_join_sparse_rt(const torch::Tensor& x,
+torch::Tensor equi_join_v1(const torch::Tensor& x,
                                   const torch::Tensor& y,
                                   const c10::optional<torch::Tensor>& reference) {
-    return run_join_variant(x, y, reference, "equi_join_sparse_rt",
+    return run_join_variant(x, y, reference, "equi_join_v1",
         [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
             using T = std::remove_pointer_t<decltype(O)>;
-            if (has_ref) join_kernel_sparse_rt_impl<T, true>(X, Y, R, O, N);
-            else         join_kernel_sparse_rt_impl<T, false>(X, Y, nullptr, O, N);
+            if (has_ref) join_kernel_v1<T, true>(X, Y, R, O, N);
+            else         join_kernel_v1<T, false>(X, Y, nullptr, O, N);
         });
 }
 
-torch::Tensor geometric_product_ilp2(const torch::Tensor& x, const torch::Tensor& y) {
-    return run_gp_variant(x, y, "geometric_product_ilp2",
+torch::Tensor geometric_product_v2(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2",
         [](auto X, auto Y, auto O, int64_t N){
             using T = std::remove_pointer_t<decltype(O)>;
-            gp_kernel_ilp2_impl<T>(X, Y, O, N);
+            gp_kernel_v2<T>(X, Y, O, N);
         });
 }
 
-torch::Tensor geometric_product_ilp4(const torch::Tensor& x, const torch::Tensor& y) {
-    return run_gp_variant(x, y, "geometric_product_ilp4",
+torch::Tensor equi_join_v2(const torch::Tensor& x,
+                           const torch::Tensor& y,
+                           const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v2_3(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_3",
         [](auto X, auto Y, auto O, int64_t N){
             using T = std::remove_pointer_t<decltype(O)>;
-            gp_kernel_ilp4_impl<T>(X, Y, O, N);
+            gp_kernel_v2_3<T>(X, Y, O, N);
         });
 }
 
-torch::Tensor equi_join_ilp2(const torch::Tensor& x,
-                             const torch::Tensor& y,
-                             const c10::optional<torch::Tensor>& reference) {
-    return run_join_variant(x, y, reference, "equi_join_ilp2",
-        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
-            using T = std::remove_pointer_t<decltype(O)>;
-            if (has_ref) join_kernel_ilp2_impl<T, true>(X, Y, R, O, N);
-            else         join_kernel_ilp2_impl<T, false>(X, Y, nullptr, O, N);
-        });
-}
-
-torch::Tensor equi_join_ilp4(const torch::Tensor& x,
-                             const torch::Tensor& y,
-                             const c10::optional<torch::Tensor>& reference) {
-    return run_join_variant(x, y, reference, "equi_join_ilp4",
-        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
-            using T = std::remove_pointer_t<decltype(O)>;
-            if (has_ref) join_kernel_ilp4_impl<T, true>(X, Y, R, O, N);
-            else         join_kernel_ilp4_impl<T, false>(X, Y, nullptr, O, N);
-        });
-}
-
-torch::Tensor geometric_product_acc2(const torch::Tensor& x, const torch::Tensor& y) {
-    return run_gp_variant(x, y, "geometric_product_acc2",
+torch::Tensor geometric_product_v2_4(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_4",
         [](auto X, auto Y, auto O, int64_t N){
             using T = std::remove_pointer_t<decltype(O)>;
-            gp_kernel_acc2_impl<T>(X, Y, O, N);
+            gp_kernel_v2_4<T>(X, Y, O, N);
         });
 }
 
-torch::Tensor geometric_product_acc4(const torch::Tensor& x, const torch::Tensor& y) {
-    return run_gp_variant(x, y, "geometric_product_acc4",
+torch::Tensor equi_join_v2_3(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2_3",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2_3<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_3<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_v2_4(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2_4",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2_4<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_4<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v2_1(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_1",
         [](auto X, auto Y, auto O, int64_t N){
             using T = std::remove_pointer_t<decltype(O)>;
-            gp_kernel_acc4_impl<T>(X, Y, O, N);
+            gp_kernel_v2_1<T>(X, Y, O, N);
         });
 }
 
-torch::Tensor equi_join_acc2(const torch::Tensor& x,
-                             const torch::Tensor& y,
-                             const c10::optional<torch::Tensor>& reference) {
-    return run_join_variant(x, y, reference, "equi_join_acc2",
-        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+torch::Tensor geometric_product_v2_2(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_2",
+        [](auto X, auto Y, auto O, int64_t N){
             using T = std::remove_pointer_t<decltype(O)>;
-            if (has_ref) join_kernel_acc2_impl<T, true>(X, Y, R, O, N);
-            else         join_kernel_acc2_impl<T, false>(X, Y, nullptr, O, N);
+            gp_kernel_v2_2<T>(X, Y, O, N);
         });
 }
 
-torch::Tensor equi_join_acc4(const torch::Tensor& x,
+torch::Tensor equi_join_v2_1(const torch::Tensor& x,
                              const torch::Tensor& y,
                              const c10::optional<torch::Tensor>& reference) {
-    return run_join_variant(x, y, reference, "equi_join_acc4",
+    return run_join_variant(x, y, reference, "equi_join_v2_1",
         [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
             using T = std::remove_pointer_t<decltype(O)>;
-            if (has_ref) join_kernel_acc4_impl<T, true>(X, Y, R, O, N);
-            else         join_kernel_acc4_impl<T, false>(X, Y, nullptr, O, N);
+            if (has_ref) join_kernel_v2_1<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_1<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_v2_2(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2_2",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2_2<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_2<T, false>(X, Y, nullptr, O, N);
         });
 }
 

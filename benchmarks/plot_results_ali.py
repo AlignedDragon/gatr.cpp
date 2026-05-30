@@ -38,17 +38,17 @@ PRESETS = {
 VARIANT_COSTS = {
     "gp": {
         "geometric_product":            (8192, 192),   # python einsum (dense math)
-        "geometric_product_dense":      (8192, 192),   # cpp triple loop
-        "geometric_product_sparse_rt":  (384,  192),   # 192 FMAs = 384 FLOPs
-        "geometric_product_unrolled":   (384,  192),   # same FLOP count, unrolled
+        "geometric_product_v0":      (8192, 192),   # cpp triple loop
+        "geometric_product_v1":  (384,  192),   # 192 FMAs = 384 FLOPs
+        "geometric_product_v2":   (384,  192),   # same FLOP count, unrolled
     },
     "join": {
         # Join non-zero entries: a typical 3D-PGA join has the same sparsity
         # pattern as the geometric product (192 non-zeros).
         "equi_join":                    (8192, 196),   # python einsum + ref read
-        "equi_join_dense":              (8192, 196),
-        "equi_join_sparse_rt":          (384,  196),
-        "equi_join_unrolled":           (384,  196),
+        "equi_join_v0":              (8192, 196),
+        "equi_join_v1":          (384,  196),
+        "equi_join_v2":           (384,  196),
     },
 }
 
@@ -56,28 +56,28 @@ VARIANT_COSTS = {
 VARIANT_ORDER = {
     "gp": [
         "geometric_product",
-        "geometric_product_dense",
-        "geometric_product_sparse_rt",
-        "geometric_product_unrolled",
+        "geometric_product_v0",
+        "geometric_product_v1",
+        "geometric_product_v2",
     ],
     "join": [
         "equi_join",
-        "equi_join_dense",
-        "equi_join_sparse_rt",
-        "equi_join_unrolled",
+        "equi_join_v0",
+        "equi_join_v1",
+        "equi_join_v2",
     ],
 }
 
 
 VARIANT_LABEL = {
     "geometric_product":           "python-einsum",
-    "geometric_product_dense":     "cpp-dense",
-    "geometric_product_sparse_rt": "cpp-sparse-rt",
-    "geometric_product_unrolled":  "cpp-unrolled",
+    "geometric_product_v0":     "cpp-dense",
+    "geometric_product_v1": "cpp-sparse-rt",
+    "geometric_product_v2":  "cpp-unrolled",
     "equi_join":                   "python-einsum",
-    "equi_join_dense":             "cpp-dense",
-    "equi_join_sparse_rt":         "cpp-sparse-rt",
-    "equi_join_unrolled":          "cpp-unrolled",
+    "equi_join_v0":             "cpp-dense",
+    "equi_join_v1":         "cpp-sparse-rt",
+    "equi_join_v2":          "cpp-unrolled",
 }
 
 
