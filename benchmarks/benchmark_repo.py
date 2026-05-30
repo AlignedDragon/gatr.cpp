@@ -25,38 +25,31 @@ from ezgatr.nn.functional import (
 )
 
 from ezgatr.opt import (
-    geometric_product_ver_0,
-    equi_join_ver_0,
     outer_product_ver_0,
     inner_product_ver_0,
     equi_linear_ver_0,
     equi_rms_norm_ver_0,
     scaler_gated_gelu_ver_0,
     equi_geometric_attention_ver_0,
-    geometric_product_ver_1,
-    equi_join_ver_1,
     outer_product_ver_1,
     inner_product_ver_1,
     equi_linear_ver_1,
     equi_rms_norm_ver_1,
     scaler_gated_gelu_ver_1,
     equi_geometric_attention_ver_1,
-    geometric_product_ver_2,
-    equi_join_ver_2,
     outer_product_ver_2,
     inner_product_ver_2,
     equi_linear_ver_2,
     equi_rms_norm_ver_2,
     scaler_gated_gelu_ver_2,
     equi_geometric_attention_ver_2,
-    geometric_product_ver_3,
-    equi_join_ver_3,
     outer_product_ver_3,
     inner_product_ver_3,
     equi_linear_ver_3,
     equi_rms_norm_ver_3,
     scaler_gated_gelu_ver_3,
 )
+from ezgatr import opt as _opt
 
 
 PRESETS = {
@@ -112,8 +105,36 @@ def build_target(name: str, device: torch.device, preset: str):
 
     if name == "geometric_product":
         return lambda: geometric_product_py(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v0":
+        return lambda: _opt.geometric_product_v0(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v1":
+        return lambda: _opt.geometric_product_v1(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2":
+        return lambda: _opt.geometric_product_v2(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_1":
+        return lambda: _opt.geometric_product_v2_1(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_2":
+        return lambda: _opt.geometric_product_v2_2(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_3":
+        return lambda: _opt.geometric_product_v2_3(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_4":
+        return lambda: _opt.geometric_product_v2_4(inputs["mv"], inputs["mv2"])
     if name == "equi_join":
         return lambda: equi_join_py(inputs["mv"], inputs["mv2"], None)
+    if name == "equi_join_v0":
+        return lambda: _opt.equi_join_v0(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v1":
+        return lambda: _opt.equi_join_v1(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2":
+        return lambda: _opt.equi_join_v2(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2_1":
+        return lambda: _opt.equi_join_v2_1(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2_2":
+        return lambda: _opt.equi_join_v2_2(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2_3":
+        return lambda: _opt.equi_join_v2_3(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2_4":
+        return lambda: _opt.equi_join_v2_4(inputs["mv"], inputs["mv2"], inputs["mv"])
     if name == "outer_product":
         return lambda: outer_product_py(inputs["mv"], inputs["mv2"])
     if name == "inner_product":
@@ -168,10 +189,6 @@ def build_target(name: str, device: torch.device, preset: str):
         model = build_model(device, preset)
         return lambda: model(inputs["model_in"])
 
-    if name == "geometric_product_ver_0":
-        return lambda: geometric_product_ver_0(inputs["mv"], inputs["mv2"])
-    if name == "equi_join_ver_0":
-        return lambda: equi_join_ver_0(inputs["mv"], inputs["mv2"], None)
     if name == "outer_product_ver_0":
         return lambda: outer_product_ver_0(inputs["mv"], inputs["mv2"])
     if name == "inner_product_ver_0":
@@ -191,10 +208,6 @@ def build_target(name: str, device: torch.device, preset: str):
             is_causal=False,
         )
 
-    if name == "geometric_product_ver_1":
-        return lambda: geometric_product_ver_1(inputs["mv"], inputs["mv2"])
-    if name == "equi_join_ver_1":
-        return lambda: equi_join_ver_1(inputs["mv"], inputs["mv2"], None)
     if name == "outer_product_ver_1":
         return lambda: outer_product_ver_1(inputs["mv"], inputs["mv2"])
     if name == "inner_product_ver_1":
@@ -214,10 +227,6 @@ def build_target(name: str, device: torch.device, preset: str):
             is_causal=False,
         )
 
-    if name == "geometric_product_ver_2":
-        return lambda: geometric_product_ver_2(inputs["mv"], inputs["mv2"])
-    if name == "equi_join_ver_2":
-        return lambda: equi_join_ver_2(inputs["mv"], inputs["mv2"], None)
     if name == "outer_product_ver_2":
         return lambda: outer_product_ver_2(inputs["mv"], inputs["mv2"])
     if name == "inner_product_ver_2":
@@ -237,10 +246,6 @@ def build_target(name: str, device: torch.device, preset: str):
             is_causal=False,
         )
 
-    if name == "geometric_product_ver_3":
-        return lambda: geometric_product_ver_3(inputs["mv"], inputs["mv2"])
-    if name == "equi_join_ver_3":
-        return lambda: equi_join_ver_3(inputs["mv"], inputs["mv2"], None)
     if name == "outer_product_ver_3":
         return lambda: outer_product_ver_3(inputs["mv"], inputs["mv2"])
     if name == "inner_product_ver_3":
@@ -257,15 +262,21 @@ def build_target(name: str, device: torch.device, preset: str):
 def get_target_names() -> list[str]:
     return [
         "geometric_product",
-        "geometric_product_ver_0",
-        "geometric_product_ver_1",
-        "geometric_product_ver_2",
-        "geometric_product_ver_3",
+        "geometric_product_v0",
+        "geometric_product_v1",
+        "geometric_product_v2",
+        "geometric_product_v2_1",
+        "geometric_product_v2_2",
+        "geometric_product_v2_3",
+        "geometric_product_v2_4",
         "equi_join",
-        "equi_join_ver_0",
-        "equi_join_ver_1",
-        "equi_join_ver_2",
-        "equi_join_ver_3",
+        "equi_join_v0",
+        "equi_join_v1",
+        "equi_join_v2",
+        "equi_join_v2_1",
+        "equi_join_v2_2",
+        "equi_join_v2_3",
+        "equi_join_v2_4",
         "outer_product",
         "outer_product_ver_0",
         "outer_product_ver_1",
@@ -345,7 +356,9 @@ def measure_target(
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", choices=["all", *get_target_names()], default="all")
+    parser.add_argument("--target", choices=["all", *get_target_names()],
+                        action="append", default=None,
+                        help="Repeat for multiple targets, or 'all' for everything.")
     parser.add_argument("--preset", choices=sorted(PRESETS), default="small")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--warmup", type=int, default=5)
@@ -381,7 +394,11 @@ def main() -> None:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available.")
 
-    target_names = get_target_names() if args.target == "all" else [args.target]
+    targets = args.target or ["all"]
+    if "all" in targets:
+        target_names = get_target_names()
+    else:
+        target_names = targets
     results = [
         measure_target(
             target_name=name,

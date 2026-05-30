@@ -10,35 +10,53 @@ PYBIND11_MODULE(_opt_ops, m) {
           py::arg("x"), py::arg("y"),
           "Geometric product of two multi-vectors of shape (..., 16).");
 
-    m.def("geometric_product_ver_0", &ezgatr::opt::geometric_product,
+    m.def("geometric_product_v0", &ezgatr::opt::geometric_product_v0,
           py::arg("x"), py::arg("y"),
-          "Geometric product baseline alias.");
-    m.def("geometric_product_ver_1", &ezgatr::opt::geometric_product,
+          "Dense triple-loop geometric product (pre-optimization baseline).");
+    m.def("geometric_product_v1", &ezgatr::opt::geometric_product_v1,
           py::arg("x"), py::arg("y"),
-          "Geometric product version 1 alias.");
-    m.def("geometric_product_ver_2", &ezgatr::opt::geometric_product,
+          "Sparse-but-non-unrolled geometric product (zero-mul elimination only).");
+    m.def("geometric_product_v2", &ezgatr::opt::geometric_product_v2,
           py::arg("x"), py::arg("y"),
-          "Geometric product version 2 alias.");
-    m.def("geometric_product_ver_3", &ezgatr::opt::geometric_product,
+          "Per-blade unrolled geometric product (base unrolled kernel).");
+    m.def("geometric_product_v2_1", &ezgatr::opt::geometric_product_v2_1,
           py::arg("x"), py::arg("y"),
-          "Geometric product version 3 alias.");
+          "Per-blade unrolled geometric product with K=2 internal accumulators.");
+    m.def("geometric_product_v2_2", &ezgatr::opt::geometric_product_v2_2,
+          py::arg("x"), py::arg("y"),
+          "Per-blade unrolled geometric product with K=4 internal accumulators.");
+    m.def("geometric_product_v2_3", &ezgatr::opt::geometric_product_v2_3,
+          py::arg("x"), py::arg("y"),
+          "Geometric product with K=2 accumulators per blade in a single inlined block.");
+    m.def("geometric_product_v2_4", &ezgatr::opt::geometric_product_v2_4,
+          py::arg("x"), py::arg("y"),
+          "Geometric product with K=4 accumulators per blade in a single inlined block.");
 
     m.def("equi_join", &ezgatr::opt::equi_join,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
           "Equivariant join of two multi-vectors of shape (..., 16).");
 
-    m.def("equi_join_ver_0", &ezgatr::opt::equi_join,
+    m.def("equi_join_v0", &ezgatr::opt::equi_join_v0,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
-          "Equivariant join version 0 alias.");
-    m.def("equi_join_ver_1", &ezgatr::opt::equi_join,
+          "Dense triple-loop equivariant join (pre-optimization baseline).");
+    m.def("equi_join_v1", &ezgatr::opt::equi_join_v1,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
-          "Equivariant join version 1 alias.");
-    m.def("equi_join_ver_2", &ezgatr::opt::equi_join,
+          "Sparse-but-non-unrolled equivariant join (zero-mul elimination only).");
+    m.def("equi_join_v2", &ezgatr::opt::equi_join_v2,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
-          "Equivariant join version 2 alias.");
-    m.def("equi_join_ver_3", &ezgatr::opt::equi_join,
+          "Per-blade unrolled equivariant join (base unrolled kernel).");
+    m.def("equi_join_v2_1", &ezgatr::opt::equi_join_v2_1,
           py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
-          "Equivariant join version 3 alias.");
+          "Per-blade unrolled equivariant join with K=2 internal accumulators.");
+    m.def("equi_join_v2_2", &ezgatr::opt::equi_join_v2_2,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Per-blade unrolled equivariant join with K=4 internal accumulators.");
+    m.def("equi_join_v2_3", &ezgatr::opt::equi_join_v2_3,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Equivariant join with K=2 accumulators per blade in a single inlined block.");
+    m.def("equi_join_v2_4", &ezgatr::opt::equi_join_v2_4,
+          py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+          "Equivariant join with K=4 accumulators per blade in a single inlined block.");
 
     m.def("outer_product", &ezgatr::opt::outer_product,
           py::arg("x"), py::arg("y"),
