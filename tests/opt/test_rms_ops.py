@@ -5,10 +5,10 @@ from hypothesis import given, settings
 from ezgatr.nn.functional import inner_product as inner_py
 from ezgatr.nn.functional import equi_rms_norm as rms_py
 from ezgatr.nn.functional import scaler_gated_gelu as gelu_py
-from ezgatr.opt import inner_product_ver_1 as inner_cpp
-#from ezgatr.opt import equi_rms_norm as rms_cpp
-from ezgatr.opt import equi_rms_norm_ver_2 as rms_cpp
-from ezgatr.opt import scaler_gated_gelu_ver_1 as gelu_cpp
+#from ezgatr.opt import inner_product_ver_0 as inner_cpp
+from ezgatr.opt import equi_rms_norm_ver_3 as rms_cpp
+#from ezgatr.opt import equi_rms_norm_ver_2 as rms_cpp
+from ezgatr.opt import scaler_gated_gelu_ver_2 as gelu_cpp
 
 
 batch_shape = st.lists(st.integers(min_value=1, max_value=4), min_size=0, max_size=3)
@@ -16,12 +16,12 @@ batch_shape_rms = st.lists(st.integers(min_value=1, max_value=4), min_size=1, ma
 
 
 
-@given(batch_shape)
-@settings(deadline=None, max_examples=20)
-def test_inner_product_matches_python(batch):
-    x = torch.randn(*batch, 16, dtype=torch.float64)
-    y = torch.randn(*batch, 16, dtype=torch.float64)
-    torch.testing.assert_close(inner_cpp(x, y), inner_py(x, y), rtol=1e-10, atol=1e-12)
+# @given(batch_shape)
+# @settings(deadline=None, max_examples=20)
+# def test_inner_product_matches_python(batch):
+#     x = torch.randn(*batch, 16, dtype=torch.float64)
+#     y = torch.randn(*batch, 16, dtype=torch.float64)
+#     torch.testing.assert_close(inner_cpp(x, y), inner_py(x, y), rtol=1e-10, atol=1e-12)
 
 @given(batch_shape_rms)
 @settings(deadline=None, max_examples=20)

@@ -1,15 +1,458 @@
 #include "pga_ops.h"
 #include "basis_data.h"
 
+#include <ATen/Dispatch.h>
+
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <mutex>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 namespace ezgatr { namespace opt {
 
 namespace {
+
+#include "gp_unrolled.inc"
+#include "join_unrolled.inc"
+#include "gp_block_ilp2.inc"
+#include "gp_block_ilp4.inc"
+#include "join_block_ilp2.inc"
+#include "join_block_ilp4.inc"
+#include "gp_unrolled_acc2.inc"
+#include "gp_unrolled_acc4.inc"
+#include "join_unrolled_acc2.inc"
+#include "join_unrolled_acc4.inc"
+
+using BasisTable = int8_t[16][16][16];
+
+struct SparseEntry {
+    uint8_t i;
+    uint8_t j;
+    uint8_t k;
+    int8_t  sign;
+};
+
+static const BasisTable& get_join_basis_int8() {
+    static BasisTable table = {};
+    static std::once_flag flag;
+    std::call_once(flag, []{
+        auto kernel = ezgatr::opt::compute_join_kernel(c10::Device(c10::kCPU), c10::kDouble);
+        auto acc = kernel.accessor<double, 3>();
+        for (int i = 0; i < 16; ++i)
+            for (int j = 0; j < 16; ++j)
+                for (int k = 0; k < 16; ++k)
+                    table[i][j][k] = static_cast<int8_t>(std::lround(acc[i][j][k]));
+    });
+    return table;
+}
+
+static const std::vector<SparseEntry>& get_gp_sparse_entries() {
+    static std::vector<SparseEntry> v;
+    static std::once_flag flag;
+    std::call_once(flag, []{
+        for (int i = 0; i < 16; ++i)
+            for (int j = 0; j < 16; ++j)
+                for (int k = 0; k < 16; ++k)
+                    if (GP_BASIS[i][j][k] != 0)
+                        v.push_back({(uint8_t)i, (uint8_t)j, (uint8_t)k, GP_BASIS[i][j][k]});
+    });
+    return v;
+}
+
+static const std::vector<SparseEntry>& get_join_sparse_entries() {
+    static std::vector<SparseEntry> v;
+    static std::once_flag flag;
+    std::call_once(flag, []{
+        const auto& B = get_join_basis_int8();
+        for (int i = 0; i < 16; ++i)
+            for (int j = 0; j < 16; ++j)
+                for (int k = 0; k < 16; ++k)
+                    if (B[i][j][k] != 0)
+                        v.push_back({(uint8_t)i, (uint8_t)j, (uint8_t)k, B[i][j][k]});
+    });
+    return v;
+}
+
+template <typename T>
+static void gp_kernel_v0(const T* __restrict__ X,
+                                 const T* __restrict__ Y,
+                                 T* __restrict__ O,
+                                 int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        for (int i = 0; i < 16; ++i) {
+            T acc = T(0);
+            for (int j = 0; j < 16; ++j) {
+                for (int k = 0; k < 16; ++k) {
+                    acc += T(GP_BASIS[i][j][k]) * x[j] * y[k];
+                }
+            }
+            o[i] = acc;
+        }
+    }
+}
+
+template <typename T>
+static void gp_kernel_v1(const T* __restrict__ X,
+                                     const T* __restrict__ Y,
+                                     T* __restrict__ O,
+                                     int64_t N) {
+    const auto& entries = get_gp_sparse_entries();
+    const SparseEntry* e = entries.data();
+    const size_t M = entries.size();
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        for (int i = 0; i < 16; ++i) o[i] = T(0);
+        for (size_t m = 0; m < M; ++m) {
+            o[e[m].i] += T(e[m].sign) * x[e[m].j] * y[e[m].k];
+        }
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v0(const T* __restrict__ X,
+                                   const T* __restrict__ Y,
+                                   const T* __restrict__ R,
+                                   T* __restrict__ O,
+                                   int64_t N) {
+    const auto& B = get_join_basis_int8();
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        const T s = HasRef ? R[16 * n + 14] : T(1);
+        for (int i = 0; i < 16; ++i) {
+            T acc = T(0);
+            for (int j = 0; j < 16; ++j) {
+                for (int k = 0; k < 16; ++k) {
+                    acc += T(B[i][j][k]) * x[j] * y[k];
+                }
+            }
+            o[i] = HasRef ? s * acc : acc;
+        }
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v1(const T* __restrict__ X,
+                                       const T* __restrict__ Y,
+                                       const T* __restrict__ R,
+                                       T* __restrict__ O,
+                                       int64_t N) {
+    const auto& entries = get_join_sparse_entries();
+    const SparseEntry* e = entries.data();
+    const size_t M = entries.size();
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        for (int i = 0; i < 16; ++i) o[i] = T(0);
+        for (size_t m = 0; m < M; ++m) {
+            o[e[m].i] += T(e[m].sign) * x[e[m].j] * y[e[m].k];
+        }
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            for (int i = 0; i < 16; ++i) o[i] *= s;
+        }
+    }
+}
+
+template <typename T>
+static void gp_kernel_v2(const T* __restrict__ X,
+                           const T* __restrict__ Y,
+                           T* __restrict__ O,
+                           int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        o[0]  = gp_blade_00<T>(x, y);
+        o[1]  = gp_blade_01<T>(x, y);
+        o[2]  = gp_blade_02<T>(x, y);
+        o[3]  = gp_blade_03<T>(x, y);
+        o[4]  = gp_blade_04<T>(x, y);
+        o[5]  = gp_blade_05<T>(x, y);
+        o[6]  = gp_blade_06<T>(x, y);
+        o[7]  = gp_blade_07<T>(x, y);
+        o[8]  = gp_blade_08<T>(x, y);
+        o[9]  = gp_blade_09<T>(x, y);
+        o[10] = gp_blade_10<T>(x, y);
+        o[11] = gp_blade_11<T>(x, y);
+        o[12] = gp_blade_12<T>(x, y);
+        o[13] = gp_blade_13<T>(x, y);
+        o[14] = gp_blade_14<T>(x, y);
+        o[15] = gp_blade_15<T>(x, y);
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v2(const T* __restrict__ X,
+                             const T* __restrict__ Y,
+                             const T* __restrict__ R,
+                             T* __restrict__ O,
+                             int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            o[0]  = s * join_blade_00<T>(x, y);
+            o[1]  = s * join_blade_01<T>(x, y);
+            o[2]  = s * join_blade_02<T>(x, y);
+            o[3]  = s * join_blade_03<T>(x, y);
+            o[4]  = s * join_blade_04<T>(x, y);
+            o[5]  = s * join_blade_05<T>(x, y);
+            o[6]  = s * join_blade_06<T>(x, y);
+            o[7]  = s * join_blade_07<T>(x, y);
+            o[8]  = s * join_blade_08<T>(x, y);
+            o[9]  = s * join_blade_09<T>(x, y);
+            o[10] = s * join_blade_10<T>(x, y);
+            o[11] = s * join_blade_11<T>(x, y);
+            o[12] = s * join_blade_12<T>(x, y);
+            o[13] = s * join_blade_13<T>(x, y);
+            o[14] = s * join_blade_14<T>(x, y);
+            o[15] = s * join_blade_15<T>(x, y);
+        } else {
+            (void)R;
+            o[0]  = join_blade_00<T>(x, y);
+            o[1]  = join_blade_01<T>(x, y);
+            o[2]  = join_blade_02<T>(x, y);
+            o[3]  = join_blade_03<T>(x, y);
+            o[4]  = join_blade_04<T>(x, y);
+            o[5]  = join_blade_05<T>(x, y);
+            o[6]  = join_blade_06<T>(x, y);
+            o[7]  = join_blade_07<T>(x, y);
+            o[8]  = join_blade_08<T>(x, y);
+            o[9]  = join_blade_09<T>(x, y);
+            o[10] = join_blade_10<T>(x, y);
+            o[11] = join_blade_11<T>(x, y);
+            o[12] = join_blade_12<T>(x, y);
+            o[13] = join_blade_13<T>(x, y);
+            o[14] = join_blade_14<T>(x, y);
+            o[15] = join_blade_15<T>(x, y);
+        }
+    }
+}
+
+template <typename T>
+static void gp_kernel_v2_1(const T* __restrict__ X,
+                                const T* __restrict__ Y,
+                                T* __restrict__ O,
+                                int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        o[0]  = gp_blade_00_acc2<T>(x, y);
+        o[1]  = gp_blade_01_acc2<T>(x, y);
+        o[2]  = gp_blade_02_acc2<T>(x, y);
+        o[3]  = gp_blade_03_acc2<T>(x, y);
+        o[4]  = gp_blade_04_acc2<T>(x, y);
+        o[5]  = gp_blade_05_acc2<T>(x, y);
+        o[6]  = gp_blade_06_acc2<T>(x, y);
+        o[7]  = gp_blade_07_acc2<T>(x, y);
+        o[8]  = gp_blade_08_acc2<T>(x, y);
+        o[9]  = gp_blade_09_acc2<T>(x, y);
+        o[10] = gp_blade_10_acc2<T>(x, y);
+        o[11] = gp_blade_11_acc2<T>(x, y);
+        o[12] = gp_blade_12_acc2<T>(x, y);
+        o[13] = gp_blade_13_acc2<T>(x, y);
+        o[14] = gp_blade_14_acc2<T>(x, y);
+        o[15] = gp_blade_15_acc2<T>(x, y);
+    }
+}
+
+template <typename T>
+static void gp_kernel_v2_2(const T* __restrict__ X,
+                                const T* __restrict__ Y,
+                                T* __restrict__ O,
+                                int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        o[0]  = gp_blade_00_acc4<T>(x, y);
+        o[1]  = gp_blade_01_acc4<T>(x, y);
+        o[2]  = gp_blade_02_acc4<T>(x, y);
+        o[3]  = gp_blade_03_acc4<T>(x, y);
+        o[4]  = gp_blade_04_acc4<T>(x, y);
+        o[5]  = gp_blade_05_acc4<T>(x, y);
+        o[6]  = gp_blade_06_acc4<T>(x, y);
+        o[7]  = gp_blade_07_acc4<T>(x, y);
+        o[8]  = gp_blade_08_acc4<T>(x, y);
+        o[9]  = gp_blade_09_acc4<T>(x, y);
+        o[10] = gp_blade_10_acc4<T>(x, y);
+        o[11] = gp_blade_11_acc4<T>(x, y);
+        o[12] = gp_blade_12_acc4<T>(x, y);
+        o[13] = gp_blade_13_acc4<T>(x, y);
+        o[14] = gp_blade_14_acc4<T>(x, y);
+        o[15] = gp_blade_15_acc4<T>(x, y);
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v2_1(const T* __restrict__ X,
+                                  const T* __restrict__ Y,
+                                  const T* __restrict__ R,
+                                  T* __restrict__ O,
+                                  int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            o[0]  = s * join_blade_00_acc2<T>(x, y);
+            o[1]  = s * join_blade_01_acc2<T>(x, y);
+            o[2]  = s * join_blade_02_acc2<T>(x, y);
+            o[3]  = s * join_blade_03_acc2<T>(x, y);
+            o[4]  = s * join_blade_04_acc2<T>(x, y);
+            o[5]  = s * join_blade_05_acc2<T>(x, y);
+            o[6]  = s * join_blade_06_acc2<T>(x, y);
+            o[7]  = s * join_blade_07_acc2<T>(x, y);
+            o[8]  = s * join_blade_08_acc2<T>(x, y);
+            o[9]  = s * join_blade_09_acc2<T>(x, y);
+            o[10] = s * join_blade_10_acc2<T>(x, y);
+            o[11] = s * join_blade_11_acc2<T>(x, y);
+            o[12] = s * join_blade_12_acc2<T>(x, y);
+            o[13] = s * join_blade_13_acc2<T>(x, y);
+            o[14] = s * join_blade_14_acc2<T>(x, y);
+            o[15] = s * join_blade_15_acc2<T>(x, y);
+        } else {
+            (void)R;
+            o[0]  = join_blade_00_acc2<T>(x, y);
+            o[1]  = join_blade_01_acc2<T>(x, y);
+            o[2]  = join_blade_02_acc2<T>(x, y);
+            o[3]  = join_blade_03_acc2<T>(x, y);
+            o[4]  = join_blade_04_acc2<T>(x, y);
+            o[5]  = join_blade_05_acc2<T>(x, y);
+            o[6]  = join_blade_06_acc2<T>(x, y);
+            o[7]  = join_blade_07_acc2<T>(x, y);
+            o[8]  = join_blade_08_acc2<T>(x, y);
+            o[9]  = join_blade_09_acc2<T>(x, y);
+            o[10] = join_blade_10_acc2<T>(x, y);
+            o[11] = join_blade_11_acc2<T>(x, y);
+            o[12] = join_blade_12_acc2<T>(x, y);
+            o[13] = join_blade_13_acc2<T>(x, y);
+            o[14] = join_blade_14_acc2<T>(x, y);
+            o[15] = join_blade_15_acc2<T>(x, y);
+        }
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v2_2(const T* __restrict__ X,
+                                  const T* __restrict__ Y,
+                                  const T* __restrict__ R,
+                                  T* __restrict__ O,
+                                  int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        const T* x = X + 16 * n;
+        const T* y = Y + 16 * n;
+        T*       o = O + 16 * n;
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            o[0]  = s * join_blade_00_acc4<T>(x, y);
+            o[1]  = s * join_blade_01_acc4<T>(x, y);
+            o[2]  = s * join_blade_02_acc4<T>(x, y);
+            o[3]  = s * join_blade_03_acc4<T>(x, y);
+            o[4]  = s * join_blade_04_acc4<T>(x, y);
+            o[5]  = s * join_blade_05_acc4<T>(x, y);
+            o[6]  = s * join_blade_06_acc4<T>(x, y);
+            o[7]  = s * join_blade_07_acc4<T>(x, y);
+            o[8]  = s * join_blade_08_acc4<T>(x, y);
+            o[9]  = s * join_blade_09_acc4<T>(x, y);
+            o[10] = s * join_blade_10_acc4<T>(x, y);
+            o[11] = s * join_blade_11_acc4<T>(x, y);
+            o[12] = s * join_blade_12_acc4<T>(x, y);
+            o[13] = s * join_blade_13_acc4<T>(x, y);
+            o[14] = s * join_blade_14_acc4<T>(x, y);
+            o[15] = s * join_blade_15_acc4<T>(x, y);
+        } else {
+            (void)R;
+            o[0]  = join_blade_00_acc4<T>(x, y);
+            o[1]  = join_blade_01_acc4<T>(x, y);
+            o[2]  = join_blade_02_acc4<T>(x, y);
+            o[3]  = join_blade_03_acc4<T>(x, y);
+            o[4]  = join_blade_04_acc4<T>(x, y);
+            o[5]  = join_blade_05_acc4<T>(x, y);
+            o[6]  = join_blade_06_acc4<T>(x, y);
+            o[7]  = join_blade_07_acc4<T>(x, y);
+            o[8]  = join_blade_08_acc4<T>(x, y);
+            o[9]  = join_blade_09_acc4<T>(x, y);
+            o[10] = join_blade_10_acc4<T>(x, y);
+            o[11] = join_blade_11_acc4<T>(x, y);
+            o[12] = join_blade_12_acc4<T>(x, y);
+            o[13] = join_blade_13_acc4<T>(x, y);
+            o[14] = join_blade_14_acc4<T>(x, y);
+            o[15] = join_blade_15_acc4<T>(x, y);
+        }
+    }
+}
+
+template <typename T>
+static void gp_kernel_v2_3(const T* __restrict__ X,
+                                const T* __restrict__ Y,
+                                T* __restrict__ O,
+                                int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        gp_block_ilp2<T>(X + 16 * n, Y + 16 * n, O + 16 * n);
+    }
+}
+
+template <typename T>
+static void gp_kernel_v2_4(const T* __restrict__ X,
+                                const T* __restrict__ Y,
+                                T* __restrict__ O,
+                                int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        gp_block_ilp4<T>(X + 16 * n, Y + 16 * n, O + 16 * n);
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v2_3(const T* __restrict__ X,
+                                  const T* __restrict__ Y,
+                                  const T* __restrict__ R,
+                                  T* __restrict__ O,
+                                  int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        T* o = O + 16 * n;
+        join_block_ilp2<T>(X + 16 * n, Y + 16 * n, o);
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            for (int i = 0; i < 16; ++i) o[i] *= s;
+        } else {
+            (void)R;
+        }
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v2_4(const T* __restrict__ X,
+                                  const T* __restrict__ Y,
+                                  const T* __restrict__ R,
+                                  T* __restrict__ O,
+                                  int64_t N) {
+    for (int64_t n = 0; n < N; ++n) {
+        T* o = O + 16 * n;
+        join_block_ilp4<T>(X + 16 * n, Y + 16 * n, o);
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            for (int i = 0; i < 16; ++i) o[i] *= s;
+        } else {
+            (void)R;
+        }
+    }
+}
 
 using CacheKey = std::tuple<c10::DeviceType, c10::DeviceIndex, c10::ScalarType>;
 
@@ -141,8 +584,22 @@ torch::Tensor geometric_product(const torch::Tensor& x, const torch::Tensor& y) 
                 "geometric_product: x and y must share dtype");
     TORCH_CHECK(x.device() == y.device(),
                 "geometric_product: x and y must share device");
-    auto basis = load_gp_basis(x.device(), x.scalar_type());
-    return torch::einsum("ijk, ...j, ...k -> ...i", {basis, x, y});
+    TORCH_CHECK(x.device().is_cpu(),
+                "geometric_product: CPU-only kernel; got device ", x.device());
+
+    auto bcast = at::broadcast_tensors({x, y});
+    auto xc = bcast[0].contiguous();
+    auto yc = bcast[1].contiguous();
+    auto out = torch::empty_like(xc);
+    int64_t N = xc.numel() / 16;
+
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "geometric_product_cpu", [&]{
+        gp_kernel_v2<scalar_t>(xc.data_ptr<scalar_t>(),
+                                 yc.data_ptr<scalar_t>(),
+                                 out.data_ptr<scalar_t>(),
+                                 N);
+    });
+    return out;
 }
 
 torch::Tensor equi_join(const torch::Tensor& x,
@@ -154,15 +611,252 @@ torch::Tensor equi_join(const torch::Tensor& x,
                 "equi_join: x and y must share dtype");
     TORCH_CHECK(x.device() == y.device(),
                 "equi_join: x and y must share device");
-
-    auto kernel = compute_join_kernel(x.device(), x.scalar_type());
-    auto ret = torch::einsum("ijk, ...j, ...k -> ...i", {kernel, x, y});
-
+    TORCH_CHECK(x.device().is_cpu(),
+                "equi_join: CPU-only kernel; got device ", x.device());
     if (reference.has_value()) {
         check_multivector(*reference, "equi_join: reference");
-        ret = ret * reference->narrow(-1, 14, 1);
+        TORCH_CHECK(reference->scalar_type() == x.scalar_type(),
+                    "equi_join: reference must share dtype with x");
+        TORCH_CHECK(reference->device() == x.device(),
+                    "equi_join: reference must share device with x");
     }
-    return ret;
+
+    auto bcast = at::broadcast_tensors({x, y});
+    auto xc = bcast[0].contiguous();
+    auto yc = bcast[1].contiguous();
+    auto out = torch::empty_like(xc);
+    int64_t N = xc.numel() / 16;
+
+    torch::Tensor refc;
+    if (reference.has_value()) {
+        refc = reference->expand_as(xc).contiguous();
+    }
+
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "equi_join_cpu", [&]{
+        if (reference.has_value()) {
+            join_kernel_v2<scalar_t, true>(
+                xc.data_ptr<scalar_t>(),
+                yc.data_ptr<scalar_t>(),
+                refc.data_ptr<scalar_t>(),
+                out.data_ptr<scalar_t>(),
+                N);
+        } else {
+            join_kernel_v2<scalar_t, false>(
+                xc.data_ptr<scalar_t>(),
+                yc.data_ptr<scalar_t>(),
+                nullptr,
+                out.data_ptr<scalar_t>(),
+                N);
+        }
+    });
+    return out;
+}
+
+namespace {
+
+template <typename Kernel>
+torch::Tensor run_gp_variant(const torch::Tensor& x, const torch::Tensor& y,
+                             const char* name, Kernel kernel) {
+    check_multivector(x, name);
+    check_multivector(y, name);
+    TORCH_CHECK(x.scalar_type() == y.scalar_type(),
+                name, ": x and y must share dtype");
+    TORCH_CHECK(x.device() == y.device(),
+                name, ": x and y must share device");
+    TORCH_CHECK(x.device().is_cpu(),
+                name, ": CPU-only kernel; got device ", x.device());
+
+    auto bcast = at::broadcast_tensors({x, y});
+    auto xc = bcast[0].contiguous();
+    auto yc = bcast[1].contiguous();
+    auto out = torch::empty_like(xc);
+    int64_t N = xc.numel() / 16;
+
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "gp_variant_cpu", [&]{
+        kernel(xc.data_ptr<scalar_t>(),
+               yc.data_ptr<scalar_t>(),
+               out.data_ptr<scalar_t>(),
+               N);
+    });
+    return out;
+}
+
+template <typename Kernel>
+torch::Tensor run_join_variant(const torch::Tensor& x, const torch::Tensor& y,
+                               const c10::optional<torch::Tensor>& reference,
+                               const char* name, Kernel kernel) {
+    check_multivector(x, name);
+    check_multivector(y, name);
+    TORCH_CHECK(x.scalar_type() == y.scalar_type(),
+                name, ": x and y must share dtype");
+    TORCH_CHECK(x.device() == y.device(),
+                name, ": x and y must share device");
+    TORCH_CHECK(x.device().is_cpu(),
+                name, ": CPU-only kernel; got device ", x.device());
+    if (reference.has_value()) {
+        check_multivector(*reference, name);
+        TORCH_CHECK(reference->scalar_type() == x.scalar_type(),
+                    name, ": reference must share dtype with x");
+        TORCH_CHECK(reference->device() == x.device(),
+                    name, ": reference must share device with x");
+    }
+
+    auto bcast = at::broadcast_tensors({x, y});
+    auto xc = bcast[0].contiguous();
+    auto yc = bcast[1].contiguous();
+    auto out = torch::empty_like(xc);
+    int64_t N = xc.numel() / 16;
+
+    torch::Tensor refc;
+    if (reference.has_value()) {
+        refc = reference->expand_as(xc).contiguous();
+    }
+
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "join_variant_cpu", [&]{
+        const scalar_t* R = reference.has_value() ? refc.data_ptr<scalar_t>() : nullptr;
+        kernel(xc.data_ptr<scalar_t>(),
+               yc.data_ptr<scalar_t>(),
+               R,
+               out.data_ptr<scalar_t>(),
+               N,
+               reference.has_value());
+    });
+    return out;
+}
+
+}  // namespace
+
+torch::Tensor geometric_product_v0(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v0",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v0<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v1(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v1",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v1<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor equi_join_v0(const torch::Tensor& x,
+                              const torch::Tensor& y,
+                              const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v0",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v0<T, true>(X, Y, R, O, N);
+            else         join_kernel_v0<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_v1(const torch::Tensor& x,
+                                  const torch::Tensor& y,
+                                  const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v1",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v1<T, true>(X, Y, R, O, N);
+            else         join_kernel_v1<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v2(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v2<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor equi_join_v2(const torch::Tensor& x,
+                           const torch::Tensor& y,
+                           const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v2_3(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_3",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v2_3<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v2_4(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_4",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v2_4<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor equi_join_v2_3(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2_3",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2_3<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_3<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_v2_4(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2_4",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2_4<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_4<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v2_1(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_1",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v2_1<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v2_2(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_2",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v2_2<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor equi_join_v2_1(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2_1",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2_1<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_1<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_v2_2(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2_2",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2_2<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_2<T, false>(X, Y, nullptr, O, N);
+        });
 }
 
 

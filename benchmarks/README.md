@@ -7,20 +7,20 @@ Lets keep any benchmarking stuff here.
 Run one target:
 
 ```bash
-.venv/bin/python benchmarks/benchmark_repo.py --target equi_geometric_attention --preset small
+.venv/bin/python benchmarks/benchmark_repo.py --target equi_geometric_attention --n 1
 ```
 
 Run all current targets:
 
 ```bash
-.venv/bin/python benchmarks/benchmark_repo.py --target all --preset small
+.venv/bin/python benchmarks/benchmark_repo.py --target all --n 1
 ```
 
 Some useful options:
 
 ```bash
-.venv/bin/python benchmarks/benchmark_repo.py --target equi_geometric_attention --preset small --warmup 5 --repeats 20 --inner-iters 100 --threads 1
-.venv/bin/python benchmarks/benchmark_repo.py --target mv_only_gatr_model --preset medium --json-out benchmarks/results/model_medium_cpu.json
+.venv/bin/python benchmarks/benchmark_repo.py --target equi_geometric_attention --n 1 --warmup 5 --repeats 20 --inner-iters 100 --threads 1
+.venv/bin/python benchmarks/benchmark_repo.py --target mv_only_gatr_model --n 1 --json-out benchmarks/results/model_medium_cpu.json
 ```
 
 A few notes:
