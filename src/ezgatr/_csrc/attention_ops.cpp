@@ -1,7 +1,9 @@
 #include "attention_ops.h"
 
-#include <cmath>
-#include <limits>
+#include <ATen/ops/scaled_dot_product_attention.h>
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
 #include <map>
 #include <mutex>
 #include <optional>
@@ -221,28 +223,6 @@ std::pair<Tensor, Tensor> compute_qk_for_daa_ver_2(
     };
 }
 
-Tensor apply_attention_mask(Tensor scores, const py::object& attn_mask_obj) {
-    if (attn_mask_obj.is_none()) {
-        return scores;
-    }
-
-    auto attn_mask = attn_mask_obj.cast<Tensor>();
-    if (attn_mask.scalar_type() == torch::kBool) {
-        return scores.masked_fill(attn_mask.logical_not(), -std::numeric_limits<double>::infinity());
-    }
-    return scores + attn_mask;
-}
-
-Tensor apply_causal_mask(Tensor scores) {
-    const auto q_tokens = scores.size(-2);
-    const auto k_tokens = scores.size(-1);
-    auto mask = torch::ones(
-                    {q_tokens, k_tokens},
-                    torch::TensorOptions().device(scores.device()).dtype(torch::kBool))
-                    .triu(1);
-    return scores.masked_fill(mask, -std::numeric_limits<double>::infinity());
-}
-
 Tensor compute_scaled_dot_product_attention(
     const Tensor& query,
     const Tensor& key,
@@ -251,22 +231,24 @@ Tensor compute_scaled_dot_product_attention(
     double dropout_p,
     bool is_causal,
     const py::object& scale_obj) {
-    double scale = 1.0 / std::sqrt(static_cast<double>(query.size(-1)));
+    std::optional<Tensor> attn_mask;
+    if (!attn_mask_obj.is_none()) {
+        attn_mask = attn_mask_obj.cast<Tensor>();
+    }
+
+    std::optional<double> scale = std::nullopt;
     if (!scale_obj.is_none()) {
         scale = scale_obj.cast<double>();
     }
 
-    auto scores = torch::matmul(query, key.transpose(-2, -1)) * scale;
-    scores = apply_attention_mask(scores, attn_mask_obj);
-    if (is_causal) {
-        scores = apply_causal_mask(scores);
-    }
-
-    auto attention = torch::softmax(scores, -1);
-    if (dropout_p > 0.0) {
-        attention = torch::dropout(attention, dropout_p, true);
-    }
-    return torch::matmul(attention, value);
+    return at::scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask,
+        dropout_p,
+        is_causal,
+        scale);
 }
 
 Tensor apply_query_weight(const Tensor& query_part, const py::handle& weight_item) {
@@ -274,6 +256,20 @@ Tensor apply_query_weight(const Tensor& query_part, const py::handle& weight_ite
         return query_part * py::cast<double>(weight_item);
     }
     return query_part * py::cast<Tensor>(weight_item);
+}
+
+std::optional<double> numeric_weight(const py::handle& weight_item) {
+    if (py::isinstance<py::float_>(weight_item) || py::isinstance<py::int_>(weight_item)) {
+        return py::cast<double>(weight_item);
+    }
+    try {
+        auto tensor = py::cast<Tensor>(weight_item);
+        if (tensor.device().is_cpu() && tensor.numel() == 1) {
+            return tensor.item<double>();
+        }
+    } catch (const py::cast_error&) {
+    }
+    return std::nullopt;
 }
 
 Tensor assemble_two_part_flattened(
@@ -290,6 +286,350 @@ Tensor assemble_two_part_flattened(
     return out;
 }
 
+#if defined(__AVX2__)
+__m256 load_blade8(const float* in, int64_t blade) {
+    return _mm256_set_ps(
+        in[7 * 16 + blade],
+        in[6 * 16 + blade],
+        in[5 * 16 + blade],
+        in[4 * 16 + blade],
+        in[3 * 16 + blade],
+        in[2 * 16 + blade],
+        in[1 * 16 + blade],
+        in[0 * 16 + blade]);
+}
+
+__m128 load_blade4(const float* in, int64_t blade) {
+    return _mm_set_ps(
+        in[3 * 16 + blade],
+        in[2 * 16 + blade],
+        in[1 * 16 + blade],
+        in[0 * 16 + blade]);
+}
+
+void store_stride8(float* out, int64_t offset, __m256 values) {
+    alignas(32) float tmp[8];
+    _mm256_store_ps(tmp, values);
+    for (int64_t c = 0; c < 8; ++c) {
+        out[c * 12 + offset] = tmp[c];
+    }
+}
+
+void store_stride4(float* out, int64_t offset, __m128 values) {
+    alignas(16) float tmp[4];
+    _mm_store_ps(tmp, values);
+    for (int64_t c = 0; c < 4; ++c) {
+        out[c * 12 + offset] = tmp[c];
+    }
+}
+
+bool build_interleaved_ipa_daa_qk_simd_float(
+    const Tensor& query,
+    const Tensor& key,
+    Tensor& query_flat,
+    Tensor& key_flat,
+    int64_t channels,
+    int64_t ipa_offset,
+    int64_t daa_offset,
+    double ipa_weight,
+    double daa_weight,
+    double eps) {
+    if (query.scalar_type() != torch::kFloat32 || channels != 4 && channels != 8) {
+        return false;
+    }
+
+    auto query_contig = query.contiguous();
+    auto key_contig = key.contiguous();
+    const auto num_blocks = query.numel() / (channels * 16);
+    const float* q_in = query_contig.data_ptr<float>();
+    const float* k_in = key_contig.data_ptr<float>();
+    float* q_out = query_flat.data_ptr<float>();
+    float* k_out = key_flat.data_ptr<float>();
+    const float ipa_w = static_cast<float>(ipa_weight);
+    const float daa_w = static_cast<float>(daa_weight);
+    const float eps_v = static_cast<float>(eps);
+
+    if (channels == 8) {
+        const __m256 ipa_w_v = _mm256_set1_ps(ipa_w);
+        const __m256 daa_w_v = _mm256_set1_ps(daa_w);
+        const __m256 eps_vec = _mm256_set1_ps(eps_v);
+        const __m256 two = _mm256_set1_ps(2.0f);
+
+        for (int64_t block = 0; block < num_blocks; ++block) {
+            const float* qx = q_in + block * channels * 16;
+            const float* kx = k_in + block * channels * 16;
+            float* qo = q_out + block * channels * 12;
+            float* ko = k_out + block * channels * 12;
+
+            store_stride8(qo, ipa_offset + 0, _mm256_mul_ps(load_blade8(qx, 0), ipa_w_v));
+            store_stride8(qo, ipa_offset + 1, _mm256_mul_ps(load_blade8(qx, 2), ipa_w_v));
+            store_stride8(qo, ipa_offset + 2, _mm256_mul_ps(load_blade8(qx, 3), ipa_w_v));
+            store_stride8(qo, ipa_offset + 3, _mm256_mul_ps(load_blade8(qx, 4), ipa_w_v));
+            store_stride8(qo, ipa_offset + 4, _mm256_mul_ps(load_blade8(qx, 8), ipa_w_v));
+            store_stride8(qo, ipa_offset + 5, _mm256_mul_ps(load_blade8(qx, 9), ipa_w_v));
+            store_stride8(qo, ipa_offset + 6, _mm256_mul_ps(load_blade8(qx, 10), ipa_w_v));
+
+            store_stride8(ko, ipa_offset + 0, load_blade8(kx, 0));
+            store_stride8(ko, ipa_offset + 1, load_blade8(kx, 2));
+            store_stride8(ko, ipa_offset + 2, load_blade8(kx, 3));
+            store_stride8(ko, ipa_offset + 3, load_blade8(kx, 4));
+            store_stride8(ko, ipa_offset + 4, load_blade8(kx, 8));
+            store_stride8(ko, ipa_offset + 5, load_blade8(kx, 9));
+            store_stride8(ko, ipa_offset + 6, load_blade8(kx, 10));
+
+            const __m256 q14 = load_blade8(qx, 14);
+            const __m256 q_norm = _mm256_div_ps(q14, _mm256_add_ps(_mm256_mul_ps(q14, q14), eps_vec));
+            const __m256 qn0 = _mm256_mul_ps(load_blade8(qx, 11), q_norm);
+            const __m256 qn1 = _mm256_mul_ps(load_blade8(qx, 12), q_norm);
+            const __m256 qn2 = _mm256_mul_ps(load_blade8(qx, 13), q_norm);
+            const __m256 qn3 = _mm256_mul_ps(q14, q_norm);
+            const __m256 qsum = _mm256_add_ps(
+                _mm256_add_ps(_mm256_mul_ps(qn0, qn0), _mm256_mul_ps(qn1, qn1)),
+                _mm256_mul_ps(qn2, qn2));
+            store_stride8(qo, daa_offset + 0, _mm256_mul_ps(qsum, daa_w_v));
+            store_stride8(qo, daa_offset + 1, _mm256_mul_ps(_mm256_mul_ps(qn3, qn3), daa_w_v));
+            store_stride8(qo, daa_offset + 2, _mm256_mul_ps(_mm256_mul_ps(qn0, qn3), daa_w_v));
+            store_stride8(qo, daa_offset + 3, _mm256_mul_ps(_mm256_mul_ps(qn1, qn3), daa_w_v));
+            store_stride8(qo, daa_offset + 4, _mm256_mul_ps(_mm256_mul_ps(qn2, qn3), daa_w_v));
+
+            const __m256 k14 = load_blade8(kx, 14);
+            const __m256 k_norm = _mm256_div_ps(k14, _mm256_add_ps(_mm256_mul_ps(k14, k14), eps_vec));
+            const __m256 kn0 = _mm256_mul_ps(load_blade8(kx, 11), k_norm);
+            const __m256 kn1 = _mm256_mul_ps(load_blade8(kx, 12), k_norm);
+            const __m256 kn2 = _mm256_mul_ps(load_blade8(kx, 13), k_norm);
+            const __m256 kn3 = _mm256_mul_ps(k14, k_norm);
+            const __m256 ksum = _mm256_add_ps(
+                _mm256_add_ps(_mm256_mul_ps(kn0, kn0), _mm256_mul_ps(kn1, kn1)),
+                _mm256_mul_ps(kn2, kn2));
+            store_stride8(ko, daa_offset + 0, _mm256_sub_ps(_mm256_setzero_ps(), _mm256_mul_ps(kn3, kn3)));
+            store_stride8(ko, daa_offset + 1, _mm256_sub_ps(_mm256_setzero_ps(), ksum));
+            store_stride8(ko, daa_offset + 2, _mm256_mul_ps(two, _mm256_mul_ps(kn0, kn3)));
+            store_stride8(ko, daa_offset + 3, _mm256_mul_ps(two, _mm256_mul_ps(kn1, kn3)));
+            store_stride8(ko, daa_offset + 4, _mm256_mul_ps(two, _mm256_mul_ps(kn2, kn3)));
+        }
+        return true;
+    }
+
+    const __m128 ipa_w_v = _mm_set1_ps(ipa_w);
+    const __m128 daa_w_v = _mm_set1_ps(daa_w);
+    const __m128 eps_vec = _mm_set1_ps(eps_v);
+    const __m128 two = _mm_set1_ps(2.0f);
+
+    for (int64_t block = 0; block < num_blocks; ++block) {
+        const float* qx = q_in + block * channels * 16;
+        const float* kx = k_in + block * channels * 16;
+        float* qo = q_out + block * channels * 12;
+        float* ko = k_out + block * channels * 12;
+
+        store_stride4(qo, ipa_offset + 0, _mm_mul_ps(load_blade4(qx, 0), ipa_w_v));
+        store_stride4(qo, ipa_offset + 1, _mm_mul_ps(load_blade4(qx, 2), ipa_w_v));
+        store_stride4(qo, ipa_offset + 2, _mm_mul_ps(load_blade4(qx, 3), ipa_w_v));
+        store_stride4(qo, ipa_offset + 3, _mm_mul_ps(load_blade4(qx, 4), ipa_w_v));
+        store_stride4(qo, ipa_offset + 4, _mm_mul_ps(load_blade4(qx, 8), ipa_w_v));
+        store_stride4(qo, ipa_offset + 5, _mm_mul_ps(load_blade4(qx, 9), ipa_w_v));
+        store_stride4(qo, ipa_offset + 6, _mm_mul_ps(load_blade4(qx, 10), ipa_w_v));
+
+        store_stride4(ko, ipa_offset + 0, load_blade4(kx, 0));
+        store_stride4(ko, ipa_offset + 1, load_blade4(kx, 2));
+        store_stride4(ko, ipa_offset + 2, load_blade4(kx, 3));
+        store_stride4(ko, ipa_offset + 3, load_blade4(kx, 4));
+        store_stride4(ko, ipa_offset + 4, load_blade4(kx, 8));
+        store_stride4(ko, ipa_offset + 5, load_blade4(kx, 9));
+        store_stride4(ko, ipa_offset + 6, load_blade4(kx, 10));
+
+        const __m128 q14 = load_blade4(qx, 14);
+        const __m128 q_norm = _mm_div_ps(q14, _mm_add_ps(_mm_mul_ps(q14, q14), eps_vec));
+        const __m128 qn0 = _mm_mul_ps(load_blade4(qx, 11), q_norm);
+        const __m128 qn1 = _mm_mul_ps(load_blade4(qx, 12), q_norm);
+        const __m128 qn2 = _mm_mul_ps(load_blade4(qx, 13), q_norm);
+        const __m128 qn3 = _mm_mul_ps(q14, q_norm);
+        const __m128 qsum = _mm_add_ps(
+            _mm_add_ps(_mm_mul_ps(qn0, qn0), _mm_mul_ps(qn1, qn1)),
+            _mm_mul_ps(qn2, qn2));
+        store_stride4(qo, daa_offset + 0, _mm_mul_ps(qsum, daa_w_v));
+        store_stride4(qo, daa_offset + 1, _mm_mul_ps(_mm_mul_ps(qn3, qn3), daa_w_v));
+        store_stride4(qo, daa_offset + 2, _mm_mul_ps(_mm_mul_ps(qn0, qn3), daa_w_v));
+        store_stride4(qo, daa_offset + 3, _mm_mul_ps(_mm_mul_ps(qn1, qn3), daa_w_v));
+        store_stride4(qo, daa_offset + 4, _mm_mul_ps(_mm_mul_ps(qn2, qn3), daa_w_v));
+
+        const __m128 k14 = load_blade4(kx, 14);
+        const __m128 k_norm = _mm_div_ps(k14, _mm_add_ps(_mm_mul_ps(k14, k14), eps_vec));
+        const __m128 kn0 = _mm_mul_ps(load_blade4(kx, 11), k_norm);
+        const __m128 kn1 = _mm_mul_ps(load_blade4(kx, 12), k_norm);
+        const __m128 kn2 = _mm_mul_ps(load_blade4(kx, 13), k_norm);
+        const __m128 kn3 = _mm_mul_ps(k14, k_norm);
+        const __m128 ksum = _mm_add_ps(
+            _mm_add_ps(_mm_mul_ps(kn0, kn0), _mm_mul_ps(kn1, kn1)),
+            _mm_mul_ps(kn2, kn2));
+        store_stride4(ko, daa_offset + 0, _mm_sub_ps(_mm_setzero_ps(), _mm_mul_ps(kn3, kn3)));
+        store_stride4(ko, daa_offset + 1, _mm_sub_ps(_mm_setzero_ps(), ksum));
+        store_stride4(ko, daa_offset + 2, _mm_mul_ps(two, _mm_mul_ps(kn0, kn3)));
+        store_stride4(ko, daa_offset + 3, _mm_mul_ps(two, _mm_mul_ps(kn1, kn3)));
+        store_stride4(ko, daa_offset + 4, _mm_mul_ps(two, _mm_mul_ps(kn2, kn3)));
+    }
+    return true;
+}
+#endif
+
+std::optional<std::pair<Tensor, Tensor>> try_build_interleaved_ipa_daa_qk(
+    const Tensor& query,
+    const Tensor& key,
+    const std::vector<std::string>& kind_names,
+    const std::vector<py::object>& kind_kwargs,
+    const std::vector<py::object>& weights,
+    bool use_simd) {
+    if (kind_names.size() != 2) {
+        return std::nullopt;
+    }
+
+    int ipa_index = -1;
+    int daa_index = -1;
+    for (size_t i = 0; i < kind_names.size(); ++i) {
+        if (kind_names[i] == "ipa") {
+            ipa_index = static_cast<int>(i);
+        } else if (kind_names[i] == "daa") {
+            daa_index = static_cast<int>(i);
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (ipa_index < 0 || daa_index < 0) {
+        return std::nullopt;
+    }
+
+    auto ipa_weight = numeric_weight(weights[ipa_index]);
+    auto daa_weight = numeric_weight(weights[daa_index]);
+    if (!ipa_weight.has_value() || !daa_weight.has_value()) {
+        return std::nullopt;
+    }
+
+    if (!query.device().is_cpu() || !key.device().is_cpu()) {
+        return std::nullopt;
+    }
+
+    double eps = 1e-3;
+    if (!kind_kwargs[daa_index].is_none()) {
+        auto kwargs = py::cast<py::dict>(kind_kwargs[daa_index]);
+        if (kwargs.contains("eps")) {
+            eps = py::cast<double>(kwargs["eps"]);
+        }
+    }
+
+    auto flat_sizes = query.sizes().vec();
+    const auto channels = flat_sizes[flat_sizes.size() - 2];
+    const auto num_blocks = query.numel() / (channels * 16);
+    flat_sizes.pop_back();
+    flat_sizes.back() = channels * 12;
+    auto query_flat = torch::empty(flat_sizes, query.options());
+    auto key_flat = torch::empty(flat_sizes, key.options());
+
+    auto query_contig = query.contiguous();
+    auto key_contig = key.contiguous();
+
+    const int64_t ipa_offset = ipa_index == 0 ? 0 : 5;
+    const int64_t daa_offset = daa_index == 0 ? 0 : 7;
+
+#if defined(__AVX2__)
+    if (use_simd && channels == 8 && build_interleaved_ipa_daa_qk_simd_float(
+                        query,
+                        key,
+                        query_flat,
+                        key_flat,
+                        channels,
+                        ipa_offset,
+                        daa_offset,
+                        *ipa_weight,
+                        *daa_weight,
+                        eps)) {
+        return std::make_pair(query_flat, key_flat);
+    }
+#else
+    (void)use_simd;
+#endif
+
+    AT_DISPATCH_FLOATING_TYPES(query.scalar_type(), "build_interleaved_ipa_daa_qk", [&] {
+        const auto* q_in = query_contig.data_ptr<scalar_t>();
+        const auto* k_in = key_contig.data_ptr<scalar_t>();
+        auto* q_out = query_flat.data_ptr<scalar_t>();
+        auto* k_out = key_flat.data_ptr<scalar_t>();
+        const scalar_t eps_v = static_cast<scalar_t>(eps);
+        const scalar_t ipa_w = static_cast<scalar_t>(*ipa_weight);
+        const scalar_t daa_w = static_cast<scalar_t>(*daa_weight);
+
+        for (int64_t block = 0; block < num_blocks; ++block) {
+            const int64_t in_base = block * channels * 16;
+            const int64_t out_base = block * channels * 12;
+
+            auto emit_channel = [&](int64_t c) {
+                const scalar_t* qx = q_in + in_base + c * 16;
+                const scalar_t* kx = k_in + in_base + c * 16;
+                scalar_t* qo = q_out + out_base + c * 12;
+                scalar_t* ko = k_out + out_base + c * 12;
+
+                qo[ipa_offset + 0] = qx[0] * ipa_w;
+                qo[ipa_offset + 1] = qx[2] * ipa_w;
+                qo[ipa_offset + 2] = qx[3] * ipa_w;
+                qo[ipa_offset + 3] = qx[4] * ipa_w;
+                qo[ipa_offset + 4] = qx[8] * ipa_w;
+                qo[ipa_offset + 5] = qx[9] * ipa_w;
+                qo[ipa_offset + 6] = qx[10] * ipa_w;
+
+                ko[ipa_offset + 0] = kx[0];
+                ko[ipa_offset + 1] = kx[2];
+                ko[ipa_offset + 2] = kx[3];
+                ko[ipa_offset + 3] = kx[4];
+                ko[ipa_offset + 4] = kx[8];
+                ko[ipa_offset + 5] = kx[9];
+                ko[ipa_offset + 6] = kx[10];
+
+                const scalar_t q_norm = qx[14] / (qx[14] * qx[14] + eps_v);
+                const scalar_t qn0 = qx[11] * q_norm;
+                const scalar_t qn1 = qx[12] * q_norm;
+                const scalar_t qn2 = qx[13] * q_norm;
+                const scalar_t qn3 = qx[14] * q_norm;
+                qo[daa_offset + 0] = (qn0 * qn0 + qn1 * qn1 + qn2 * qn2) * daa_w;
+                qo[daa_offset + 1] = (qn3 * qn3) * daa_w;
+                qo[daa_offset + 2] = (qn0 * qn3) * daa_w;
+                qo[daa_offset + 3] = (qn1 * qn3) * daa_w;
+                qo[daa_offset + 4] = (qn2 * qn3) * daa_w;
+
+                const scalar_t k_norm = kx[14] / (kx[14] * kx[14] + eps_v);
+                const scalar_t kn0 = kx[11] * k_norm;
+                const scalar_t kn1 = kx[12] * k_norm;
+                const scalar_t kn2 = kx[13] * k_norm;
+                const scalar_t kn3 = kx[14] * k_norm;
+                ko[daa_offset + 0] = -(kn3 * kn3);
+                ko[daa_offset + 1] = -(kn0 * kn0 + kn1 * kn1 + kn2 * kn2);
+                ko[daa_offset + 2] = static_cast<scalar_t>(2.0) * kn0 * kn3;
+                ko[daa_offset + 3] = static_cast<scalar_t>(2.0) * kn1 * kn3;
+                ko[daa_offset + 4] = static_cast<scalar_t>(2.0) * kn2 * kn3;
+            };
+
+            if (channels == 4) {
+                emit_channel(0);
+                emit_channel(1);
+                emit_channel(2);
+                emit_channel(3);
+            } else if (channels == 8) {
+                emit_channel(0);
+                emit_channel(1);
+                emit_channel(2);
+                emit_channel(3);
+                emit_channel(4);
+                emit_channel(5);
+                emit_channel(6);
+                emit_channel(7);
+            } else {
+                for (int64_t c = 0; c < channels; ++c) {
+                    emit_channel(c);
+                }
+            }
+        }
+    });
+
+    return std::make_pair(query_flat, key_flat);
+}
+
 std::optional<std::pair<Tensor, Tensor>> try_build_fast_path_qk(
     const Tensor& query,
     const Tensor& key,
@@ -297,7 +637,16 @@ std::optional<std::pair<Tensor, Tensor>> try_build_fast_path_qk(
     const std::vector<py::object>& kind_kwargs,
     const std::vector<py::object>& weights,
     bool use_cache,
-    bool use_direct_daa) {
+    bool use_direct_daa,
+    bool use_simd) {
+    if (use_direct_daa) {
+        auto compressed = try_build_interleaved_ipa_daa_qk(
+            query, key, kind_names, kind_kwargs, weights, use_simd);
+        if (compressed.has_value()) {
+            return compressed;
+        }
+    }
+
     if (kind_names.size() == 1) {
         if (kind_names[0] == "ipa") {
             Tensor q_part;
@@ -409,7 +758,8 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
     const py::object& scale,
     bool use_cache,
     bool use_direct_daa,
-    bool use_fast_paths) {
+    bool use_fast_paths,
+    bool use_simd) {
     check_mv_attention_tensor(query, "equi_geometric_attention_mv_only: query");
     check_mv_attention_tensor(key, "equi_geometric_attention_mv_only: key");
     check_mv_attention_tensor(value, "equi_geometric_attention_mv_only: value");
@@ -481,7 +831,7 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
     Tensor key_flat;
     if (use_fast_paths) {
         auto qk = try_build_fast_path_qk(
-            query, key, kind_names, kind_kwargs, weights, use_cache, use_direct_daa);
+            query, key, kind_names, kind_kwargs, weights, use_cache, use_direct_daa, use_simd);
         if (qk.has_value()) {
             query_flat = qk->first;
             key_flat = qk->second;
@@ -542,7 +892,7 @@ torch::Tensor equi_geometric_attention_mv_only_ver_0(
     bool is_causal,
     const py::object& scale) {
     return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, false, false, false);
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, false, false, false, false);
 }
 
 torch::Tensor equi_geometric_attention_mv_only_ver_1(
@@ -556,7 +906,7 @@ torch::Tensor equi_geometric_attention_mv_only_ver_1(
     bool is_causal,
     const py::object& scale) {
     return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, false, false);
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, false, false, false);
 }
 
 torch::Tensor equi_geometric_attention_mv_only_ver_2(
@@ -570,7 +920,7 @@ torch::Tensor equi_geometric_attention_mv_only_ver_2(
     bool is_causal,
     const py::object& scale) {
     return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true, false);
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true, true, false);
 }
 
 torch::Tensor equi_geometric_attention_mv_only_ver_3(
@@ -583,8 +933,13 @@ torch::Tensor equi_geometric_attention_mv_only_ver_3(
     double dropout_p,
     bool is_causal,
     const py::object& scale) {
+    if (query.scalar_type() != torch::kFloat32 || query.size(-2) != 8) {
+        return equi_geometric_attention_mv_only_ver_2(
+            query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale);
+    }
+
     return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true, true);
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true, true, true);
 }
 
 torch::Tensor equi_geometric_attention_mv_only(
