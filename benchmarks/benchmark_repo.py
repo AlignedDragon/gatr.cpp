@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from ezgatr.nets.mv_only_gatr import MVOnlyGATrConfig, MVOnlyGATrModel
+from ezgatr.nets.mv_only_gatr import MVOnlyGATrConfig, MVOnlyGATrModel, MVOnlyGATrModelASL_ver_0, MVOnlyGATrModelASL_ver_1, MVOnlyGATrModelASL_ver_2#, MVOnlyGATrModelASL_ver_3
 from ezgatr.nn.functional import (
     geometric_product as geometric_product_py,
     equi_join as equi_join_py,
@@ -18,45 +18,73 @@ from ezgatr.nn.functional import (
     equi_rms_norm as equi_rms_norm_py,
     scaler_gated_gelu as scaler_gated_gelu_py,
     equi_geometric_attention as equi_geometric_attention_py,
-    equi_geometric_attention_cpp,
-    equi_geometric_attention_cpp_ver_0,
-    equi_geometric_attention_cpp_ver_1,
-    equi_geometric_attention_cpp_ver_2,
+    # equi_geometric_attention_cpp,
+    # equi_geometric_attention_cpp_ver_0,
+    # equi_geometric_attention_cpp_ver_1,
+    # equi_geometric_attention_cpp_ver_2,
 )
 
 from ezgatr.opt import (
-    outer_product_ver_0,
-    inner_product_ver_0,
+    #version?
+    equi_geometric_attention_mv_only,
+
+    #start
+
+    # outer_product_ver_0,
+    # inner_product_ver_0,
+    geometric_product_v0,
+    equi_join_v0,
     equi_linear_ver_0,
     equi_rms_norm_ver_0,
     scaler_gated_gelu_ver_0,
     equi_geometric_attention_ver_0,
-    outer_product_ver_1,
-    inner_product_ver_1,
+    #equi_geometric_attention_mv_only_ver_0,
+
+
+
+    # outer_product_ver_1,
+    # inner_product_ver_1,
+    geometric_product_v1,
+    equi_join_v1,
     equi_linear_ver_1,
     equi_rms_norm_ver_1,
     scaler_gated_gelu_ver_1,
     equi_geometric_attention_ver_1,
-    outer_product_ver_2,
-    inner_product_ver_2,
+    #equi_geometric_attention_mv_only_ver_1,
+
+
+    # outer_product_ver_2,
+    # inner_product_ver_2,
+    geometric_product_v2,
+    equi_join_v2,
     equi_linear_ver_2,
     equi_rms_norm_ver_2,
     scaler_gated_gelu_ver_2,
     equi_geometric_attention_ver_2,
-    outer_product_ver_3,
-    inner_product_ver_3,
+    #equi_geometric_attention_mv_only_ver_2,
+
+
+    # outer_product_ver_3,
+    # inner_product_ver_3,
+    #geometric_product_v3,
+    #equi_join_v3,
     equi_linear_ver_3,
     equi_rms_norm_ver_3,
-    scaler_gated_gelu_ver_3,
+    # scaler_gated_gelu_ver_3,
+    equi_geometric_attention_ver_3,
+    #equi_geometric_attention_mv_only_ver_3,
 )
 from ezgatr import opt as _opt
 
 
-PRESETS = {
-    "tiny": {"batch": 2, "tokens": 32, "channels": 8, "heads": 2},
-    "small": {"batch": 4, "tokens": 128, "channels": 16, "heads": 4},
-    "medium": {"batch": 4, "tokens": 256, "channels": 32, "heads": 4},
-}
+
+def make_cfg(n: int) -> dict[str, int]:
+    return {
+        "batch": 64,
+        "tokens": 16 * n,
+        "channels": 4 * n,
+        "heads": 28 * n,
+    }
 
 
 def synchronize(device: torch.device) -> None:
@@ -64,8 +92,8 @@ def synchronize(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
-def make_inputs(device: torch.device, preset: str) -> dict[str, torch.Tensor]:
-    cfg = PRESETS[preset]
+def make_inputs(device: torch.device, n: int) -> dict[str, torch.Tensor]:
+    cfg = make_cfg(n)
     batch = cfg["batch"]
     tokens = cfg["tokens"]
     channels = cfg["channels"]
@@ -84,8 +112,8 @@ def make_inputs(device: torch.device, preset: str) -> dict[str, torch.Tensor]:
     }
 
 
-def build_model(device: torch.device, preset: str) -> MVOnlyGATrModel:
-    cfg = PRESETS[preset]
+def build_model(device: torch.device, n: int):
+    cfg = make_cfg(n)
     model_cfg = MVOnlyGATrConfig(
         num_layers=2,
         size_context=cfg["tokens"],
@@ -98,43 +126,111 @@ def build_model(device: torch.device, preset: str) -> MVOnlyGATrModel:
     )
     return MVOnlyGATrModel(model_cfg).to(device).eval()
 
+def build_model_ver_0(device: torch.device, n: int) -> MVOnlyGATrModel:
+    cfg = make_cfg(n)
+    model_cfg = MVOnlyGATrConfig(
+        num_layers=2,
+        size_context=cfg["tokens"],
+        size_channels_in=1,
+        size_channels_out=1,
+        size_channels_hidden=max(8, cfg["channels"]),
+        size_channels_intermediate=max(8, cfg["channels"]),
+        attn_num_heads=cfg["heads"],
+        attn_is_causal=False,
+    )
+    return MVOnlyGATrModelASL_ver_0(model_cfg).to(device).eval()
 
-def build_target(name: str, device: torch.device, preset: str):
-    inputs = make_inputs(device, preset)
+def build_model_ver_1(device: torch.device, n: int) -> MVOnlyGATrModel:
+    cfg = make_cfg(n)
+    model_cfg = MVOnlyGATrConfig(
+        num_layers=2,
+        size_context=cfg["tokens"],
+        size_channels_in=1,
+        size_channels_out=1,
+        size_channels_hidden=max(8, cfg["channels"]),
+        size_channels_intermediate=max(8, cfg["channels"]),
+        attn_num_heads=cfg["heads"],
+        attn_is_causal=False,
+    )
+    return MVOnlyGATrModelASL_ver_1(model_cfg).to(device).eval()
+
+def build_model_ver_2(device: torch.device, n: int) -> MVOnlyGATrModel:
+    cfg = make_cfg(n)
+    model_cfg = MVOnlyGATrConfig(
+        num_layers=2,
+        size_context=cfg["tokens"],
+        size_channels_in=1,
+        size_channels_out=1,
+        size_channels_hidden=max(8, cfg["channels"]),
+        size_channels_intermediate=max(8, cfg["channels"]),
+        attn_num_heads=cfg["heads"],
+        attn_is_causal=False,
+    )
+    return MVOnlyGATrModelASL_ver_2(model_cfg).to(device).eval()
+
+# def build_model_ver_3(device: torch.device, n: int) -> MVOnlyGATrModel:
+#     cfg = make_cfg(n)
+#     model_cfg = MVOnlyGATrConfig(
+#         num_layers=2,
+#         size_context=cfg["tokens"],
+#         size_channels_in=1,
+#         size_channels_out=1,
+#         size_channels_hidden=max(8, cfg["channels"]),
+#         size_channels_intermediate=max(8, cfg["channels"]),
+#         attn_num_heads=cfg["heads"],
+#         attn_is_causal=False,
+#     )
+#     return MVOnlyGATrModelASL_ver_3(model_cfg).to(device).eval()
+
+
+def build_target(name: str, device: torch.device, n: int):
+    inputs = make_inputs(device, n)
     model = None
 
+    #version?
+    if name == "equi_geometric_attention_mv_only":
+        return lambda: equi_geometric_attention_mv_only(
+            inputs["attn_q"],
+            inputs["attn_k"],
+            inputs["attn_v"],
+            kinds={"ipa": None, "daa": None},
+            is_causal=False,
+        )
+
+
+    #start
     if name == "geometric_product":
         return lambda: geometric_product_py(inputs["mv"], inputs["mv2"])
     if name == "geometric_product_v0":
-        return lambda: _opt.geometric_product_v0(inputs["mv"], inputs["mv2"])
+        return lambda: geometric_product_v0(inputs["mv"], inputs["mv2"])
     if name == "geometric_product_v1":
-        return lambda: _opt.geometric_product_v1(inputs["mv"], inputs["mv2"])
+        return lambda: geometric_product_v1(inputs["mv"], inputs["mv2"])
     if name == "geometric_product_v2":
-        return lambda: _opt.geometric_product_v2(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_v2_1":
-        return lambda: _opt.geometric_product_v2_1(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_v2_2":
-        return lambda: _opt.geometric_product_v2_2(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_v2_3":
-        return lambda: _opt.geometric_product_v2_3(inputs["mv"], inputs["mv2"])
-    if name == "geometric_product_v2_4":
-        return lambda: _opt.geometric_product_v2_4(inputs["mv"], inputs["mv2"])
+        return lambda: geometric_product_v2(inputs["mv"], inputs["mv2"])
+    # if name == "geometric_product_v2_1":
+    #     return lambda: _opt.geometric_product_v2_1(inputs["mv"], inputs["mv2"])
+    # if name == "geometric_product_v2_2":
+    #     return lambda: _opt.geometric_product_v2_2(inputs["mv"], inputs["mv2"])
+    # if name == "geometric_product_v2_3":
+    #     return lambda: _opt.geometric_product_v2_3(inputs["mv"], inputs["mv2"])
+    # if name == "geometric_product_v2_4":
+    #     return lambda: _opt.geometric_product_v2_4(inputs["mv"], inputs["mv2"])
     if name == "equi_join":
         return lambda: equi_join_py(inputs["mv"], inputs["mv2"], None)
     if name == "equi_join_v0":
-        return lambda: _opt.equi_join_v0(inputs["mv"], inputs["mv2"], inputs["mv"])
+        return lambda: equi_join_v0(inputs["mv"], inputs["mv2"], inputs["mv"])
     if name == "equi_join_v1":
-        return lambda: _opt.equi_join_v1(inputs["mv"], inputs["mv2"], inputs["mv"])
+        return lambda: equi_join_v1(inputs["mv"], inputs["mv2"], inputs["mv"])
     if name == "equi_join_v2":
-        return lambda: _opt.equi_join_v2(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_v2_1":
-        return lambda: _opt.equi_join_v2_1(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_v2_2":
-        return lambda: _opt.equi_join_v2_2(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_v2_3":
-        return lambda: _opt.equi_join_v2_3(inputs["mv"], inputs["mv2"], inputs["mv"])
-    if name == "equi_join_v2_4":
-        return lambda: _opt.equi_join_v2_4(inputs["mv"], inputs["mv2"], inputs["mv"])
+        return lambda: equi_join_v2(inputs["mv"], inputs["mv2"], inputs["mv"])
+    # if name == "equi_join_v2_1":
+    #     return lambda: _opt.equi_join_v2_1(inputs["mv"], inputs["mv2"], inputs["mv"])
+    # if name == "equi_join_v2_2":
+    #     return lambda: _opt.equi_join_v2_2(inputs["mv"], inputs["mv2"], inputs["mv"])
+    # if name == "equi_join_v2_3":
+    #     return lambda: _opt.equi_join_v2_3(inputs["mv"], inputs["mv2"], inputs["mv"])
+    # if name == "equi_join_v2_4":
+    #     return lambda: _opt.equi_join_v2_4(inputs["mv"], inputs["mv2"], inputs["mv"])
     if name == "outer_product":
         return lambda: outer_product_py(inputs["mv"], inputs["mv2"])
     if name == "inner_product":
@@ -153,46 +249,57 @@ def build_target(name: str, device: torch.device, preset: str):
             kinds={"ipa": None, "daa": None},
             is_causal=False,
         )
-    if name == "equi_geometric_attention_cpp":
-        return lambda: equi_geometric_attention_cpp(
-            inputs["attn_q"],
-            inputs["attn_k"],
-            inputs["attn_v"],
-            kinds={"ipa": None, "daa": None},
-            is_causal=False,
-        )
-    if name == "equi_geometric_attention_cpp_ver_0":
-        return lambda: equi_geometric_attention_cpp_ver_0(
-            inputs["attn_q"],
-            inputs["attn_k"],
-            inputs["attn_v"],
-            kinds={"ipa": None, "daa": None},
-            is_causal=False,
-        )
-    if name == "equi_geometric_attention_cpp_ver_1":
-        return lambda: equi_geometric_attention_cpp_ver_1(
-            inputs["attn_q"],
-            inputs["attn_k"],
-            inputs["attn_v"],
-            kinds={"ipa": None, "daa": None},
-            is_causal=False,
-        )
-    if name == "equi_geometric_attention_cpp_ver_2":
-        return lambda: equi_geometric_attention_cpp_ver_2(
-            inputs["attn_q"],
-            inputs["attn_k"],
-            inputs["attn_v"],
-            kinds={"ipa": None, "daa": None},
-            is_causal=False,
-        )
+    # if name == "equi_geometric_attention_cpp":
+    #     return lambda: equi_geometric_attention_cpp(
+    #         inputs["attn_q"],
+    #         inputs["attn_k"],
+    #         inputs["attn_v"],
+    #         kinds={"ipa": None, "daa": None},
+    #         is_causal=False,
+    #     )
+    # if name == "equi_geometric_attention_cpp_ver_0":
+    #     return lambda: equi_geometric_attention_cpp_ver_0(
+    #         inputs["attn_q"],
+    #         inputs["attn_k"],
+    #         inputs["attn_v"],
+    #         kinds={"ipa": None, "daa": None},
+    #         is_causal=False,
+    #     )
+    # if name == "equi_geometric_attention_cpp_ver_1":
+    #     return lambda: equi_geometric_attention_cpp_ver_1(
+    #         inputs["attn_q"],
+    #         inputs["attn_k"],
+    #         inputs["attn_v"],
+    #         kinds={"ipa": None, "daa": None},
+    #         is_causal=False,
+    #     )
+    # if name == "equi_geometric_attention_cpp_ver_2":
+    #     return lambda: equi_geometric_attention_cpp_ver_2(
+    #         inputs["attn_q"],
+    #         inputs["attn_k"],
+    #         inputs["attn_v"],
+    #         kinds={"ipa": None, "daa": None},
+    #         is_causal=False,
+    #     )
     if name == "mv_only_gatr_model":
-        model = build_model(device, preset)
+        model = build_model(device, n)
         return lambda: model(inputs["model_in"])
-
-    if name == "outer_product_ver_0":
-        return lambda: outer_product_ver_0(inputs["mv"], inputs["mv2"])
-    if name == "inner_product_ver_0":
-        return lambda: inner_product_ver_0(inputs["mv"], inputs["mv2"])
+    if name == "mv_only_gatr_model_ver_0":
+        model = build_model_ver_0(device, n)
+        return lambda: model(inputs["model_in"])
+    if name == "mv_only_gatr_model_ver_1":
+        model = build_model_ver_1(device, n)
+        return lambda: model(inputs["model_in"])
+    if name == "mv_only_gatr_model_ver_2":
+        model = build_model_ver_2(device, n)
+        return lambda: model(inputs["model_in"])
+    if name == "mv_only_gatr_model_ver_3":
+        model = build_model_ver_3(device, n)
+        return lambda: model(inputs["model_in"])
+    # if name == "outer_product_ver_0":
+    #     return lambda: outer_product_ver_0(inputs["mv"], inputs["mv2"])
+    # if name == "inner_product_ver_0":
+    #     return lambda: inner_product_ver_0(inputs["mv"], inputs["mv2"])
     if name == "equi_linear_ver_0":
         return lambda: equi_linear_ver_0(inputs["mv"], inputs["lin_w"], inputs["lin_b"])
     if name == "equi_rms_norm_ver_0":
@@ -208,10 +315,10 @@ def build_target(name: str, device: torch.device, preset: str):
             is_causal=False,
         )
 
-    if name == "outer_product_ver_1":
-        return lambda: outer_product_ver_1(inputs["mv"], inputs["mv2"])
-    if name == "inner_product_ver_1":
-        return lambda: inner_product_ver_1(inputs["mv"], inputs["mv2"])
+    # if name == "outer_product_ver_1":
+    #     return lambda: outer_product_ver_1(inputs["mv"], inputs["mv2"])
+    # if name == "inner_product_ver_1":
+    #     return lambda: inner_product_ver_1(inputs["mv"], inputs["mv2"])
     if name == "equi_linear_ver_1":
         return lambda: equi_linear_ver_1(inputs["mv"], inputs["lin_w"], inputs["lin_b"])
     if name == "equi_rms_norm_ver_1":
@@ -227,10 +334,10 @@ def build_target(name: str, device: torch.device, preset: str):
             is_causal=False,
         )
 
-    if name == "outer_product_ver_2":
-        return lambda: outer_product_ver_2(inputs["mv"], inputs["mv2"])
-    if name == "inner_product_ver_2":
-        return lambda: inner_product_ver_2(inputs["mv"], inputs["mv2"])
+    # if name == "outer_product_ver_2":
+    #     return lambda: outer_product_ver_2(inputs["mv"], inputs["mv2"])
+    # if name == "inner_product_ver_2":
+    #     return lambda: inner_product_ver_2(inputs["mv"], inputs["mv2"])
     if name == "equi_linear_ver_2":
         return lambda: equi_linear_ver_2(inputs["mv"], inputs["lin_w"], inputs["lin_b"])
     if name == "equi_rms_norm_ver_2":
@@ -246,47 +353,58 @@ def build_target(name: str, device: torch.device, preset: str):
             is_causal=False,
         )
 
-    if name == "outer_product_ver_3":
-        return lambda: outer_product_ver_3(inputs["mv"], inputs["mv2"])
-    if name == "inner_product_ver_3":
-        return lambda: inner_product_ver_3(inputs["mv"], inputs["mv2"])
+    # if name == "outer_product_ver_3":
+    #     return lambda: outer_product_ver_3(inputs["mv"], inputs["mv2"])
+    # if name == "inner_product_ver_3":
+    #     return lambda: inner_product_ver_3(inputs["mv"], inputs["mv2"])
     if name == "equi_linear_ver_3":
         return lambda: equi_linear_ver_3(inputs["mv"], inputs["lin_w"], inputs["lin_b"])
     if name == "equi_rms_norm_ver_3":
         return lambda: equi_rms_norm_ver_3(inputs["mv"], inputs["norm_w"], 1e-7)
-    if name == "scaler_gated_gelu_ver_3":
-        return lambda: scaler_gated_gelu_ver_3(inputs["mv"], "tanh")
+    # if name == "scaler_gated_gelu_ver_3":
+    #     return lambda: scaler_gated_gelu_ver_3(inputs["mv"], "tanh")
+    if name == "equi_geometric_attention_ver_3":
+        return lambda: equi_geometric_attention_ver_3(
+            inputs["attn_q"],
+            inputs["attn_k"],
+            inputs["attn_v"],
+            kinds={"ipa": None, "daa": None},
+            is_causal=False,
+        )
     raise ValueError(f"Unknown target: {name}")
 
 
 def get_target_names() -> list[str]:
     return [
+        #version?
+        "equi_geometric_attention_mv_only",
+        #start
         "geometric_product",
         "geometric_product_v0",
         "geometric_product_v1",
         "geometric_product_v2",
-        "geometric_product_v2_1",
-        "geometric_product_v2_2",
-        "geometric_product_v2_3",
-        "geometric_product_v2_4",
+        # "geometric_product_v2_1",
+        # "geometric_product_v2_2",
+        # "geometric_product_v2_3",
+        # "geometric_product_v2_4",
         "equi_join",
         "equi_join_v0",
         "equi_join_v1",
         "equi_join_v2",
-        "equi_join_v2_1",
-        "equi_join_v2_2",
-        "equi_join_v2_3",
-        "equi_join_v2_4",
-        "outer_product",
-        "outer_product_ver_0",
-        "outer_product_ver_1",
-        "outer_product_ver_2",
-        "outer_product_ver_3",
-        "inner_product",
-        "inner_product_ver_0",
-        "inner_product_ver_1",
-        "inner_product_ver_2",
-        "inner_product_ver_3",
+        # "equi_join_v2_1",
+        # "equi_join_v2_2",
+        # "equi_join_v2_3",
+        # "equi_join_v2_4",
+        #"outer_product",
+        # "outer_product_ver_0",
+        # "outer_product_ver_1",
+        # "outer_product_ver_2",
+        # "outer_product_ver_3",
+        # "inner_product",
+        # "inner_product_ver_0",
+        # "inner_product_ver_1",
+        # "inner_product_ver_2",
+        # "inner_product_ver_3",
         "equi_linear",
         "equi_linear_ver_0",
         "equi_linear_ver_1",
@@ -298,31 +416,36 @@ def get_target_names() -> list[str]:
         "equi_rms_norm_ver_2",
         "equi_rms_norm_ver_3",
         "equi_geometric_attention",
-        "equi_geometric_attention_cpp",
-        "equi_geometric_attention_cpp_ver_0",
-        "equi_geometric_attention_cpp_ver_1",
-        "equi_geometric_attention_cpp_ver_2",
+        #"equi_geometric_attention_cpp",
+        # "equi_geometric_attention_cpp_ver_0",
+        # "equi_geometric_attention_cpp_ver_1",
+        # "equi_geometric_attention_cpp_ver_2",
         "equi_geometric_attention_ver_0",
         "equi_geometric_attention_ver_1",
         "equi_geometric_attention_ver_2",
+        "equi_geometric_attention_ver_3",
         "scaler_gated_gelu",
         "scaler_gated_gelu_ver_0",
         "scaler_gated_gelu_ver_1",
         "scaler_gated_gelu_ver_2",
-        "scaler_gated_gelu_ver_3",
+        #"scaler_gated_gelu_ver_3",
         "mv_only_gatr_model",
+        #"mv_only_gatr_model_ver_0",
+        #"mv_only_gatr_model_ver_1",
+        #"mv_only_gatr_model_ver_2",
+        #"mv_only_gatr_model_ver_3",
     ]
 
 
 def measure_target(
     target_name: str,
     device: torch.device,
-    preset: str,
+    n: int,
     warmup: int,
     repeats: int,
     inner_iters: int,
 ) -> dict[str, float | str | int]:
-    fn = build_target(target_name, device=device, preset=preset)
+    fn = build_target(target_name, device=device, n=n)
 
     with torch.inference_mode():
         for _ in range(warmup):
@@ -342,7 +465,7 @@ def measure_target(
     per_iter_ms = [t / inner_iters for t in times_ms]
     return {
         "target": target_name,
-        "preset": preset,
+        "n": n,
         "device": str(device),
         "warmup": warmup,
         "repeats": repeats,
@@ -359,7 +482,7 @@ def parse_args():
     parser.add_argument("--target", choices=["all", *get_target_names()],
                         action="append", default=None,
                         help="Repeat for multiple targets, or 'all' for everything.")
-    parser.add_argument("--preset", choices=sorted(PRESETS), default="small")
+    parser.add_argument("--n",type=int,default=1)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--repeats", type=int, default=20)
@@ -403,7 +526,7 @@ def main() -> None:
         measure_target(
             target_name=name,
             device=device,
-            preset=args.preset,
+            n=args.n,
             warmup=args.warmup,
             repeats=args.repeats,
             inner_iters=args.inner_iters,
@@ -412,7 +535,7 @@ def main() -> None:
     ]
 
     print(
-        f"preset={args.preset} device={device} "
+        f"n={args.n} device={device} "
         f"threads={args.threads} inner_iters={args.inner_iters}"
     )
     print_table(results)
@@ -420,7 +543,8 @@ def main() -> None:
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "preset": args.preset,
+            "n": args.n,
+            "cfg": make_cfg(args.n),
             "device": str(device),
             "threads": args.threads,
             "warmup": args.warmup,
@@ -433,3 +557,11 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+

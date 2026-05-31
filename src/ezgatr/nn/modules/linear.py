@@ -114,4 +114,4 @@ class EquiLinearASL_ver_3(EquiLinear):
 
 
 # Backward-compatible alias used throughout the model code.
-ASLEquiLinear = EquiLinearASL_ver_0
+#ASLEquiLinear = EquiLinearASL_ver_0

@@ -181,7 +181,7 @@ void rms_norm_kernel(
         const scalar_t* group_in  = X + g * (M << 4);
         scalar_t* group_out       = O + g * (M << 4);
 
-        scalar_t acc = 0;
+        //scalar_t acc = 0;
 
         // ---- RMS accumulation ----
         // for (int64_t m = 0; m < M; ++m) {
