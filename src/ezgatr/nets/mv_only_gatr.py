@@ -1104,7 +1104,7 @@ class MVOnlyGATrAttentionASL_ver_0(nn.Module):
             h=self.config.attn_num_heads,
             c=self.config.size_channels_hidden,
         )
-        x, _ = equi_geometric_attention_ver_0(
+        x = equi_geometric_attention_ver_0(
             q,
             k,
             v,
@@ -1463,7 +1463,7 @@ class MVOnlyGATrAttentionASL_ver_1(nn.Module):
             h=self.config.attn_num_heads,
             c=self.config.size_channels_hidden,
         )
-        x, _ = equi_geometric_attention_ver_1(
+        x = equi_geometric_attention_ver_1(
             q,
             k,
             v,
@@ -1823,7 +1823,7 @@ class MVOnlyGATrAttentionASL_ver_2(nn.Module):
             h=self.config.attn_num_heads,
             c=self.config.size_channels_hidden,
         )
-        x, _ = equi_geometric_attention_ver_2(
+        x = equi_geometric_attention_ver_2(
             q,
             k,
             v,
