@@ -3,12 +3,17 @@
 
 #include <ATen/Dispatch.h>
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <mutex>
 #include <tuple>
 #include <type_traits>
 #include <vector>
+
+#if defined(__AVX2__) && defined(__FMA__)
+#include <immintrin.h>
+#endif
 
 namespace ezgatr { namespace opt {
 
@@ -24,6 +29,14 @@ namespace {
 #include "gp_unrolled_acc4.inc"
 #include "join_unrolled_acc2.inc"
 #include "join_unrolled_acc4.inc"
+#include "gp_loop_unroll2.inc"
+#include "gp_loop_unroll4.inc"
+#include "join_loop_unroll2.inc"
+#include "join_loop_unroll4.inc"
+#include "gp_soa_avx.inc"
+#include "join_soa_avx.inc"
+#include "gp_soa_auto.inc"
+#include "join_soa_auto.inc"
 
 using BasisTable = int8_t[16][16][16];
 
@@ -453,6 +466,342 @@ static void join_kernel_v2_4(const T* __restrict__ X,
     }
 }
 
+// ---------------------------------------------------------------------------
+// v2_5 / v2_6 — multivector loop unrolled by K=2 / K=4 (non-vectorized).
+// The work is in the generated gp_/join_loop_unroll{K} kernels; these are thin
+// wrappers so they slot into the run_*_variant dispatch like the other ops.
+// ---------------------------------------------------------------------------
+
+template <typename T>
+static void gp_kernel_v2_5(const T* __restrict__ X, const T* __restrict__ Y,
+                           T* __restrict__ O, int64_t N) {
+    gp_loop_unroll2<T>(X, Y, O, N);
+}
+
+template <typename T>
+static void gp_kernel_v2_6(const T* __restrict__ X, const T* __restrict__ Y,
+                           T* __restrict__ O, int64_t N) {
+    gp_loop_unroll4<T>(X, Y, O, N);
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v2_5(const T* __restrict__ X, const T* __restrict__ Y,
+                             const T* __restrict__ R, T* __restrict__ O, int64_t N) {
+    join_loop_unroll2<T, HasRef>(X, Y, R, O, N);
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v2_6(const T* __restrict__ X, const T* __restrict__ Y,
+                             const T* __restrict__ R, T* __restrict__ O, int64_t N) {
+    join_loop_unroll4<T, HasRef>(X, Y, R, O, N);
+}
+
+// ---------------------------------------------------------------------------
+// v2_7 — cache blocking (GEMM-style tiling), non-vectorized.
+// The batch is processed in tiles of GP_TILE multivectors sized to stay hot in
+// L1d (GP_TILE=64 -> X+Y+O ~= 24 KB at fp64), with software prefetch of the
+// next tile's X/Y. NOTE: this op has no cross-output operand reuse (each
+// multivector's X/Y is read exactly once), so arithmetic intensity is fixed;
+// the only thing blocking can buy here is locality/prefetch, not reuse. Kept as
+// a standalone variant to measure that contribution; cache blocking on top of
+// the vectorized v3 is a separate, later step.
+// ---------------------------------------------------------------------------
+
+constexpr int64_t kPgaTile = 64;
+
+template <typename T>
+static void gp_kernel_v2_7(const T* __restrict__ X, const T* __restrict__ Y,
+                           T* __restrict__ O, int64_t N) {
+    for (int64_t base = 0; base < N; base += kPgaTile) {
+        const int64_t end = std::min(base + kPgaTile, N);
+#if defined(__AVX2__) && defined(__FMA__)
+        if (end < N) {
+            _mm_prefetch(reinterpret_cast<const char*>(X + 16 * end), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(Y + 16 * end), _MM_HINT_T0);
+        }
+#endif
+        for (int64_t n = base; n < end; ++n) {
+            gp_block_ilp2<T>(X + 16 * n, Y + 16 * n, O + 16 * n);
+        }
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v2_7(const T* __restrict__ X, const T* __restrict__ Y,
+                             const T* __restrict__ R, T* __restrict__ O, int64_t N) {
+    for (int64_t base = 0; base < N; base += kPgaTile) {
+        const int64_t end = std::min(base + kPgaTile, N);
+#if defined(__AVX2__) && defined(__FMA__)
+        if (end < N) {
+            _mm_prefetch(reinterpret_cast<const char*>(X + 16 * end), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(Y + 16 * end), _MM_HINT_T0);
+        }
+#endif
+        for (int64_t n = base; n < end; ++n) {
+            T* o = O + 16 * n;
+            join_block_ilp2<T>(X + 16 * n, Y + 16 * n, o);
+            if constexpr (HasRef) {
+                const T s = R[16 * n + 14];
+                for (int i = 0; i < 16; ++i) o[i] *= s;
+            } else {
+                (void)R;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// v3 — vectorization across multivectors via SoA transpose + AVX2 (fp64).
+// Batch-size-agnostic: flattens to N multivectors, processes 4 at a time
+// (one __m256d lane each) with a scalar remainder for N % 4. The 4-wide block
+// is an internal SIMD detail, independent of the caller's (dynamic) batch
+// shape. Falls back to the scalar v2 kernel for non-double dtypes or when the
+// build target lacks AVX2/FMA.
+// ---------------------------------------------------------------------------
+
+#if defined(__AVX2__) && defined(__FMA__)
+// AoS -> SoA: 4 consecutive multivectors (rows of 16 contiguous doubles) become
+// sb[16][4], where sb[j] holds component j across the 4 lanes. Done as four 4x4
+// __m256d transposes (vs a 128-element scalar copy) so the transpose tax stays
+// small relative to the per-tile FMA work.
+static inline void soa_transpose_in_f64(const double* __restrict__ S, int64_t n,
+                                        double sb[16][4]) {
+    const double* r0 = S + 16 * (n + 0);
+    const double* r1 = S + 16 * (n + 1);
+    const double* r2 = S + 16 * (n + 2);
+    const double* r3 = S + 16 * (n + 3);
+    for (int b = 0; b < 4; ++b) {
+        __m256d v0 = _mm256_loadu_pd(r0 + 4 * b);
+        __m256d v1 = _mm256_loadu_pd(r1 + 4 * b);
+        __m256d v2 = _mm256_loadu_pd(r2 + 4 * b);
+        __m256d v3 = _mm256_loadu_pd(r3 + 4 * b);
+        __m256d t0 = _mm256_unpacklo_pd(v0, v1);
+        __m256d t1 = _mm256_unpackhi_pd(v0, v1);
+        __m256d t2 = _mm256_unpacklo_pd(v2, v3);
+        __m256d t3 = _mm256_unpackhi_pd(v2, v3);
+        _mm256_storeu_pd(sb[4 * b + 0], _mm256_permute2f128_pd(t0, t2, 0x20));
+        _mm256_storeu_pd(sb[4 * b + 1], _mm256_permute2f128_pd(t1, t3, 0x20));
+        _mm256_storeu_pd(sb[4 * b + 2], _mm256_permute2f128_pd(t0, t2, 0x31));
+        _mm256_storeu_pd(sb[4 * b + 3], _mm256_permute2f128_pd(t1, t3, 0x31));
+    }
+}
+
+// SoA -> AoS: ob[16][4] (component-major) back to 4 contiguous output rows.
+// When Scale is true, each lane's row is multiplied by its reference scalar s[l]
+// (the equi_join reference factor) before storing.
+template <bool Scale>
+static inline void soa_transpose_out_f64(const double ob[16][4], int64_t n,
+                                         double* __restrict__ O,
+                                         const double s[4]) {
+    __m256d sv0, sv1, sv2, sv3;
+    if constexpr (Scale) {
+        sv0 = _mm256_set1_pd(s[0]); sv1 = _mm256_set1_pd(s[1]);
+        sv2 = _mm256_set1_pd(s[2]); sv3 = _mm256_set1_pd(s[3]);
+    }
+    double* r0 = O + 16 * (n + 0);
+    double* r1 = O + 16 * (n + 1);
+    double* r2 = O + 16 * (n + 2);
+    double* r3 = O + 16 * (n + 3);
+    for (int b = 0; b < 4; ++b) {
+        __m256d c0 = _mm256_loadu_pd(ob[4 * b + 0]);
+        __m256d c1 = _mm256_loadu_pd(ob[4 * b + 1]);
+        __m256d c2 = _mm256_loadu_pd(ob[4 * b + 2]);
+        __m256d c3 = _mm256_loadu_pd(ob[4 * b + 3]);
+        __m256d t0 = _mm256_unpacklo_pd(c0, c1);
+        __m256d t1 = _mm256_unpackhi_pd(c0, c1);
+        __m256d t2 = _mm256_unpacklo_pd(c2, c3);
+        __m256d t3 = _mm256_unpackhi_pd(c2, c3);
+        __m256d o0 = _mm256_permute2f128_pd(t0, t2, 0x20);
+        __m256d o1 = _mm256_permute2f128_pd(t1, t3, 0x20);
+        __m256d o2 = _mm256_permute2f128_pd(t0, t2, 0x31);
+        __m256d o3 = _mm256_permute2f128_pd(t1, t3, 0x31);
+        if constexpr (Scale) {
+            o0 = _mm256_mul_pd(o0, sv0); o1 = _mm256_mul_pd(o1, sv1);
+            o2 = _mm256_mul_pd(o2, sv2); o3 = _mm256_mul_pd(o3, sv3);
+        }
+        _mm256_storeu_pd(r0 + 4 * b, o0);
+        _mm256_storeu_pd(r1 + 4 * b, o1);
+        _mm256_storeu_pd(r2 + 4 * b, o2);
+        _mm256_storeu_pd(r3 + 4 * b, o3);
+    }
+}
+#endif  // __AVX2__ && __FMA__
+
+template <typename T>
+static void gp_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
+                         T* __restrict__ O, int64_t N) {
+#if defined(__AVX2__) && defined(__FMA__)
+    if constexpr (std::is_same_v<T, double>) {
+        int64_t n = 0;
+        for (; n + 4 <= N; n += 4) {
+            alignas(32) double xb[16][4], yb[16][4], ob[16][4];
+            soa_transpose_in_f64(X, n, xb);
+            soa_transpose_in_f64(Y, n, yb);
+            gp_soa_block_f64(xb, yb, ob);
+            soa_transpose_out_f64<false>(ob, n, O, nullptr);
+        }
+        for (; n < N; ++n) {
+            gp_block_ilp2<double>(X + 16 * n, Y + 16 * n, O + 16 * n);
+        }
+        return;
+    }
+#endif
+    // v3 is a float64 + AVX2/FMA-only kernel: no scalar/fp32 fallback by design.
+    TORCH_CHECK(false, "geometric_product_v3: requires float64 inputs and an "
+                       "AVX2/FMA build; got an unsupported dtype or target.");
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
+                           const T* __restrict__ R, T* __restrict__ O, int64_t N) {
+#if defined(__AVX2__) && defined(__FMA__)
+    if constexpr (std::is_same_v<T, double>) {
+        int64_t n = 0;
+        for (; n + 4 <= N; n += 4) {
+            alignas(32) double xb[16][4], yb[16][4], ob[16][4];
+            soa_transpose_in_f64(X, n, xb);
+            soa_transpose_in_f64(Y, n, yb);
+            join_soa_block_f64(xb, yb, ob);
+            if constexpr (HasRef) {
+                const double s[4] = {R[16 * (n + 0) + 14], R[16 * (n + 1) + 14],
+                                     R[16 * (n + 2) + 14], R[16 * (n + 3) + 14]};
+                soa_transpose_out_f64<true>(ob, n, O, s);
+            } else {
+                soa_transpose_out_f64<false>(ob, n, O, nullptr);
+            }
+        }
+        for (; n < N; ++n) {
+            T* o = O + 16 * n;
+            join_block_ilp2<double>(X + 16 * n, Y + 16 * n, o);
+            if constexpr (HasRef) {
+                const double s = R[16 * n + 14];
+                for (int i = 0; i < 16; ++i) o[i] *= s;
+            }
+        }
+        return;
+    }
+#endif
+    (void)X; (void)Y; (void)R; (void)O; (void)N;
+    // v3 is a float64 + AVX2/FMA-only kernel: no scalar/fp32 fallback by design.
+    TORCH_CHECK(false, "equi_join_v3: requires float64 inputs and an "
+                       "AVX2/FMA build; got an unsupported dtype or target.");
+}
+
+// ---------------------------------------------------------------------------
+// v3_1 — same SoA-across-multivectors idea as v3, but written as portable
+// plain-C++ loops (no intrinsics) and left to the compiler's autovectorizer.
+// Dtype-generic; block width BW chosen per dtype. Used to compare compiler
+// auto-vectorization against the hand-written AVX2 intrinsics in v3.
+// ---------------------------------------------------------------------------
+
+template <typename T>
+struct soa_block_width { static constexpr int value = 4; };  // fp64: one __m256d
+template <>
+struct soa_block_width<float> { static constexpr int value = 8; };  // fp32: one __m256
+
+template <typename T>
+static void gp_kernel_v3_1(const T* __restrict__ X, const T* __restrict__ Y,
+                           T* __restrict__ O, int64_t N) {
+#if defined(__AVX2__) && defined(__FMA__)
+    if constexpr (std::is_same_v<T, double>) {
+        // Vectorized transpose (as in v3) + auto-vectorized compute block, to
+        // isolate how well the compiler vectorizes the FMA work on its own.
+        int64_t n = 0;
+        for (; n + 4 <= N; n += 4) {
+            alignas(32) double xb[16][4], yb[16][4], ob[16][4];
+            soa_transpose_in_f64(X, n, xb);
+            soa_transpose_in_f64(Y, n, yb);
+            gp_soa_block_auto<double, 4>(xb, yb, ob);
+            soa_transpose_out_f64<false>(ob, n, O, nullptr);
+        }
+        for (; n < N; ++n) {
+            gp_block_ilp2<double>(X + 16 * n, Y + 16 * n, O + 16 * n);
+        }
+        return;
+    }
+#endif
+    constexpr int BW = soa_block_width<T>::value;
+    int64_t n = 0;
+    for (; n + BW <= N; n += BW) {
+        T xb[16][BW], yb[16][BW], ob[16][BW];
+        for (int l = 0; l < BW; ++l) {
+            const T* x = X + 16 * (n + l);
+            const T* y = Y + 16 * (n + l);
+            for (int j = 0; j < 16; ++j) { xb[j][l] = x[j]; yb[j][l] = y[j]; }
+        }
+        gp_soa_block_auto<T, BW>(xb, yb, ob);
+        for (int l = 0; l < BW; ++l) {
+            T* o = O + 16 * (n + l);
+            for (int i = 0; i < 16; ++i) o[i] = ob[i][l];
+        }
+    }
+    for (; n < N; ++n) {
+        gp_block_ilp2<T>(X + 16 * n, Y + 16 * n, O + 16 * n);
+    }
+}
+
+template <typename T, bool HasRef>
+static void join_kernel_v3_1(const T* __restrict__ X, const T* __restrict__ Y,
+                             const T* __restrict__ R, T* __restrict__ O, int64_t N) {
+#if defined(__AVX2__) && defined(__FMA__)
+    if constexpr (std::is_same_v<T, double>) {
+        int64_t n = 0;
+        for (; n + 4 <= N; n += 4) {
+            alignas(32) double xb[16][4], yb[16][4], ob[16][4];
+            soa_transpose_in_f64(X, n, xb);
+            soa_transpose_in_f64(Y, n, yb);
+            join_soa_block_auto<double, 4>(xb, yb, ob);
+            if constexpr (HasRef) {
+                const double s[4] = {R[16 * (n + 0) + 14], R[16 * (n + 1) + 14],
+                                     R[16 * (n + 2) + 14], R[16 * (n + 3) + 14]};
+                soa_transpose_out_f64<true>(ob, n, O, s);
+            } else {
+                soa_transpose_out_f64<false>(ob, n, O, nullptr);
+            }
+        }
+        for (; n < N; ++n) {
+            T* o = O + 16 * n;
+            join_block_ilp2<double>(X + 16 * n, Y + 16 * n, o);
+            if constexpr (HasRef) {
+                const double s = R[16 * n + 14];
+                for (int i = 0; i < 16; ++i) o[i] *= s;
+            }
+        }
+        return;
+    }
+#endif
+    constexpr int BW = soa_block_width<T>::value;
+    int64_t n = 0;
+    for (; n + BW <= N; n += BW) {
+        T xb[16][BW], yb[16][BW], ob[16][BW];
+        for (int l = 0; l < BW; ++l) {
+            const T* x = X + 16 * (n + l);
+            const T* y = Y + 16 * (n + l);
+            for (int j = 0; j < 16; ++j) { xb[j][l] = x[j]; yb[j][l] = y[j]; }
+        }
+        join_soa_block_auto<T, BW>(xb, yb, ob);
+        for (int l = 0; l < BW; ++l) {
+            T* o = O + 16 * (n + l);
+            if constexpr (HasRef) {
+                const T s = R[16 * (n + l) + 14];
+                for (int i = 0; i < 16; ++i) o[i] = ob[i][l] * s;
+            } else {
+                for (int i = 0; i < 16; ++i) o[i] = ob[i][l];
+            }
+        }
+    }
+    for (; n < N; ++n) {
+        T* o = O + 16 * n;
+        join_block_ilp2<T>(X + 16 * n, Y + 16 * n, o);
+        if constexpr (HasRef) {
+            const T s = R[16 * n + 14];
+            for (int i = 0; i < 16; ++i) o[i] *= s;
+        } else {
+            (void)R;
+        }
+    }
+}
+
 using CacheKey = std::tuple<c10::DeviceType, c10::DeviceIndex, c10::ScalarType>;
 
 CacheKey make_key(c10::Device device, c10::ScalarType dtype) {
@@ -855,6 +1204,101 @@ torch::Tensor equi_join_v2_2(const torch::Tensor& x,
             using T = std::remove_pointer_t<decltype(O)>;
             if (has_ref) join_kernel_v2_2<T, true>(X, Y, R, O, N);
             else         join_kernel_v2_2<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v2_5(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_5",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v2_5<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v2_6(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_6",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v2_6<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v2_7(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v2_7",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v2_7<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v3(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v3",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v3<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor geometric_product_v3_1(const torch::Tensor& x, const torch::Tensor& y) {
+    return run_gp_variant(x, y, "geometric_product_v3_1",
+        [](auto X, auto Y, auto O, int64_t N){
+            using T = std::remove_pointer_t<decltype(O)>;
+            gp_kernel_v3_1<T>(X, Y, O, N);
+        });
+}
+
+torch::Tensor equi_join_v2_5(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2_5",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2_5<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_5<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_v2_6(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2_6",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2_6<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_6<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_v2_7(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v2_7",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v2_7<T, true>(X, Y, R, O, N);
+            else         join_kernel_v2_7<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_v3(const torch::Tensor& x,
+                           const torch::Tensor& y,
+                           const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v3",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v3<T, true>(X, Y, R, O, N);
+            else         join_kernel_v3<T, false>(X, Y, nullptr, O, N);
+        });
+}
+
+torch::Tensor equi_join_v3_1(const torch::Tensor& x,
+                             const torch::Tensor& y,
+                             const c10::optional<torch::Tensor>& reference) {
+    return run_join_variant(x, y, reference, "equi_join_v3_1",
+        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
+            using T = std::remove_pointer_t<decltype(O)>;
+            if (has_ref) join_kernel_v3_1<T, true>(X, Y, R, O, N);
+            else         join_kernel_v3_1<T, false>(X, Y, nullptr, O, N);
         });
 }
 
