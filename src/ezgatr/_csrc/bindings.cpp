@@ -297,11 +297,7 @@ PYBIND11_MODULE(_opt_ops, m) {
 
       m.def("geometric_product_v3", &ezgatr::opt::geometric_product_v3,
             py::arg("x"), py::arg("y"),
-            "Geometric product: AVX2 SoA vectorization across multivectors (fp64).");
-
-      m.def("geometric_product_v3_1", &ezgatr::opt::geometric_product_v3_1,
-            py::arg("x"), py::arg("y"),
-            "Geometric product: auto-vectorized SoA across multivectors (portable, no intrinsics).");
+            "Geometric product: AVX2 SoA vectorization across multivectors (fp32).");
 
       m.def("equi_join_v2_5", &ezgatr::opt::equi_join_v2_5,
             py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
@@ -317,9 +313,6 @@ PYBIND11_MODULE(_opt_ops, m) {
 
       m.def("equi_join_v3", &ezgatr::opt::equi_join_v3,
             py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
-            "Equivariant join: AVX2 SoA vectorization across multivectors (fp64).");
+            "Equivariant join: AVX2 SoA vectorization across multivectors (fp32).");
 
-      m.def("equi_join_v3_1", &ezgatr::opt::equi_join_v3_1,
-            py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
-            "Equivariant join: auto-vectorized SoA across multivectors (portable, no intrinsics).");
 }

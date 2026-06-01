@@ -207,14 +207,26 @@ def build_target(name: str, device: torch.device, n: int):
         return lambda: geometric_product_v1(inputs["mv"], inputs["mv2"])
     if name == "geometric_product_v2":
         return lambda: geometric_product_v2(inputs["mv"], inputs["mv2"])
-    # if name == "geometric_product_v2_1":
-    #     return lambda: _opt.geometric_product_v2_1(inputs["mv"], inputs["mv2"])
-    # if name == "geometric_product_v2_2":
-    #     return lambda: _opt.geometric_product_v2_2(inputs["mv"], inputs["mv2"])
-    # if name == "geometric_product_v2_3":
-    #     return lambda: _opt.geometric_product_v2_3(inputs["mv"], inputs["mv2"])
-    # if name == "geometric_product_v2_4":
-    #     return lambda: _opt.geometric_product_v2_4(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_1":
+        return lambda: _opt.geometric_product_v2_1(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_2":
+        return lambda: _opt.geometric_product_v2_2(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_3":
+        return lambda: _opt.geometric_product_v2_3(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_4":
+        return lambda: _opt.geometric_product_v2_4(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_5":
+        return lambda: _opt.geometric_product_v2_5(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_6":
+        return lambda: _opt.geometric_product_v2_6(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v2_7":
+        return lambda: _opt.geometric_product_v2_7(inputs["mv"], inputs["mv2"])
+    if name == "geometric_product_v3":
+        return lambda: _opt.geometric_product_v3(inputs["mv"], inputs["mv2"])
+<<<<<<< HEAD
+    if name == "geometric_product_v3_1":
+        return lambda: _opt.geometric_product_v3_1(inputs["mv"], inputs["mv2"])
+
     if name == "equi_join":
         return lambda: equi_join_py(inputs["mv"], inputs["mv2"], None)
     if name == "equi_join_v0":
@@ -231,6 +243,22 @@ def build_target(name: str, device: torch.device, n: int):
         return lambda: _opt.equi_join_v2_1(inputs["mv"], inputs["mv2"], inputs["mv"])
     if name == "equi_join_v2_2":
         return lambda: _opt.equi_join_v2_2(inputs["mv"], inputs["mv2"], inputs["mv"])
+=======
+>>>>>>> ali/kernel-rename
+    if name == "equi_join_v2_5":
+        return lambda: _opt.equi_join_v2_5(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2_6":
+        return lambda: _opt.equi_join_v2_6(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v2_7":
+        return lambda: _opt.equi_join_v2_7(inputs["mv"], inputs["mv2"], inputs["mv"])
+    if name == "equi_join_v3":
+        return lambda: _opt.equi_join_v3(inputs["mv"], inputs["mv2"], inputs["mv"])
+<<<<<<< HEAD
+    if name == "equi_join_v3_1":
+        return lambda: _opt.equi_join_v3_1(inputs["mv"], inputs["mv2"], inputs["mv"])
+
+=======
+>>>>>>> ali/kernel-rename
     if name == "outer_product":
         return lambda: outer_product_py(inputs["mv"], inputs["mv2"])
     if name == "inner_product":
@@ -387,6 +415,10 @@ def get_target_names() -> list[str]:
         "geometric_product_v2_4",
         "geometric_product_v2_1",
         "geometric_product_v2_2",
+        "geometric_product_v2_5",
+        "geometric_product_v2_6",
+        "geometric_product_v2_7",
+        "geometric_product_v3",
         "equi_join",
         "equi_join_v0",
         "equi_join_v1",
@@ -395,6 +427,10 @@ def get_target_names() -> list[str]:
         "equi_join_v2_4",
         "equi_join_v2_1",
         "equi_join_v2_2",
+        "equi_join_v2_5",
+        "equi_join_v2_6",
+        "equi_join_v2_7",
+        "equi_join_v3",
         "outer_product",
         "inner_product",
         "equi_linear",
