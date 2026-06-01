@@ -83,7 +83,7 @@ def make_cfg(n: int) -> dict[str, int]:
         "batch": 64,
         "tokens": 16 * n,
         "channels": 4 * n,
-        "heads": 28 * n,
+        "heads": 128 * n,
     }
 
 
