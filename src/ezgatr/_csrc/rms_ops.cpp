@@ -9,7 +9,12 @@
 
 
 
+#if defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h>
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 #include <cmath>
 #include <algorithm>
 #include <type_traits>
@@ -590,8 +595,8 @@ void rms_norm_kernel_intrins(
 
             for (int64_t i = 0; i < M; ++i) {
 
-                const double* x = group_x + (i << 4);
-                double* o       = group_o + (i << 4);
+                const double* x = group_in + (i << 4);
+                double* o       = group_out + (i << 4);
 
                 double scalew = scale;
 

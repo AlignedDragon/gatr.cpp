@@ -1712,6 +1712,7 @@ torch::Tensor equi_linear(const torch::Tensor& x,
             TORCH_CHECK(false, "equi_linear: unknown version ", version,
                         " (expected 0, 1, 2, or 3)");
     }
+}
 
 torch::Tensor geometric_product_v2_5(const torch::Tensor& x, const torch::Tensor& y) {
     return run_gp_variant(x, y, "geometric_product_v2_5",
