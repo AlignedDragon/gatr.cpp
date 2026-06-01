@@ -18,8 +18,6 @@ geometric_product_v2_5 = _opt_ops.geometric_product_v2_5
 geometric_product_v2_6 = _opt_ops.geometric_product_v2_6
 geometric_product_v2_7 = _opt_ops.geometric_product_v2_7
 geometric_product_v3 = _opt_ops.geometric_product_v3
-geometric_product_v3_1 = _opt_ops.geometric_product_v3_1
-
 equi_join = _opt_ops.equi_join
 equi_join_v0 = _opt_ops.equi_join_v0
 equi_join_v1 = _opt_ops.equi_join_v1
@@ -32,7 +30,6 @@ equi_join_v2_5 = _opt_ops.equi_join_v2_5
 equi_join_v2_6 = _opt_ops.equi_join_v2_6
 equi_join_v2_7 = _opt_ops.equi_join_v2_7
 equi_join_v3 = _opt_ops.equi_join_v3
-equi_join_v3_1 = _opt_ops.equi_join_v3_1
 
 outer_product = _opt_ops.outer_product
 #inner_product = _opt_ops.inner_product
@@ -88,7 +85,6 @@ __all__ = [
     "geometric_product_v2_6",
     "geometric_product_v2_7",
     "geometric_product_v3",
-    "geometric_product_v3_1",
     "equi_join",
     "equi_join_v0",
     "equi_join_v1",
@@ -135,5 +131,4 @@ __all__ = [
     "equi_join_v2_6",
     "equi_join_v2_7",
     "equi_join_v3",
-    "equi_join_v3_1",
 ]

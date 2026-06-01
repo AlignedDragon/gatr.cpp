@@ -44,8 +44,6 @@ namespace {
 #include "join_loop_unroll4.inc"
 #include "gp_soa_avx.inc"
 #include "join_soa_avx.inc"
-#include "gp_soa_auto.inc"
-#include "join_soa_auto.inc"
 
 using BasisTable = int8_t[16][16][16];
 
@@ -560,78 +558,121 @@ static void join_kernel_v2_7(const T* __restrict__ X, const T* __restrict__ Y,
 }
 
 // ---------------------------------------------------------------------------
-// v3 — vectorization across multivectors via SoA transpose + AVX2 (fp64).
-// Batch-size-agnostic: flattens to N multivectors, processes 4 at a time
-// (one __m256d lane each) with a scalar remainder for N % 4. The 4-wide block
-// is an internal SIMD detail, independent of the caller's (dynamic) batch
-// shape. Falls back to the scalar v2 kernel for non-double dtypes or when the
-// build target lacks AVX2/FMA.
+// v3 - vectorization across multivectors via SoA transpose + AVX2 (fp32).
+// Batch-size-agnostic: flattens to N multivectors, processes 8 at a time
+// (one __m256 lane each) with a scalar remainder for N % 8. The 8-wide block
+// is an internal SIMD detail, independent of the caller's dynamic batch shape.
+// This variant is intentionally fp32 + AVX2/FMA only.
 // ---------------------------------------------------------------------------
 
 #if defined(__AVX2__) && defined(__FMA__)
-// AoS -> SoA: 4 consecutive multivectors (rows of 16 contiguous doubles) become
-// sb[16][4], where sb[j] holds component j across the 4 lanes. Done as four 4x4
-// __m256d transposes (vs a 128-element scalar copy) so the transpose tax stays
-// small relative to the per-tile FMA work.
-static inline void soa_transpose_in_f64(const double* __restrict__ S, int64_t n,
-                                        double sb[16][4]) {
-    const double* r0 = S + 16 * (n + 0);
-    const double* r1 = S + 16 * (n + 1);
-    const double* r2 = S + 16 * (n + 2);
-    const double* r3 = S + 16 * (n + 3);
-    for (int b = 0; b < 4; ++b) {
-        __m256d v0 = _mm256_loadu_pd(r0 + 4 * b);
-        __m256d v1 = _mm256_loadu_pd(r1 + 4 * b);
-        __m256d v2 = _mm256_loadu_pd(r2 + 4 * b);
-        __m256d v3 = _mm256_loadu_pd(r3 + 4 * b);
-        __m256d t0 = _mm256_unpacklo_pd(v0, v1);
-        __m256d t1 = _mm256_unpackhi_pd(v0, v1);
-        __m256d t2 = _mm256_unpacklo_pd(v2, v3);
-        __m256d t3 = _mm256_unpackhi_pd(v2, v3);
-        _mm256_storeu_pd(sb[4 * b + 0], _mm256_permute2f128_pd(t0, t2, 0x20));
-        _mm256_storeu_pd(sb[4 * b + 1], _mm256_permute2f128_pd(t1, t3, 0x20));
-        _mm256_storeu_pd(sb[4 * b + 2], _mm256_permute2f128_pd(t0, t2, 0x31));
-        _mm256_storeu_pd(sb[4 * b + 3], _mm256_permute2f128_pd(t1, t3, 0x31));
+static inline void transpose8x8_ps(__m256& r0, __m256& r1, __m256& r2, __m256& r3,
+                                   __m256& r4, __m256& r5, __m256& r6, __m256& r7) {
+    const __m256 t0 = _mm256_unpacklo_ps(r0, r1);
+    const __m256 t1 = _mm256_unpackhi_ps(r0, r1);
+    const __m256 t2 = _mm256_unpacklo_ps(r2, r3);
+    const __m256 t3 = _mm256_unpackhi_ps(r2, r3);
+    const __m256 t4 = _mm256_unpacklo_ps(r4, r5);
+    const __m256 t5 = _mm256_unpackhi_ps(r4, r5);
+    const __m256 t6 = _mm256_unpacklo_ps(r6, r7);
+    const __m256 t7 = _mm256_unpackhi_ps(r6, r7);
+
+    const __m256 u0 = _mm256_shuffle_ps(t0, t2, 0x44);
+    const __m256 u1 = _mm256_shuffle_ps(t0, t2, 0xEE);
+    const __m256 u2 = _mm256_shuffle_ps(t1, t3, 0x44);
+    const __m256 u3 = _mm256_shuffle_ps(t1, t3, 0xEE);
+    const __m256 u4 = _mm256_shuffle_ps(t4, t6, 0x44);
+    const __m256 u5 = _mm256_shuffle_ps(t4, t6, 0xEE);
+    const __m256 u6 = _mm256_shuffle_ps(t5, t7, 0x44);
+    const __m256 u7 = _mm256_shuffle_ps(t5, t7, 0xEE);
+
+    r0 = _mm256_permute2f128_ps(u0, u4, 0x20);
+    r1 = _mm256_permute2f128_ps(u1, u5, 0x20);
+    r2 = _mm256_permute2f128_ps(u2, u6, 0x20);
+    r3 = _mm256_permute2f128_ps(u3, u7, 0x20);
+    r4 = _mm256_permute2f128_ps(u0, u4, 0x31);
+    r5 = _mm256_permute2f128_ps(u1, u5, 0x31);
+    r6 = _mm256_permute2f128_ps(u2, u6, 0x31);
+    r7 = _mm256_permute2f128_ps(u3, u7, 0x31);
+}
+
+// AoS -> SoA: 8 consecutive multivectors (rows of 16 contiguous floats) become
+// sb[16][8], where sb[j] holds component j across the 8 lanes consumed by one
+// __m256 in the generated FMA block.
+static inline void soa_transpose_in_f32(const float* __restrict__ S, int64_t n,
+                                        float sb[16][8]) {
+    const float* r0p = S + 16 * (n + 0);
+    const float* r1p = S + 16 * (n + 1);
+    const float* r2p = S + 16 * (n + 2);
+    const float* r3p = S + 16 * (n + 3);
+    const float* r4p = S + 16 * (n + 4);
+    const float* r5p = S + 16 * (n + 5);
+    const float* r6p = S + 16 * (n + 6);
+    const float* r7p = S + 16 * (n + 7);
+    for (int b = 0; b < 2; ++b) {
+        __m256 r0 = _mm256_loadu_ps(r0p + 8 * b);
+        __m256 r1 = _mm256_loadu_ps(r1p + 8 * b);
+        __m256 r2 = _mm256_loadu_ps(r2p + 8 * b);
+        __m256 r3 = _mm256_loadu_ps(r3p + 8 * b);
+        __m256 r4 = _mm256_loadu_ps(r4p + 8 * b);
+        __m256 r5 = _mm256_loadu_ps(r5p + 8 * b);
+        __m256 r6 = _mm256_loadu_ps(r6p + 8 * b);
+        __m256 r7 = _mm256_loadu_ps(r7p + 8 * b);
+        transpose8x8_ps(r0, r1, r2, r3, r4, r5, r6, r7);
+        _mm256_store_ps(sb[8 * b + 0], r0);
+        _mm256_store_ps(sb[8 * b + 1], r1);
+        _mm256_store_ps(sb[8 * b + 2], r2);
+        _mm256_store_ps(sb[8 * b + 3], r3);
+        _mm256_store_ps(sb[8 * b + 4], r4);
+        _mm256_store_ps(sb[8 * b + 5], r5);
+        _mm256_store_ps(sb[8 * b + 6], r6);
+        _mm256_store_ps(sb[8 * b + 7], r7);
     }
 }
 
-// SoA -> AoS: ob[16][4] (component-major) back to 4 contiguous output rows.
+// SoA -> AoS: ob[16][8] (component-major) back to 8 contiguous output rows.
 // When Scale is true, each lane's row is multiplied by its reference scalar s[l]
 // (the equi_join reference factor) before storing.
 template <bool Scale>
-static inline void soa_transpose_out_f64(const double ob[16][4], int64_t n,
-                                         double* __restrict__ O,
-                                         const double s[4]) {
-    __m256d sv0, sv1, sv2, sv3;
-    if constexpr (Scale) {
-        sv0 = _mm256_set1_pd(s[0]); sv1 = _mm256_set1_pd(s[1]);
-        sv2 = _mm256_set1_pd(s[2]); sv3 = _mm256_set1_pd(s[3]);
-    }
-    double* r0 = O + 16 * (n + 0);
-    double* r1 = O + 16 * (n + 1);
-    double* r2 = O + 16 * (n + 2);
-    double* r3 = O + 16 * (n + 3);
-    for (int b = 0; b < 4; ++b) {
-        __m256d c0 = _mm256_loadu_pd(ob[4 * b + 0]);
-        __m256d c1 = _mm256_loadu_pd(ob[4 * b + 1]);
-        __m256d c2 = _mm256_loadu_pd(ob[4 * b + 2]);
-        __m256d c3 = _mm256_loadu_pd(ob[4 * b + 3]);
-        __m256d t0 = _mm256_unpacklo_pd(c0, c1);
-        __m256d t1 = _mm256_unpackhi_pd(c0, c1);
-        __m256d t2 = _mm256_unpacklo_pd(c2, c3);
-        __m256d t3 = _mm256_unpackhi_pd(c2, c3);
-        __m256d o0 = _mm256_permute2f128_pd(t0, t2, 0x20);
-        __m256d o1 = _mm256_permute2f128_pd(t1, t3, 0x20);
-        __m256d o2 = _mm256_permute2f128_pd(t0, t2, 0x31);
-        __m256d o3 = _mm256_permute2f128_pd(t1, t3, 0x31);
+static inline void soa_transpose_out_f32(const float ob[16][8], int64_t n,
+                                         float* __restrict__ O,
+                                         const float s[8]) {
+    float* r0p = O + 16 * (n + 0);
+    float* r1p = O + 16 * (n + 1);
+    float* r2p = O + 16 * (n + 2);
+    float* r3p = O + 16 * (n + 3);
+    float* r4p = O + 16 * (n + 4);
+    float* r5p = O + 16 * (n + 5);
+    float* r6p = O + 16 * (n + 6);
+    float* r7p = O + 16 * (n + 7);
+    for (int b = 0; b < 2; ++b) {
+        __m256 r0 = _mm256_load_ps(ob[8 * b + 0]);
+        __m256 r1 = _mm256_load_ps(ob[8 * b + 1]);
+        __m256 r2 = _mm256_load_ps(ob[8 * b + 2]);
+        __m256 r3 = _mm256_load_ps(ob[8 * b + 3]);
+        __m256 r4 = _mm256_load_ps(ob[8 * b + 4]);
+        __m256 r5 = _mm256_load_ps(ob[8 * b + 5]);
+        __m256 r6 = _mm256_load_ps(ob[8 * b + 6]);
+        __m256 r7 = _mm256_load_ps(ob[8 * b + 7]);
+        transpose8x8_ps(r0, r1, r2, r3, r4, r5, r6, r7);
         if constexpr (Scale) {
-            o0 = _mm256_mul_pd(o0, sv0); o1 = _mm256_mul_pd(o1, sv1);
-            o2 = _mm256_mul_pd(o2, sv2); o3 = _mm256_mul_pd(o3, sv3);
+            r0 = _mm256_mul_ps(r0, _mm256_set1_ps(s[0]));
+            r1 = _mm256_mul_ps(r1, _mm256_set1_ps(s[1]));
+            r2 = _mm256_mul_ps(r2, _mm256_set1_ps(s[2]));
+            r3 = _mm256_mul_ps(r3, _mm256_set1_ps(s[3]));
+            r4 = _mm256_mul_ps(r4, _mm256_set1_ps(s[4]));
+            r5 = _mm256_mul_ps(r5, _mm256_set1_ps(s[5]));
+            r6 = _mm256_mul_ps(r6, _mm256_set1_ps(s[6]));
+            r7 = _mm256_mul_ps(r7, _mm256_set1_ps(s[7]));
         }
-        _mm256_storeu_pd(r0 + 4 * b, o0);
-        _mm256_storeu_pd(r1 + 4 * b, o1);
-        _mm256_storeu_pd(r2 + 4 * b, o2);
-        _mm256_storeu_pd(r3 + 4 * b, o3);
+        _mm256_storeu_ps(r0p + 8 * b, r0);
+        _mm256_storeu_ps(r1p + 8 * b, r1);
+        _mm256_storeu_ps(r2p + 8 * b, r2);
+        _mm256_storeu_ps(r3p + 8 * b, r3);
+        _mm256_storeu_ps(r4p + 8 * b, r4);
+        _mm256_storeu_ps(r5p + 8 * b, r5);
+        _mm256_storeu_ps(r6p + 8 * b, r6);
+        _mm256_storeu_ps(r7p + 8 * b, r7);
     }
 }
 #endif  // __AVX2__ && __FMA__
@@ -640,23 +681,24 @@ template <typename T>
 static void gp_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
                          T* __restrict__ O, int64_t N) {
 #if defined(__AVX2__) && defined(__FMA__)
-    if constexpr (std::is_same_v<T, double>) {
+    if constexpr (std::is_same_v<T, float>) {
         int64_t n = 0;
-        for (; n + 4 <= N; n += 4) {
-            alignas(32) double xb[16][4], yb[16][4], ob[16][4];
-            soa_transpose_in_f64(X, n, xb);
-            soa_transpose_in_f64(Y, n, yb);
-            gp_soa_block_f64(xb, yb, ob);
-            soa_transpose_out_f64<false>(ob, n, O, nullptr);
+        for (; n + 8 <= N; n += 8) {
+            alignas(32) float xb[16][8], yb[16][8], ob[16][8];
+            soa_transpose_in_f32(X, n, xb);
+            soa_transpose_in_f32(Y, n, yb);
+            gp_soa_block_f32(xb, yb, ob);
+            soa_transpose_out_f32<false>(ob, n, O, nullptr);
         }
         for (; n < N; ++n) {
-            gp_block_ilp2<double>(X + 16 * n, Y + 16 * n, O + 16 * n);
+            gp_block_ilp2<float>(X + 16 * n, Y + 16 * n, O + 16 * n);
         }
         return;
     }
 #endif
-    // v3 is a float64 + AVX2/FMA-only kernel: no scalar/fp32 fallback by design.
-    TORCH_CHECK(false, "geometric_product_v3: requires float64 inputs and an "
+    (void)X; (void)Y; (void)O; (void)N;
+    // v3 is a float32 + AVX2/FMA-only kernel: no scalar/fp64 fallback by design.
+    TORCH_CHECK(false, "geometric_product_v3: requires float32 inputs and an "
                        "AVX2/FMA build; got an unsupported dtype or target.");
 }
 
@@ -664,26 +706,29 @@ template <typename T, bool HasRef>
 static void join_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
                            const T* __restrict__ R, T* __restrict__ O, int64_t N) {
 #if defined(__AVX2__) && defined(__FMA__)
-    if constexpr (std::is_same_v<T, double>) {
+    if constexpr (!HasRef) (void)R;
+    if constexpr (std::is_same_v<T, float>) {
         int64_t n = 0;
-        for (; n + 4 <= N; n += 4) {
-            alignas(32) double xb[16][4], yb[16][4], ob[16][4];
-            soa_transpose_in_f64(X, n, xb);
-            soa_transpose_in_f64(Y, n, yb);
-            join_soa_block_f64(xb, yb, ob);
+        for (; n + 8 <= N; n += 8) {
+            alignas(32) float xb[16][8], yb[16][8], ob[16][8];
+            soa_transpose_in_f32(X, n, xb);
+            soa_transpose_in_f32(Y, n, yb);
+            join_soa_block_f32(xb, yb, ob);
             if constexpr (HasRef) {
-                const double s[4] = {R[16 * (n + 0) + 14], R[16 * (n + 1) + 14],
-                                     R[16 * (n + 2) + 14], R[16 * (n + 3) + 14]};
-                soa_transpose_out_f64<true>(ob, n, O, s);
+                const float s[8] = {R[16 * (n + 0) + 14], R[16 * (n + 1) + 14],
+                                    R[16 * (n + 2) + 14], R[16 * (n + 3) + 14],
+                                    R[16 * (n + 4) + 14], R[16 * (n + 5) + 14],
+                                    R[16 * (n + 6) + 14], R[16 * (n + 7) + 14]};
+                soa_transpose_out_f32<true>(ob, n, O, s);
             } else {
-                soa_transpose_out_f64<false>(ob, n, O, nullptr);
+                soa_transpose_out_f32<false>(ob, n, O, nullptr);
             }
         }
         for (; n < N; ++n) {
             T* o = O + 16 * n;
-            join_block_ilp2<double>(X + 16 * n, Y + 16 * n, o);
+            join_block_ilp2<float>(X + 16 * n, Y + 16 * n, o);
             if constexpr (HasRef) {
-                const double s = R[16 * n + 14];
+                const float s = R[16 * n + 14];
                 for (int i = 0; i < 16; ++i) o[i] *= s;
             }
         }
@@ -691,124 +736,9 @@ static void join_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
     }
 #endif
     (void)X; (void)Y; (void)R; (void)O; (void)N;
-    // v3 is a float64 + AVX2/FMA-only kernel: no scalar/fp32 fallback by design.
-    TORCH_CHECK(false, "equi_join_v3: requires float64 inputs and an "
+    // v3 is a float32 + AVX2/FMA-only kernel: no scalar/fp64 fallback by design.
+    TORCH_CHECK(false, "equi_join_v3: requires float32 inputs and an "
                        "AVX2/FMA build; got an unsupported dtype or target.");
-}
-
-// ---------------------------------------------------------------------------
-// v3_1 — same SoA-across-multivectors idea as v3, but written as portable
-// plain-C++ loops (no intrinsics) and left to the compiler's autovectorizer.
-// Dtype-generic; block width BW chosen per dtype. Used to compare compiler
-// auto-vectorization against the hand-written AVX2 intrinsics in v3.
-// ---------------------------------------------------------------------------
-
-template <typename T>
-struct soa_block_width { static constexpr int value = 4; };  // fp64: one __m256d
-template <>
-struct soa_block_width<float> { static constexpr int value = 8; };  // fp32: one __m256
-
-template <typename T>
-static void gp_kernel_v3_1(const T* __restrict__ X, const T* __restrict__ Y,
-                           T* __restrict__ O, int64_t N) {
-#if defined(__AVX2__) && defined(__FMA__)
-    if constexpr (std::is_same_v<T, double>) {
-        // Vectorized transpose (as in v3) + auto-vectorized compute block, to
-        // isolate how well the compiler vectorizes the FMA work on its own.
-        int64_t n = 0;
-        for (; n + 4 <= N; n += 4) {
-            alignas(32) double xb[16][4], yb[16][4], ob[16][4];
-            soa_transpose_in_f64(X, n, xb);
-            soa_transpose_in_f64(Y, n, yb);
-            gp_soa_block_auto<double, 4>(xb, yb, ob);
-            soa_transpose_out_f64<false>(ob, n, O, nullptr);
-        }
-        for (; n < N; ++n) {
-            gp_block_ilp2<double>(X + 16 * n, Y + 16 * n, O + 16 * n);
-        }
-        return;
-    }
-#endif
-    constexpr int BW = soa_block_width<T>::value;
-    int64_t n = 0;
-    for (; n + BW <= N; n += BW) {
-        T xb[16][BW], yb[16][BW], ob[16][BW];
-        for (int l = 0; l < BW; ++l) {
-            const T* x = X + 16 * (n + l);
-            const T* y = Y + 16 * (n + l);
-            for (int j = 0; j < 16; ++j) { xb[j][l] = x[j]; yb[j][l] = y[j]; }
-        }
-        gp_soa_block_auto<T, BW>(xb, yb, ob);
-        for (int l = 0; l < BW; ++l) {
-            T* o = O + 16 * (n + l);
-            for (int i = 0; i < 16; ++i) o[i] = ob[i][l];
-        }
-    }
-    for (; n < N; ++n) {
-        gp_block_ilp2<T>(X + 16 * n, Y + 16 * n, O + 16 * n);
-    }
-}
-
-template <typename T, bool HasRef>
-static void join_kernel_v3_1(const T* __restrict__ X, const T* __restrict__ Y,
-                             const T* __restrict__ R, T* __restrict__ O, int64_t N) {
-#if defined(__AVX2__) && defined(__FMA__)
-    if constexpr (std::is_same_v<T, double>) {
-        int64_t n = 0;
-        for (; n + 4 <= N; n += 4) {
-            alignas(32) double xb[16][4], yb[16][4], ob[16][4];
-            soa_transpose_in_f64(X, n, xb);
-            soa_transpose_in_f64(Y, n, yb);
-            join_soa_block_auto<double, 4>(xb, yb, ob);
-            if constexpr (HasRef) {
-                const double s[4] = {R[16 * (n + 0) + 14], R[16 * (n + 1) + 14],
-                                     R[16 * (n + 2) + 14], R[16 * (n + 3) + 14]};
-                soa_transpose_out_f64<true>(ob, n, O, s);
-            } else {
-                soa_transpose_out_f64<false>(ob, n, O, nullptr);
-            }
-        }
-        for (; n < N; ++n) {
-            T* o = O + 16 * n;
-            join_block_ilp2<double>(X + 16 * n, Y + 16 * n, o);
-            if constexpr (HasRef) {
-                const double s = R[16 * n + 14];
-                for (int i = 0; i < 16; ++i) o[i] *= s;
-            }
-        }
-        return;
-    }
-#endif
-    constexpr int BW = soa_block_width<T>::value;
-    int64_t n = 0;
-    for (; n + BW <= N; n += BW) {
-        T xb[16][BW], yb[16][BW], ob[16][BW];
-        for (int l = 0; l < BW; ++l) {
-            const T* x = X + 16 * (n + l);
-            const T* y = Y + 16 * (n + l);
-            for (int j = 0; j < 16; ++j) { xb[j][l] = x[j]; yb[j][l] = y[j]; }
-        }
-        join_soa_block_auto<T, BW>(xb, yb, ob);
-        for (int l = 0; l < BW; ++l) {
-            T* o = O + 16 * (n + l);
-            if constexpr (HasRef) {
-                const T s = R[16 * (n + l) + 14];
-                for (int i = 0; i < 16; ++i) o[i] = ob[i][l] * s;
-            } else {
-                for (int i = 0; i < 16; ++i) o[i] = ob[i][l];
-            }
-        }
-    }
-    for (; n < N; ++n) {
-        T* o = O + 16 * n;
-        join_block_ilp2<T>(X + 16 * n, Y + 16 * n, o);
-        if constexpr (HasRef) {
-            const T s = R[16 * n + 14];
-            for (int i = 0; i < 16; ++i) o[i] *= s;
-        } else {
-            (void)R;
-        }
-    }
 }
 
 using CacheKey = std::tuple<c10::DeviceType, c10::DeviceIndex, c10::ScalarType>;
@@ -1745,14 +1675,6 @@ torch::Tensor geometric_product_v3(const torch::Tensor& x, const torch::Tensor& 
         });
 }
 
-torch::Tensor geometric_product_v3_1(const torch::Tensor& x, const torch::Tensor& y) {
-    return run_gp_variant(x, y, "geometric_product_v3_1",
-        [](auto X, auto Y, auto O, int64_t N){
-            using T = std::remove_pointer_t<decltype(O)>;
-            gp_kernel_v3_1<T>(X, Y, O, N);
-        });
-}
-
 torch::Tensor equi_join_v2_5(const torch::Tensor& x,
                              const torch::Tensor& y,
                              const c10::optional<torch::Tensor>& reference) {
@@ -1794,17 +1716,6 @@ torch::Tensor equi_join_v3(const torch::Tensor& x,
             using T = std::remove_pointer_t<decltype(O)>;
             if (has_ref) join_kernel_v3<T, true>(X, Y, R, O, N);
             else         join_kernel_v3<T, false>(X, Y, nullptr, O, N);
-        });
-}
-
-torch::Tensor equi_join_v3_1(const torch::Tensor& x,
-                             const torch::Tensor& y,
-                             const c10::optional<torch::Tensor>& reference) {
-    return run_join_variant(x, y, reference, "equi_join_v3_1",
-        [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
-            using T = std::remove_pointer_t<decltype(O)>;
-            if (has_ref) join_kernel_v3_1<T, true>(X, Y, R, O, N);
-            else         join_kernel_v3_1<T, false>(X, Y, nullptr, O, N);
         });
 }
 
