@@ -457,144 +457,144 @@ void rms_norm_kernel(
 
 
 
-// template <typename scalar_t, bool HasWeight>
-// void rms_norm_kernel_intrins(
-//     const scalar_t* __restrict__ X,
-//     scalar_t* __restrict__ O,
-//     const scalar_t* __restrict__ W,
-//     int64_t groups,
-//     int64_t M,
-//     double eps
-// ) {
-//     const scalar_t eps_t = static_cast<scalar_t>(eps);
+template <typename scalar_t, bool HasWeight>
+void rms_norm_kernel_intrins(
+    const scalar_t* __restrict__ X,
+    scalar_t* __restrict__ O,
+    const scalar_t* __restrict__ W,
+    int64_t groups,
+    int64_t M,
+    double eps
+) {
+    const scalar_t eps_t = static_cast<scalar_t>(eps);
 
-//     if constexpr (std::is_same_v<scalar_t, float>) {
+    if constexpr (std::is_same_v<scalar_t, float>) {
 
-//         for (int64_t g = 0; g < groups; ++g) {
+        for (int64_t g = 0; g < groups; ++g) {
 
-//             const scalar_t* group_in  = X + g * (M << 4);
-//             scalar_t* group_out       = O + g * (M << 4);
+            const scalar_t* group_in  = X + g * (M << 4);
+            scalar_t* group_out       = O + g * (M << 4);
 
 
-//             __m256 acc  = _mm256_setzero_ps();
+            __m256 acc  = _mm256_setzero_ps();
 
-//             int64_t m = 0;
+            int64_t m = 0;
 
-//             for (; m + 7 < M; m += 8) {
+            for (; m + 7 < M; m += 8) {
 
-//                 const scalar_t* x0 = group_in + (m << 4);
-//                 const scalar_t* x1 = x0 + 16;
-//                 const scalar_t* x2 = x1 + 16;
-//                 const scalar_t* x3 = x2 + 16;
-//                 const scalar_t* x4 = x3 + 16;
-//                 const scalar_t* x5 = x4 + 16;
-//                 const scalar_t* x6 = x5 + 16;
-//                 const scalar_t* x7 = x6 + 16;
+                const scalar_t* x0 = group_in + (m << 4);
+                const scalar_t* x1 = x0 + 16;
+                const scalar_t* x2 = x1 + 16;
+                const scalar_t* x3 = x2 + 16;
+                const scalar_t* x4 = x3 + 16;
+                const scalar_t* x5 = x4 + 16;
+                const scalar_t* x6 = x5 + 16;
+                const scalar_t* x7 = x6 + 16;
 
-//                 // load selected scalars (gather-light, no real gather)
-//                 __m256 v0 = _mm256_set_ps(
-//                     x7[0], x6[0], x5[0], x4[0],
-//                     x3[0], x2[0], x1[0], x0[0]);
+                // load selected scalars (gather-light, no real gather)
+                __m256 v0 = _mm256_set_ps(
+                    x7[0], x6[0], x5[0], x4[0],
+                    x3[0], x2[0], x1[0], x0[0]);
 
-//                 __m256 v2 = _mm256_set_ps(
-//                     x7[2], x6[2], x5[2], x4[2],
-//                     x3[2], x2[2], x1[2], x0[2]);
+                __m256 v2 = _mm256_set_ps(
+                    x7[2], x6[2], x5[2], x4[2],
+                    x3[2], x2[2], x1[2], x0[2]);
 
-//                 __m256 v3 = _mm256_set_ps(
-//                     x7[3], x6[3], x5[3], x4[3],
-//                     x3[3], x2[3], x1[3], x0[3]);
+                __m256 v3 = _mm256_set_ps(
+                    x7[3], x6[3], x5[3], x4[3],
+                    x3[3], x2[3], x1[3], x0[3]);
 
-//                 __m256 v4 = _mm256_set_ps(
-//                     x7[4], x6[4], x5[4], x4[4],
-//                     x3[4], x2[4], x1[4], x0[4]);
+                __m256 v4 = _mm256_set_ps(
+                    x7[4], x6[4], x5[4], x4[4],
+                    x3[4], x2[4], x1[4], x0[4]);
 
-//                 __m256 v8 = _mm256_set_ps(
-//                     x7[8], x6[8], x5[8], x4[8],
-//                     x3[8], x2[8], x1[8], x0[8]);
+                __m256 v8 = _mm256_set_ps(
+                    x7[8], x6[8], x5[8], x4[8],
+                    x3[8], x2[8], x1[8], x0[8]);
 
-//                 __m256 v9 = _mm256_set_ps(
-//                     x7[9], x6[9], x5[9], x4[9],
-//                     x3[9], x2[9], x1[9], x0[9]);
+                __m256 v9 = _mm256_set_ps(
+                    x7[9], x6[9], x5[9], x4[9],
+                    x3[9], x2[9], x1[9], x0[9]);
 
-//                 __m256 v10 = _mm256_set_ps(
-//                     x7[10], x6[10], x5[10], x4[10],
-//                     x3[10], x2[10], x1[10], x0[10]);
+                __m256 v10 = _mm256_set_ps(
+                    x7[10], x6[10], x5[10], x4[10],
+                    x3[10], x2[10], x1[10], x0[10]);
 
-//                 __m256 v14 = _mm256_set_ps(
-//                     x7[14], x6[14], x5[14], x4[14],
-//                     x3[14], x2[14], x1[14], x0[14]);
+                __m256 v14 = _mm256_set_ps(
+                    x7[14], x6[14], x5[14], x4[14],
+                    x3[14], x2[14], x1[14], x0[14]);
 
-//                 // accumulate squares
-//                 acc  = _mm256_fmadd_ps(v0,  v0,  acc);
-//                 acc  = _mm256_fmadd_ps(v2,  v2,  acc);
-//                 acc  = _mm256_fmadd_ps(v3,  v3,  acc);
-//                 acc  = _mm256_fmadd_ps(v4,  v4,  acc);
-//                 acc  = _mm256_fmadd_ps(v8,  v8,  acc);
-//                 acc  = _mm256_fmadd_ps(v9,  v9,  acc);
-//                 acc = _mm256_fmadd_ps(v10, v10, acc);
-//                 acc = _mm256_fmadd_ps(v14, v14, acc);
-//             }
+                // accumulate squares
+                acc  = _mm256_fmadd_ps(v0,  v0,  acc);
+                acc  = _mm256_fmadd_ps(v2,  v2,  acc);
+                acc  = _mm256_fmadd_ps(v3,  v3,  acc);
+                acc  = _mm256_fmadd_ps(v4,  v4,  acc);
+                acc  = _mm256_fmadd_ps(v8,  v8,  acc);
+                acc  = _mm256_fmadd_ps(v9,  v9,  acc);
+                acc = _mm256_fmadd_ps(v10, v10, acc);
+                acc = _mm256_fmadd_ps(v14, v14, acc);
+            }
             
-//             __m128 lo = _mm256_castps256_ps128(acc);
-//             __m128 hi = _mm256_extractf128_ps(acc, 1);
+            __m128 lo = _mm256_castps256_ps128(acc);
+            __m128 hi = _mm256_extractf128_ps(acc, 1);
 
-//             __m128 sum = _mm_add_ps(lo, hi);
-//             sum = _mm_hadd_ps(sum, sum);
-//             sum = _mm_hadd_ps(sum, sum);
+            __m128 sum = _mm_add_ps(lo, hi);
+            sum = _mm_hadd_ps(sum, sum);
+            sum = _mm_hadd_ps(sum, sum);
 
-//             scalar_t accs = _mm_cvtss_f32(sum);
+            scalar_t accs = _mm_cvtss_f32(sum);
 
-//             for (; m < M; ++m) {
-//                 const scalar_t* x = group_in + (m << 4);
+            for (; m < M; ++m) {
+                const scalar_t* x = group_in + (m << 4);
 
-//                 accs +=
-//                     x[0]*x[0] +
-//                     x[2]*x[2] +
-//                     x[3]*x[3] +
-//                     x[4]*x[4] +
-//                     x[8]*x[8] +
-//                     x[9]*x[9] +
-//                     x[10]*x[10] +
-//                     x[14]*x[14];
-//             }
+                accs +=
+                    x[0]*x[0] +
+                    x[2]*x[2] +
+                    x[3]*x[3] +
+                    x[4]*x[4] +
+                    x[8]*x[8] +
+                    x[9]*x[9] +
+                    x[10]*x[10] +
+                    x[14]*x[14];
+            }
 
 
 
-//             accs /= static_cast<scalar_t>(M);
+            accs /= static_cast<scalar_t>(M);
 
-//             scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
-//             //scalar_t scale = std::rsqrt(acc + eps_t);
-//             //scalar_t scale = scalar_t(1) / std::sqrt(acc + eps_t);
+            scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
+            //scalar_t scale = std::rsqrt(acc + eps_t);
+            //scalar_t scale = scalar_t(1) / std::sqrt(acc + eps_t);
 
-//             // ---- write + optional weight ----
-//             for (int64_t m = 0; m < M; ++m) {
+            // ---- write + optional weight ----
+            for (int64_t m = 0; m < M; ++m) {
 
-//                 const scalar_t* x = group_in + (m << 4);
-//                 scalar_t* o       = group_out + (m << 4);
+                const scalar_t* x = group_in + (m << 4);
+                scalar_t* o       = group_out + (m << 4);
 
-//                 scalar_t scalew = scale;
+                scalar_t scalew = scale;
 
-//                 if constexpr (HasWeight) {
-//                     scalew *= W[m];
-//                 }
+                if constexpr (HasWeight) {
+                    scalew *= W[m];
+                }
 
-//                 o[0]  = x[0]  * scalew;
-//                 o[1]  = x[1]  * scalew;
-//                 o[2]  = x[2]  * scalew;
-//                 o[3]  = x[3]  * scalew;
-//                 o[4]  = x[4]  * scalew;
-//                 o[5]  = x[5]  * scalew;
-//                 o[6]  = x[6]  * scalew;
-//                 o[7]  = x[7]  * scalew;
-//                 o[8]  = x[8]  * scalew;
-//                 o[9]  = x[9]  * scalew;
-//                 o[10] = x[10] * scalew;
-//                 o[11] = x[11] * scalew;
-//                 o[12] = x[12] * scalew;
-//                 o[13] = x[13] * scalew;
-//                 o[14] = x[14] * scalew;
-//                 o[15] = x[15] * scalew;
-//             }
+                o[0]  = x[0]  * scalew;
+                o[1]  = x[1]  * scalew;
+                o[2]  = x[2]  * scalew;
+                o[3]  = x[3]  * scalew;
+                o[4]  = x[4]  * scalew;
+                o[5]  = x[5]  * scalew;
+                o[6]  = x[6]  * scalew;
+                o[7]  = x[7]  * scalew;
+                o[8]  = x[8]  * scalew;
+                o[9]  = x[9]  * scalew;
+                o[10] = x[10] * scalew;
+                o[11] = x[11] * scalew;
+                o[12] = x[12] * scalew;
+                o[13] = x[13] * scalew;
+                o[14] = x[14] * scalew;
+                o[15] = x[15] * scalew;
+            }
 
                 // for (int64_t m = 0; m < M; ++m) {
                 //     const float* x = group_in + (m << 4);
@@ -617,130 +617,130 @@ void rms_norm_kernel(
                 //     _mm256_storeu_ps(o + 0, v0);
                 //     _mm256_storeu_ps(o + 8, v1);
                 // }
-//         }
-//     }else if constexpr (std::is_same_v<scalar_t, double>) {
-//         for (int64_t g = 0; g < groups; ++g) {
+        }
+    }else if constexpr (std::is_same_v<scalar_t, double>) {
+        for (int64_t g = 0; g < groups; ++g) {
 
-//             const scalar_t* group_in  = X + g * (M << 4);
-//             scalar_t* group_out       = O + g * (M << 4);
+            const scalar_t* group_in  = X + g * (M << 4);
+            scalar_t* group_out       = O + g * (M << 4);
 
-//             __m256d acc = _mm256_setzero_pd();
+            __m256d acc = _mm256_setzero_pd();
 
-//             int64_t m = 0;
+            int64_t m = 0;
 
-//             // AVX2 double: 4 lanes → process 4 "blocks"
-//             for (; m + 3 < M; m += 4) {
+            // AVX2 double: 4 lanes → process 4 "blocks"
+            for (; m + 3 < M; m += 4) {
 
-//                 const scalar_t* x0 = group_in + (m << 4);
-//                 const scalar_t* x1 = x0 + 16;
-//                 const scalar_t* x2 = x1 + 16;
-//                 const scalar_t* x3 = x2 + 16;
+                const scalar_t* x0 = group_in + (m << 4);
+                const scalar_t* x1 = x0 + 16;
+                const scalar_t* x2 = x1 + 16;
+                const scalar_t* x3 = x2 + 16;
 
-//                 // ---- load selected indices (double version) ----
+                // ---- load selected indices (double version) ----
 
-//                 __m256d v0 = _mm256_set_pd(
-//                     x3[0], x2[0], x1[0], x0[0]);
+                __m256d v0 = _mm256_set_pd(
+                    x3[0], x2[0], x1[0], x0[0]);
 
-//                 __m256d v2 = _mm256_set_pd(
-//                     x3[2], x2[2], x1[2], x0[2]);
+                __m256d v2 = _mm256_set_pd(
+                    x3[2], x2[2], x1[2], x0[2]);
 
-//                 __m256d v3 = _mm256_set_pd(
-//                     x3[3], x2[3], x1[3], x0[3]);
+                __m256d v3 = _mm256_set_pd(
+                    x3[3], x2[3], x1[3], x0[3]);
 
-//                 __m256d v4 = _mm256_set_pd(
-//                     x3[4], x2[4], x1[4], x0[4]);
+                __m256d v4 = _mm256_set_pd(
+                    x3[4], x2[4], x1[4], x0[4]);
 
-//                 __m256d v8 = _mm256_set_pd(
-//                     x3[8], x2[8], x1[8], x0[8]);
+                __m256d v8 = _mm256_set_pd(
+                    x3[8], x2[8], x1[8], x0[8]);
 
-//                 __m256d v9 = _mm256_set_pd(
-//                     x3[9], x2[9], x1[9], x0[9]);
+                __m256d v9 = _mm256_set_pd(
+                    x3[9], x2[9], x1[9], x0[9]);
 
-//                 __m256d v10 = _mm256_set_pd(
-//                     x3[10], x2[10], x1[10], x0[10]);
+                __m256d v10 = _mm256_set_pd(
+                    x3[10], x2[10], x1[10], x0[10]);
 
-//                 __m256d v14 = _mm256_set_pd(
-//                     x3[14], x2[14], x1[14], x0[14]);
+                __m256d v14 = _mm256_set_pd(
+                    x3[14], x2[14], x1[14], x0[14]);
 
-//                 // ---- accumulate squares ----
-//                 acc = _mm256_fmadd_pd(v0,  v0,  acc);
-//                 acc = _mm256_fmadd_pd(v2,  v2,  acc);
-//                 acc = _mm256_fmadd_pd(v3,  v3,  acc);
-//                 acc = _mm256_fmadd_pd(v4,  v4,  acc);
-//                 acc = _mm256_fmadd_pd(v8,  v8,  acc);
-//                 acc = _mm256_fmadd_pd(v9,  v9,  acc);
-//                 acc = _mm256_fmadd_pd(v10, v10, acc);
-//                 acc = _mm256_fmadd_pd(v14, v14, acc);
-//             }
+                // ---- accumulate squares ----
+                acc = _mm256_fmadd_pd(v0,  v0,  acc);
+                acc = _mm256_fmadd_pd(v2,  v2,  acc);
+                acc = _mm256_fmadd_pd(v3,  v3,  acc);
+                acc = _mm256_fmadd_pd(v4,  v4,  acc);
+                acc = _mm256_fmadd_pd(v8,  v8,  acc);
+                acc = _mm256_fmadd_pd(v9,  v9,  acc);
+                acc = _mm256_fmadd_pd(v10, v10, acc);
+                acc = _mm256_fmadd_pd(v14, v14, acc);
+            }
 
-//             // ---- horizontal sum (double) ----
-//             __m128d lo = _mm256_castpd256_pd128(acc);
-//             __m128d hi = _mm256_extractf128_pd(acc, 1);
+            // ---- horizontal sum (double) ----
+            __m128d lo = _mm256_castpd256_pd128(acc);
+            __m128d hi = _mm256_extractf128_pd(acc, 1);
 
-//             __m128d sum = _mm_add_pd(lo, hi);
+            __m128d sum = _mm_add_pd(lo, hi);
 
-//             // reduce 2 doubles → scalar
-//             scalar_t accs =
-//                 _mm_cvtsd_f64(sum) +
-//                 _mm_cvtsd_f64(_mm_unpackhi_pd(sum, sum));
+            // reduce 2 doubles → scalar
+            scalar_t accs =
+                _mm_cvtsd_f64(sum) +
+                _mm_cvtsd_f64(_mm_unpackhi_pd(sum, sum));
 
-//             // ---- scalar tail ----
-//             for (; m < M; ++m) {
-//                 const scalar_t* x = group_in + (m << 4);
+            // ---- scalar tail ----
+            for (; m < M; ++m) {
+                const scalar_t* x = group_in + (m << 4);
 
-//                 accs +=
-//                     x[0]*x[0] +
-//                     x[2]*x[2] +
-//                     x[3]*x[3] +
-//                     x[4]*x[4] +
-//                     x[8]*x[8] +
-//                     x[9]*x[9] +
-//                     x[10]*x[10] +
-//                     x[14]*x[14];
-//             }
+                accs +=
+                    x[0]*x[0] +
+                    x[2]*x[2] +
+                    x[3]*x[3] +
+                    x[4]*x[4] +
+                    x[8]*x[8] +
+                    x[9]*x[9] +
+                    x[10]*x[10] +
+                    x[14]*x[14];
+            }
 
-//             accs /= static_cast<scalar_t>(M);
+            accs /= static_cast<scalar_t>(M);
 
-//             scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
+            scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
 
-//             // ---- write back ----
-//             for (int64_t m = 0; m < M; ++m) {
+            // ---- write back ----
+            for (int64_t m = 0; m < M; ++m) {
 
-//                 const scalar_t* x = group_in + (m << 4);
-//                 scalar_t* o       = group_out + (m << 4);
+                const scalar_t* x = group_in + (m << 4);
+                scalar_t* o       = group_out + (m << 4);
 
-//                 scalar_t scalew = scale;
+                scalar_t scalew = scale;
 
-//                 if constexpr (HasWeight) {
-//                     scalew *= W[m];
-//                 }
+                if constexpr (HasWeight) {
+                    scalew *= W[m];
+                }
 
-//                 o[0]  = x[0]  * scalew;
-//                 o[1]  = x[1]  * scalew;
-//                 o[2]  = x[2]  * scalew;
-//                 o[3]  = x[3]  * scalew;
-//                 o[4]  = x[4]  * scalew;
-//                 o[5]  = x[5]  * scalew;
-//                 o[6]  = x[6]  * scalew;
-//                 o[7]  = x[7]  * scalew;
-//                 o[8]  = x[8]  * scalew;
-//                 o[9]  = x[9]  * scalew;
-//                 o[10] = x[10] * scalew;
-//                 o[11] = x[11] * scalew;
-//                 o[12] = x[12] * scalew;
-//                 o[13] = x[13] * scalew;
-//                 o[14] = x[14] * scalew;
-//                 o[15] = x[15] * scalew;
-//             }
-//         }
+                o[0]  = x[0]  * scalew;
+                o[1]  = x[1]  * scalew;
+                o[2]  = x[2]  * scalew;
+                o[3]  = x[3]  * scalew;
+                o[4]  = x[4]  * scalew;
+                o[5]  = x[5]  * scalew;
+                o[6]  = x[6]  * scalew;
+                o[7]  = x[7]  * scalew;
+                o[8]  = x[8]  * scalew;
+                o[9]  = x[9]  * scalew;
+                o[10] = x[10] * scalew;
+                o[11] = x[11] * scalew;
+                o[12] = x[12] * scalew;
+                o[13] = x[13] * scalew;
+                o[14] = x[14] * scalew;
+                o[15] = x[15] * scalew;
+            }
+        }
 
-//     }
+    }
    
-// }
+}
 
 
 
-
+//packed intrins
 // #include <immintrin.h>
 // #include <cmath>
 // #include <algorithm>
@@ -943,197 +943,197 @@ void rms_norm_kernel(
 
 
 
+//AMD INTRINS
+// template <typename scalar_t, bool HasWeight>
+// void rms_norm_kernel_intrins(
+//     const scalar_t* __restrict__ X,
+//     scalar_t* __restrict__ O,
+//     const scalar_t* __restrict__ W,
+//     int64_t groups,
+//     int64_t M,
+//     double eps
+// ) {
+//     const scalar_t eps_t = static_cast<scalar_t>(eps);
 
-template <typename scalar_t, bool HasWeight>
-void rms_norm_kernel_intrins(
-    const scalar_t* __restrict__ X,
-    scalar_t* __restrict__ O,
-    const scalar_t* __restrict__ W,
-    int64_t groups,
-    int64_t M,
-    double eps
-) {
-    const scalar_t eps_t = static_cast<scalar_t>(eps);
+//     if constexpr (std::is_same_v<scalar_t, float>) {
 
-    if constexpr (std::is_same_v<scalar_t, float>) {
+//         for (int64_t g = 0; g < groups; ++g) {
 
-        for (int64_t g = 0; g < groups; ++g) {
+//             const scalar_t* group_in  = X + g * (M << 4);
+//             scalar_t* group_out       = O + g * (M << 4);
 
-            const scalar_t* group_in  = X + g * (M << 4);
-            scalar_t* group_out       = O + g * (M << 4);
+//             float32x4_t acc = vdupq_n_f32(0.0f);
 
-            float32x4_t acc = vdupq_n_f32(0.0f);
+//             int64_t m = 0;
 
-            int64_t m = 0;
+//             // ---- SIMD accumulation (4 lanes = 4 m values) ----
+//             for (; m + 3 < M; m += 4) {
 
-            // ---- SIMD accumulation (4 lanes = 4 m values) ----
-            for (; m + 3 < M; m += 4) {
+//                 const float* x0 = group_in + ((m + 0) << 4);
+//                 const float* x1 = group_in + ((m + 1) << 4);
+//                 const float* x2 = group_in + ((m + 2) << 4);
+//                 const float* x3 = group_in + ((m + 3) << 4);
 
-                const float* x0 = group_in + ((m + 0) << 4);
-                const float* x1 = group_in + ((m + 1) << 4);
-                const float* x2 = group_in + ((m + 2) << 4);
-                const float* x3 = group_in + ((m + 3) << 4);
+//                 float32x4_t v0  = { x0[0],  x1[0],  x2[0],  x3[0] };
+//                 float32x4_t v2  = { x0[2],  x1[2],  x2[2],  x3[2] };
+//                 float32x4_t v3  = { x0[3],  x1[3],  x2[3],  x3[3] };
+//                 float32x4_t v4  = { x0[4],  x1[4],  x2[4],  x3[4] };
 
-                float32x4_t v0  = { x0[0],  x1[0],  x2[0],  x3[0] };
-                float32x4_t v2  = { x0[2],  x1[2],  x2[2],  x3[2] };
-                float32x4_t v3  = { x0[3],  x1[3],  x2[3],  x3[3] };
-                float32x4_t v4  = { x0[4],  x1[4],  x2[4],  x3[4] };
+//                 float32x4_t v8  = { x0[8],  x1[8],  x2[8],  x3[8] };
+//                 float32x4_t v9  = { x0[9],  x1[9],  x2[9],  x3[9] };
+//                 float32x4_t v10 = { x0[10], x1[10], x2[10], x3[10] };
+//                 float32x4_t v14 = { x0[14], x1[14], x2[14], x3[14] };
 
-                float32x4_t v8  = { x0[8],  x1[8],  x2[8],  x3[8] };
-                float32x4_t v9  = { x0[9],  x1[9],  x2[9],  x3[9] };
-                float32x4_t v10 = { x0[10], x1[10], x2[10], x3[10] };
-                float32x4_t v14 = { x0[14], x1[14], x2[14], x3[14] };
+//                 acc = vfmaq_f32(acc, v0,  v0);
+//                 acc = vfmaq_f32(acc, v2,  v2);
+//                 acc = vfmaq_f32(acc, v3,  v3);
+//                 acc = vfmaq_f32(acc, v4,  v4);
+//                 acc = vfmaq_f32(acc, v8,  v8);
+//                 acc = vfmaq_f32(acc, v9,  v9);
+//                 acc = vfmaq_f32(acc, v10, v10);
+//                 acc = vfmaq_f32(acc, v14, v14);
+//             }
 
-                acc = vfmaq_f32(acc, v0,  v0);
-                acc = vfmaq_f32(acc, v2,  v2);
-                acc = vfmaq_f32(acc, v3,  v3);
-                acc = vfmaq_f32(acc, v4,  v4);
-                acc = vfmaq_f32(acc, v8,  v8);
-                acc = vfmaq_f32(acc, v9,  v9);
-                acc = vfmaq_f32(acc, v10, v10);
-                acc = vfmaq_f32(acc, v14, v14);
-            }
+//             // ---- horizontal reduction ----
+//             float accs = vaddvq_f32(acc);
 
-            // ---- horizontal reduction ----
-            float accs = vaddvq_f32(acc);
+//             // ---- scalar tail ----
+//             for (; m < M; ++m) {
+//                 const float* x = group_in + (m << 4);
 
-            // ---- scalar tail ----
-            for (; m < M; ++m) {
-                const float* x = group_in + (m << 4);
+//                 accs +=
+//                     x[0]*x[0] +
+//                     x[2]*x[2] +
+//                     x[3]*x[3] +
+//                     x[4]*x[4] +
+//                     x[8]*x[8] +
+//                     x[9]*x[9] +
+//                     x[10]*x[10] +
+//                     x[14]*x[14];
+//             }
 
-                accs +=
-                    x[0]*x[0] +
-                    x[2]*x[2] +
-                    x[3]*x[3] +
-                    x[4]*x[4] +
-                    x[8]*x[8] +
-                    x[9]*x[9] +
-                    x[10]*x[10] +
-                    x[14]*x[14];
-            }
+//             accs /= static_cast<float>(M);
 
-            accs /= static_cast<float>(M);
+//             float scale = 1.0f / std::sqrt(std::max(accs, eps_t));
 
-            float scale = 1.0f / std::sqrt(std::max(accs, eps_t));
+//             // ---- write ----
+//             for (int64_t m = 0; m < M; ++m) {
 
-            // ---- write ----
-            for (int64_t m = 0; m < M; ++m) {
+//                 const float* x = group_in + (m << 4);
+//                 float* o       = group_out + (m << 4);
 
-                const float* x = group_in + (m << 4);
-                float* o       = group_out + (m << 4);
+//                 float scalew = scale;
 
-                float scalew = scale;
+//                 if constexpr (HasWeight) {
+//                     scalew *= W[m];
+//                 }
 
-                if constexpr (HasWeight) {
-                    scalew *= W[m];
-                }
+//                 o[0]  = x[0]  * scalew;
+//                 o[1]  = x[1]  * scalew;
+//                 o[2]  = x[2]  * scalew;
+//                 o[3]  = x[3]  * scalew;
+//                 o[4]  = x[4]  * scalew;
+//                 o[5]  = x[5]  * scalew;
+//                 o[6]  = x[6]  * scalew;
+//                 o[7]  = x[7]  * scalew;
+//                 o[8]  = x[8]  * scalew;
+//                 o[9]  = x[9]  * scalew;
+//                 o[10] = x[10] * scalew;
+//                 o[11] = x[11] * scalew;
+//                 o[12] = x[12] * scalew;
+//                 o[13] = x[13] * scalew;
+//                 o[14] = x[14] * scalew;
+//                 o[15] = x[15] * scalew;
+//             }
+//         }
 
-                o[0]  = x[0]  * scalew;
-                o[1]  = x[1]  * scalew;
-                o[2]  = x[2]  * scalew;
-                o[3]  = x[3]  * scalew;
-                o[4]  = x[4]  * scalew;
-                o[5]  = x[5]  * scalew;
-                o[6]  = x[6]  * scalew;
-                o[7]  = x[7]  * scalew;
-                o[8]  = x[8]  * scalew;
-                o[9]  = x[9]  * scalew;
-                o[10] = x[10] * scalew;
-                o[11] = x[11] * scalew;
-                o[12] = x[12] * scalew;
-                o[13] = x[13] * scalew;
-                o[14] = x[14] * scalew;
-                o[15] = x[15] * scalew;
-            }
-        }
+//     } else if constexpr (std::is_same_v<scalar_t, double>) {
 
-    } else if constexpr (std::is_same_v<scalar_t, double>) {
+//         for (int64_t g = 0; g < groups; ++g) {
 
-        for (int64_t g = 0; g < groups; ++g) {
+//             const scalar_t* group_in  = X + g * (M << 4);
+//             scalar_t* group_out       = O + g * (M << 4);
 
-            const scalar_t* group_in  = X + g * (M << 4);
-            scalar_t* group_out       = O + g * (M << 4);
+//             float64x2_t acc = vdupq_n_f64(0.0);
 
-            float64x2_t acc = vdupq_n_f64(0.0);
+//             int64_t m = 0;
 
-            int64_t m = 0;
+//             for (; m + 1 < M; m += 2) {
 
-            for (; m + 1 < M; m += 2) {
+//                 const double* x0 = group_in + ((m + 0) << 4);
+//                 const double* x1 = group_in + ((m + 1) << 4);
 
-                const double* x0 = group_in + ((m + 0) << 4);
-                const double* x1 = group_in + ((m + 1) << 4);
+//                 float64x2_t v0  = { x0[0],  x1[0] };
+//                 float64x2_t v2  = { x0[2],  x1[2] };
+//                 float64x2_t v3  = { x0[3],  x1[3] };
+//                 float64x2_t v4  = { x0[4],  x1[4] };
 
-                float64x2_t v0  = { x0[0],  x1[0] };
-                float64x2_t v2  = { x0[2],  x1[2] };
-                float64x2_t v3  = { x0[3],  x1[3] };
-                float64x2_t v4  = { x0[4],  x1[4] };
+//                 float64x2_t v8  = { x0[8],  x1[8] };
+//                 float64x2_t v9  = { x0[9],  x1[9] };
+//                 float64x2_t v10 = { x0[10], x1[10] };
+//                 float64x2_t v14 = { x0[14], x1[14] };
 
-                float64x2_t v8  = { x0[8],  x1[8] };
-                float64x2_t v9  = { x0[9],  x1[9] };
-                float64x2_t v10 = { x0[10], x1[10] };
-                float64x2_t v14 = { x0[14], x1[14] };
+//                 acc = vfmaq_f64(acc, v0,  v0);
+//                 acc = vfmaq_f64(acc, v2,  v2);
+//                 acc = vfmaq_f64(acc, v3,  v3);
+//                 acc = vfmaq_f64(acc, v4,  v4);
+//                 acc = vfmaq_f64(acc, v8,  v8);
+//                 acc = vfmaq_f64(acc, v9,  v9);
+//                 acc = vfmaq_f64(acc, v10, v10);
+//                 acc = vfmaq_f64(acc, v14, v14);
+//             }
 
-                acc = vfmaq_f64(acc, v0,  v0);
-                acc = vfmaq_f64(acc, v2,  v2);
-                acc = vfmaq_f64(acc, v3,  v3);
-                acc = vfmaq_f64(acc, v4,  v4);
-                acc = vfmaq_f64(acc, v8,  v8);
-                acc = vfmaq_f64(acc, v9,  v9);
-                acc = vfmaq_f64(acc, v10, v10);
-                acc = vfmaq_f64(acc, v14, v14);
-            }
+//             double accs = vaddvq_f64(acc);
 
-            double accs = vaddvq_f64(acc);
+//             for (; m < M; ++m) {
+//                 const double* x = group_in + (m << 4);
 
-            for (; m < M; ++m) {
-                const double* x = group_in + (m << 4);
+//                 accs +=
+//                     x[0]*x[0] +
+//                     x[2]*x[2] +
+//                     x[3]*x[3] +
+//                     x[4]*x[4] +
+//                     x[8]*x[8] +
+//                     x[9]*x[9] +
+//                     x[10]*x[10] +
+//                     x[14]*x[14];
+//             }
 
-                accs +=
-                    x[0]*x[0] +
-                    x[2]*x[2] +
-                    x[3]*x[3] +
-                    x[4]*x[4] +
-                    x[8]*x[8] +
-                    x[9]*x[9] +
-                    x[10]*x[10] +
-                    x[14]*x[14];
-            }
+//             accs /= static_cast<double>(M);
 
-            accs /= static_cast<double>(M);
+//             double scale = 1.0 / std::sqrt(std::max(accs, eps_t));
 
-            double scale = 1.0 / std::sqrt(std::max(accs, eps_t));
+//             for (int64_t m = 0; m < M; ++m) {
 
-            for (int64_t m = 0; m < M; ++m) {
+//                 const double* x = group_in + (m << 4);
+//                 double* o       = group_out + (m << 4);
 
-                const double* x = group_in + (m << 4);
-                double* o       = group_out + (m << 4);
+//                 double scalew = scale;
 
-                double scalew = scale;
+//                 if constexpr (HasWeight) {
+//                     scalew *= W[m];
+//                 }
 
-                if constexpr (HasWeight) {
-                    scalew *= W[m];
-                }
-
-                o[0]  = x[0]  * scalew;
-                o[1]  = x[1]  * scalew;
-                o[2]  = x[2]  * scalew;
-                o[3]  = x[3]  * scalew;
-                o[4]  = x[4]  * scalew;
-                o[5]  = x[5]  * scalew;
-                o[6]  = x[6]  * scalew;
-                o[7]  = x[7]  * scalew;
-                o[8]  = x[8]  * scalew;
-                o[9]  = x[9]  * scalew;
-                o[10] = x[10] * scalew;
-                o[11] = x[11] * scalew;
-                o[12] = x[12] * scalew;
-                o[13] = x[13] * scalew;
-                o[14] = x[14] * scalew;
-                o[15] = x[15] * scalew;
-            }
-        }
-    }
-}
+//                 o[0]  = x[0]  * scalew;
+//                 o[1]  = x[1]  * scalew;
+//                 o[2]  = x[2]  * scalew;
+//                 o[3]  = x[3]  * scalew;
+//                 o[4]  = x[4]  * scalew;
+//                 o[5]  = x[5]  * scalew;
+//                 o[6]  = x[6]  * scalew;
+//                 o[7]  = x[7]  * scalew;
+//                 o[8]  = x[8]  * scalew;
+//                 o[9]  = x[9]  * scalew;
+//                 o[10] = x[10] * scalew;
+//                 o[11] = x[11] * scalew;
+//                 o[12] = x[12] * scalew;
+//                 o[13] = x[13] * scalew;
+//                 o[14] = x[14] * scalew;
+//                 o[15] = x[15] * scalew;
+//             }
+//         }
+//     }
+// }
 
 
 
@@ -1460,7 +1460,7 @@ torch::Tensor equi_rms_norm_ver_3(
 
     return out;
 }
-
+//packed rmsnorm
 // torch::Tensor equi_rms_norm_ver_3(
 //     const torch::Tensor& x,
 //     const c10::optional<torch::Tensor>& weight,
