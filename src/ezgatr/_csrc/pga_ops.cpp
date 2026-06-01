@@ -4,12 +4,24 @@
 #include <ATen/Dispatch.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <mutex>
 #include <tuple>
 #include <type_traits>
 #include <vector>
+
+// ver_3 uses explicit AVX2/FMA intrinsics on x86. The include and the whole
+// vectorized path are compiled only when the target ISA provides them (e.g.
+// -march=native on an Intel host); everything else falls back to the scalar
+// ver_2 kernel, so this still compiles on ARM / pre-AVX2 builds.
+#if defined(__AVX2__) && defined(__FMA__)
+#include <immintrin.h>
+#define EZGATR_HAVE_AVX2 1
+#else
+#define EZGATR_HAVE_AVX2 0
+#endif
 
 namespace ezgatr { namespace opt {
 
@@ -922,11 +934,13 @@ torch::Tensor equi_linear_finalize(torch::Tensor out,
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// ver_0 - NO OPTIMIZATION.
-// Honest dense baseline: rebuild the full weighted 16x16 basis matrix per
-// (out, in) channel pair and run a dense 16x16 matvec. Mirrors the arithmetic
-// of the Python einsum "oiw, wds, ...is -> ...od" (~256 MAC per (B,o,i),
-// plus the 16x16 matrix assembly).
+// ver_0 - NAIVE DENSE BASELINE.
+// Hand-written C++ loops, no library calls. For each (o, i) channel pair:
+//   1. Build the full dense 16×16 matrix M by contracting weight[o,i,w]
+//      with the equivariant basis[w,d,s] over all 9 weights and all 16×16
+//      (d,s) entries — including the zeros.
+//   2. For every batch element, do a full dense 16×16 matvec M × x[b,i].
+// This is the literal C++ translation of einsum "oiw,wds,...is->...od".
 // ---------------------------------------------------------------------------
 torch::Tensor equi_linear_v0(const torch::Tensor& x,
                              const torch::Tensor& weight,
@@ -937,9 +951,12 @@ torch::Tensor equi_linear_v0(const torch::Tensor& x,
 
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "equi_linear_v0", [&] {
         using T = scalar_t;
-        T inv[9];
-        for (int k = 0; k < 9; ++k)
-            inv[k] = normalize_basis ? T(EQUI_LINEAR_INV_NORMS[k]) : T(1);
+
+        // Build the 9×16×16 equivariant basis from the coupling table.
+        T basis[9][16][16] = {};
+        for (const auto& c : EQUI_LINEAR_COUPLINGS)
+            basis[c.wk][c.dst][c.src] = normalize_basis
+                ? T(EQUI_LINEAR_INV_NORMS[c.wk]) : T(1);
 
         auto xa = s.xf.accessor<T, 3>();
         auto wa = s.wf.accessor<T, 3>();
@@ -947,21 +964,18 @@ torch::Tensor equi_linear_v0(const torch::Tensor& x,
 
         for (int64_t o = 0; o < s.out_ch; ++o) {
             for (int64_t i = 0; i < s.in_ch; ++i) {
-                // Assemble the dense 16x16 weighted basis matrix M.
-                T M[16][16];
-                for (int d = 0; d < 16; ++d)
-                    for (int sc = 0; sc < 16; ++sc) M[d][sc] = T(0);
-                for (const auto& c : EQUI_LINEAR_COUPLINGS)
-                    M[c.dst][c.src] += wa[o][i][c.wk] * inv[c.wk];
-
-                for (int64_t b = 0; b < s.batch; ++b) {
-                    for (int d = 0; d < 16; ++d) {
-                        T acc = T(0);
+                // Step 1: dense 16×16 matrix M[d][s] = sum_w weight[o,i,w] * basis[w,d,s]
+                T M[16][16] = {};
+                for (int w = 0; w < 9; ++w)
+                    for (int d = 0; d < 16; ++d)
                         for (int sc = 0; sc < 16; ++sc)
-                            acc += M[d][sc] * xa[b][i][sc];   // dense matvec
-                        oa[b][o][d] += acc;
-                    }
-                }
+                            M[d][sc] += wa[o][i][w] * basis[w][d][sc];
+
+                // Step 2: dense 16×16 matvec for every batch element
+                for (int64_t b = 0; b < s.batch; ++b)
+                    for (int d = 0; d < 16; ++d)
+                        for (int sc = 0; sc < 16; ++sc)
+                            oa[b][o][d] += M[d][sc] * xa[b][i][sc];
             }
         }
     });
@@ -1163,16 +1177,180 @@ torch::Tensor equi_linear_v2(const torch::Tensor& x,
 }
 
 // ---------------------------------------------------------------------------
-// ver_3 - EXPLICIT SIMD VECTORIZATION.  *** PLACEHOLDER ***
-// Planned: AVX2/FMA intrinsics over the grade blocks built in ver_2, plus
-// blocking over the batch dimension. Falls back to ver_1 until implemented.
+// ver_3 - EXPLICIT AVX2/FMA SIMD VECTORIZATION (float32 only).
+//
+// Each 16-element multivector maps to two __m256 registers (lo=blades 0..7,
+// hi=blades 8..15). Per (o,i) channel pair the 24 nonzero couplings reduce
+// to four load+FMA pairs:
+//   Diagonal (16 terms): packed weight vector wdiag_lo/hi multiplied lane-wise
+//     into accumulator via two FMAs covering lo and hi halves.
+//   Off-diagonal (8 e_0-couplings): source blades gathered to destination
+//     positions with _mm256_permutevar8x32_ps, then multiplied by sparse
+//     weight vector woff_lo/hi (zero lanes multiply away). Two more FMAs.
+//   Weight packing (from ver_2): wdiag/woff depend only on (o,i) so they are
+//     packed once per forward pass into a thread-local buffer, leaving the
+//     hot (batch, out_ch) loop as pure loads+FMAs on register accumulators.
+//   4-channel blocking: x loads and both permutes are shared across 4 output
+//     channels per (b,i), amortising the 2-permute cost. Diagonal FMAs are
+//     issued before off-diagonal so the 3-cycle permute latency overlaps with
+//     FMA work. Register budget: 8 accumulators + 4 x/perm = 12 of 16 YMM.
+//     Tail: a 2-channel pair + optional 1-channel handles any out_ch.
+//
+// Falls back to scalar ver_2 for float64 or non-AVX2 builds.
 // ---------------------------------------------------------------------------
 torch::Tensor equi_linear_v3(const torch::Tensor& x,
                              const torch::Tensor& weight,
                              const c10::optional<torch::Tensor>& bias,
                              bool normalize_basis) {
-    // TODO(ver_3): implement SIMD kernel.
-    return equi_linear_v1(x, weight, bias, normalize_basis);
+#if EZGATR_HAVE_AVX2
+    if (x.scalar_type() == torch::kFloat) {
+        auto s = equi_linear_prepare(x, weight);
+        auto out = torch::empty({s.batch, s.out_ch, 16}, x.options());
+
+        const float* __restrict__ bp = nullptr;
+        torch::Tensor bias_t;
+        if (bias.has_value()) {
+            bias_t = bias.value().contiguous();
+            bp = bias_t.data_ptr<float>();
+        }
+
+        float inv[9];
+        for (int k = 0; k < 9; ++k)
+            inv[k] = normalize_basis ? float(EQUI_LINEAR_INV_NORMS[k]) : 1.0f;
+
+        const int64_t in_ch  = s.in_ch;
+        const int64_t out_ch = s.out_ch;
+        const int64_t batch  = s.batch;
+        const int64_t n_oi   = out_ch * in_ch;
+        const int64_t n_quad = out_ch / 4;   // full 4-channel groups
+        const int64_t rem    = out_ch % 4;   // 0..3 leftover channels
+
+        // Pack [wdiag_lo(8)|wdiag_hi(8)|woff_lo(8)|woff_hi(8)] = 32 floats per (o,i).
+        static thread_local std::vector<float> tls_wbuf;
+        if (static_cast<int64_t>(tls_wbuf.size()) < n_oi * 32)
+            tls_wbuf.resize(static_cast<size_t>(n_oi) * 32);
+        float* __restrict__ wbuf = tls_wbuf.data();
+
+        const float* __restrict__ wsrc = s.wf.data_ptr<float>();
+        for (int64_t p = 0; p < n_oi; ++p) {
+            const float* __restrict__ ws = wsrc + p * 9;
+            const float w0=ws[0]*inv[0], w1=ws[1]*inv[1], w2=ws[2]*inv[2];
+            const float w3=ws[3]*inv[3], w4=ws[4]*inv[4], w5=ws[5]*inv[5];
+            const float w6=ws[6]*inv[6], w7=ws[7]*inv[7], w8=ws[8]*inv[8];
+            float* __restrict__ d = wbuf + p * 32;
+            // wdiag_lo: {w0, w1,w1,w1,w1, w2,w2,w2}
+            d[0]=w0;  d[1]=w1;  d[2]=w1;  d[3]=w1;  d[4]=w1;  d[5]=w2;  d[6]=w2;  d[7]=w2;
+            // wdiag_hi: {w2,w2,w2, w3,w3,w3,w3, w4}
+            d[8]=w2;  d[9]=w2;  d[10]=w2; d[11]=w3; d[12]=w3; d[13]=w3; d[14]=w3; d[15]=w4;
+            // woff_lo: blade1←w5, blades5,6,7←w6, rest 0
+            d[16]=0;  d[17]=w5; d[18]=0;  d[19]=0;  d[20]=0;  d[21]=w6; d[22]=w6; d[23]=w6;
+            // woff_hi: blades11,12,13←w7, blade15←w8, rest 0
+            d[24]=0;  d[25]=0;  d[26]=0;  d[27]=w7; d[28]=w7; d[29]=w7; d[30]=0;  d[31]=w8;
+        }
+
+        // Off-diagonal gather indices (constant). idx[j] is the source lane for
+        // output lane j; lanes where woff==0 use idx=0 as a don't-care.
+        //   lo: blade1←xi[0], blade5←xi[2], blade6←xi[3], blade7←xi[4]
+        const __m256i idx_off_lo = _mm256_setr_epi32(0, 0, 0, 0, 0, 2, 3, 4);
+        //   hi: blade11←xi[8], blade12←xi[9], blade13←xi[10], blade15←xi[14]
+        const __m256i idx_off_hi = _mm256_setr_epi32(0, 0, 0, 0, 1, 2, 0, 6);
+
+        const float* __restrict__ xp_base = s.xf.data_ptr<float>();
+        float*       __restrict__ op_base = out.data_ptr<float>();
+
+// Diagonal FMA pair using already-loaded xlo/xhi.
+#define DIAG(alo, ahi, wp) \
+    alo = _mm256_fmadd_ps(_mm256_loadu_ps((wp)),     xlo, alo); \
+    ahi = _mm256_fmadd_ps(_mm256_loadu_ps((wp) + 8), xhi, ahi);
+
+// Off-diagonal FMA pair using already-permuted xplo/xphi.
+#define OFFDIAG(alo, ahi, wp) \
+    alo = _mm256_fmadd_ps(_mm256_loadu_ps((wp) + 16), xplo, alo); \
+    ahi = _mm256_fmadd_ps(_mm256_loadu_ps((wp) + 24), xphi, ahi);
+
+        for (int64_t b = 0; b < batch; ++b) {
+            const float* __restrict__ xb = xp_base + b * in_ch * 16;
+
+            // 4-channel groups
+            for (int64_t g = 0; g < n_quad; ++g) {
+                const int64_t o0=g*4, o1=o0+1, o2=o0+2, o3=o0+3;
+                __m256 a_lo0=_mm256_setzero_ps(), a_hi0=_mm256_setzero_ps();
+                __m256 a_lo1=_mm256_setzero_ps(), a_hi1=_mm256_setzero_ps();
+                __m256 a_lo2=_mm256_setzero_ps(), a_hi2=_mm256_setzero_ps();
+                __m256 a_lo3=_mm256_setzero_ps(), a_hi3=_mm256_setzero_ps();
+                const float* wv0=wbuf+o0*in_ch*32, *wv1=wbuf+o1*in_ch*32;
+                const float* wv2=wbuf+o2*in_ch*32, *wv3=wbuf+o3*in_ch*32;
+
+                for (int64_t i = 0; i < in_ch; ++i) {
+                    const float* __restrict__ xi = xb + i * 16;
+                    const __m256 xlo  = _mm256_loadu_ps(xi);
+                    const __m256 xhi  = _mm256_loadu_ps(xi + 8);
+                    const __m256 xplo = _mm256_permutevar8x32_ps(xlo, idx_off_lo);
+                    const __m256 xphi = _mm256_permutevar8x32_ps(xhi, idx_off_hi);
+                    // Diagonal FMAs first — independent of permute results, so
+                    // the 3-cycle permute latency is hidden behind FMA work.
+                    DIAG(a_lo0,a_hi0,wv0+i*32) DIAG(a_lo1,a_hi1,wv1+i*32)
+                    DIAG(a_lo2,a_hi2,wv2+i*32) DIAG(a_lo3,a_hi3,wv3+i*32)
+                    OFFDIAG(a_lo0,a_hi0,wv0+i*32) OFFDIAG(a_lo1,a_hi1,wv1+i*32)
+                    OFFDIAG(a_lo2,a_hi2,wv2+i*32) OFFDIAG(a_lo3,a_hi3,wv3+i*32)
+                }
+                float* op0=op_base+(b*out_ch+o0)*16, *op1=op_base+(b*out_ch+o1)*16;
+                float* op2=op_base+(b*out_ch+o2)*16, *op3=op_base+(b*out_ch+o3)*16;
+                _mm256_storeu_ps(op0,   a_lo0); _mm256_storeu_ps(op0+8, a_hi0);
+                _mm256_storeu_ps(op1,   a_lo1); _mm256_storeu_ps(op1+8, a_hi1);
+                _mm256_storeu_ps(op2,   a_lo2); _mm256_storeu_ps(op2+8, a_hi2);
+                _mm256_storeu_ps(op3,   a_lo3); _mm256_storeu_ps(op3+8, a_hi3);
+                if (bp) { op0[0]+=bp[o0]; op1[0]+=bp[o1]; op2[0]+=bp[o2]; op3[0]+=bp[o3]; }
+            }
+
+            // 2-channel tail (rem == 2 or 3)
+            if (rem >= 2) {
+                const int64_t o0=n_quad*4, o1=o0+1;
+                __m256 a_lo0=_mm256_setzero_ps(), a_hi0=_mm256_setzero_ps();
+                __m256 a_lo1=_mm256_setzero_ps(), a_hi1=_mm256_setzero_ps();
+                const float* wv0=wbuf+o0*in_ch*32, *wv1=wbuf+o1*in_ch*32;
+                for (int64_t i = 0; i < in_ch; ++i) {
+                    const float* __restrict__ xi = xb + i * 16;
+                    const __m256 xlo  = _mm256_loadu_ps(xi);
+                    const __m256 xhi  = _mm256_loadu_ps(xi + 8);
+                    const __m256 xplo = _mm256_permutevar8x32_ps(xlo, idx_off_lo);
+                    const __m256 xphi = _mm256_permutevar8x32_ps(xhi, idx_off_hi);
+                    DIAG(a_lo0,a_hi0,wv0+i*32) DIAG(a_lo1,a_hi1,wv1+i*32)
+                    OFFDIAG(a_lo0,a_hi0,wv0+i*32) OFFDIAG(a_lo1,a_hi1,wv1+i*32)
+                }
+                float* op0=op_base+(b*out_ch+o0)*16, *op1=op_base+(b*out_ch+o1)*16;
+                _mm256_storeu_ps(op0, a_lo0); _mm256_storeu_ps(op0+8, a_hi0);
+                _mm256_storeu_ps(op1, a_lo1); _mm256_storeu_ps(op1+8, a_hi1);
+                if (bp) { op0[0]+=bp[o0]; op1[0]+=bp[o1]; }
+            }
+
+            // 1-channel tail (rem == 1 or 3)
+            if (rem & 1) {
+                const int64_t o = out_ch - 1;
+                __m256 acc_lo=_mm256_setzero_ps(), acc_hi=_mm256_setzero_ps();
+                const float* wv_o = wbuf + o * in_ch * 32;
+                for (int64_t i = 0; i < in_ch; ++i) {
+                    const float* __restrict__ xi = xb + i * 16;
+                    const __m256 xlo  = _mm256_loadu_ps(xi);
+                    const __m256 xhi  = _mm256_loadu_ps(xi + 8);
+                    const __m256 xplo = _mm256_permutevar8x32_ps(xlo, idx_off_lo);
+                    const __m256 xphi = _mm256_permutevar8x32_ps(xhi, idx_off_hi);
+                    DIAG(acc_lo,acc_hi,wv_o+i*32)
+                    OFFDIAG(acc_lo,acc_hi,wv_o+i*32)
+                }
+                float* __restrict__ op = op_base + (b * out_ch + o) * 16;
+                _mm256_storeu_ps(op, acc_lo); _mm256_storeu_ps(op+8, acc_hi);
+                if (bp) op[0] += bp[o];
+            }
+        }
+#undef DIAG
+#undef OFFDIAG
+
+        return equi_linear_finalize(out, c10::nullopt, s.out_shape);
+    }
+#endif
+    // float64 / no-AVX2 build: scalar pre-SIMD kernel (numerically identical).
+    return equi_linear_v2(x, weight, bias, normalize_basis);
 }
 
 // Dispatcher. version: 0=no-opt, 1=math, 2=pre-SIMD, 3=SIMD.
