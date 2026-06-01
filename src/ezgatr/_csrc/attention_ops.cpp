@@ -1,6 +1,7 @@
 #include "attention_ops.h"
 
 #include <ATen/ops/scaled_dot_product_attention.h>
+#include <ATen/Parallel.h>
 #if defined(__AVX2__)
 #include <immintrin.h>
 #endif
@@ -339,7 +340,9 @@ bool build_interleaved_ipa_daa_qk_simd_float(
 
     // AoS input:  [num_blocks, channels, 16] — qi + c*16 + bl for channel c, blade bl
     // SoA output: [num_blocks, 12, channels] — qo + sl*C + c  for slot sl, channel c
-    for (int64_t block = 0; block < num_blocks; ++block) {
+    //
+    at::parallel_for(0, num_blocks, 0, [&](int64_t begin, int64_t end) {
+    for (int64_t block = begin; block < end; ++block) {
         const float* qi = q_in + block * channels * 16;
         const float* ki = k_in + block * channels * 16;
         float*       qo = q_out + block * 12 * channels;
@@ -347,11 +350,13 @@ bool build_interleaved_ipa_daa_qk_simd_float(
 
         int64_t c = 0;
         for (; c + 7 < channels; c += 8) {
-            const float* qx = qi + c * 16;  // first of 8 channels, AoS block
+            const float* qx = qi + c * 16;
             const float* kx = ki + c * 16;
 
-            // AoS gather: load blade `bl` from 8 consecutive channels (stride 16 floats).
-            // _mm256_set_ps with 8 distinct addresses; the CPU issues 8 scalar loads.
+            // Stride-16 gather: blade `bl` across 8 channels. Each of the 8 values
+            // is 64 bytes (one cache line) apart, so VGATHERDPS offers no conflict-free
+            // advantage over scalar loads here — scalar lets the out-of-order engine
+            // pipeline the loads independently while overlapping computation.
             auto lq = [&](int64_t bl) {
                 return _mm256_set_ps(
                     qx[7*16+bl], qx[6*16+bl], qx[5*16+bl], qx[4*16+bl],
@@ -473,6 +478,7 @@ bool build_interleaved_ipa_daa_qk_simd_float(
             ko[(daa_offset + 4) * channels + c] = 2.0f * kn2 * kn3;
         }
     }
+    }); // at::parallel_for
     return true;
 }
 #endif
@@ -562,7 +568,8 @@ std::optional<std::pair<Tensor, Tensor>> try_build_interleaved_ipa_daa_qk(
         const scalar_t ipa_w = static_cast<scalar_t>(*ipa_weight);
         const scalar_t daa_w = static_cast<scalar_t>(*daa_weight);
 
-        for (int64_t block = 0; block < num_blocks; ++block) {
+        at::parallel_for(0, num_blocks, 0, [&](int64_t begin, int64_t end) {
+        for (int64_t block = begin; block < end; ++block) {
             const int64_t in_base = block * channels * 16;
             const int64_t out_base = block * channels * 12;
 
@@ -631,6 +638,7 @@ std::optional<std::pair<Tensor, Tensor>> try_build_interleaved_ipa_daa_qk(
                 }
             }
         }
+        }); // at::parallel_for
     });
 
     return std::make_pair(query_flat, key_flat);
