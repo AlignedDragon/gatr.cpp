@@ -85,7 +85,7 @@ def equi_geometric_attention_cpp_ver_1(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""Cache-optimized C++ port of the multivector-only geometric attention."""
+    r"""Math optimizations: explicit DAA formula (direct computation replaces einsum) + cached mathematical constants."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
@@ -118,7 +118,7 @@ def equi_geometric_attention_cpp_ver_2(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""Pre-SIMD C++ port using explicit DAA formulas and compact Q/K assembly."""
+    r"""Scalar memory + compiler: compact single-pass Q/K assembly (no intermediate torch::cat), manual loop unrolling for channels=4,8."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
@@ -151,7 +151,7 @@ def equi_geometric_attention_cpp_ver_3(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""SIMD C++ port with vectorized compact Q/K assembly."""
+    r"""SIMD: AVX2 with SoA unit-stride stores, FMA for DAA products, reciprocal+Newton-Raphson for normalization division."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
