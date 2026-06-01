@@ -299,26 +299,10 @@ __m256 load_blade8(const float* in, int64_t blade) {
         in[0 * 16 + blade]);
 }
 
-__m128 load_blade4(const float* in, int64_t blade) {
-    return _mm_set_ps(
-        in[3 * 16 + blade],
-        in[2 * 16 + blade],
-        in[1 * 16 + blade],
-        in[0 * 16 + blade]);
-}
-
 void store_stride8(float* out, int64_t offset, __m256 values) {
     alignas(32) float tmp[8];
     _mm256_store_ps(tmp, values);
     for (int64_t c = 0; c < 8; ++c) {
-        out[c * 12 + offset] = tmp[c];
-    }
-}
-
-void store_stride4(float* out, int64_t offset, __m128 values) {
-    alignas(16) float tmp[4];
-    _mm_store_ps(tmp, values);
-    for (int64_t c = 0; c < 4; ++c) {
         out[c * 12 + offset] = tmp[c];
     }
 }
@@ -334,7 +318,7 @@ bool build_interleaved_ipa_daa_qk_simd_float(
     double ipa_weight,
     double daa_weight,
     double eps) {
-    if (query.scalar_type() != torch::kFloat32 || channels != 4 && channels != 8) {
+    if (query.scalar_type() != torch::kFloat32 || channels != 8) {
         return false;
     }
 
@@ -349,71 +333,10 @@ bool build_interleaved_ipa_daa_qk_simd_float(
     const float daa_w = static_cast<float>(daa_weight);
     const float eps_v = static_cast<float>(eps);
 
-    if (channels == 8) {
-        const __m256 ipa_w_v = _mm256_set1_ps(ipa_w);
-        const __m256 daa_w_v = _mm256_set1_ps(daa_w);
-        const __m256 eps_vec = _mm256_set1_ps(eps_v);
-        const __m256 two = _mm256_set1_ps(2.0f);
-
-        for (int64_t block = 0; block < num_blocks; ++block) {
-            const float* qx = q_in + block * channels * 16;
-            const float* kx = k_in + block * channels * 16;
-            float* qo = q_out + block * channels * 12;
-            float* ko = k_out + block * channels * 12;
-
-            store_stride8(qo, ipa_offset + 0, _mm256_mul_ps(load_blade8(qx, 0), ipa_w_v));
-            store_stride8(qo, ipa_offset + 1, _mm256_mul_ps(load_blade8(qx, 2), ipa_w_v));
-            store_stride8(qo, ipa_offset + 2, _mm256_mul_ps(load_blade8(qx, 3), ipa_w_v));
-            store_stride8(qo, ipa_offset + 3, _mm256_mul_ps(load_blade8(qx, 4), ipa_w_v));
-            store_stride8(qo, ipa_offset + 4, _mm256_mul_ps(load_blade8(qx, 8), ipa_w_v));
-            store_stride8(qo, ipa_offset + 5, _mm256_mul_ps(load_blade8(qx, 9), ipa_w_v));
-            store_stride8(qo, ipa_offset + 6, _mm256_mul_ps(load_blade8(qx, 10), ipa_w_v));
-
-            store_stride8(ko, ipa_offset + 0, load_blade8(kx, 0));
-            store_stride8(ko, ipa_offset + 1, load_blade8(kx, 2));
-            store_stride8(ko, ipa_offset + 2, load_blade8(kx, 3));
-            store_stride8(ko, ipa_offset + 3, load_blade8(kx, 4));
-            store_stride8(ko, ipa_offset + 4, load_blade8(kx, 8));
-            store_stride8(ko, ipa_offset + 5, load_blade8(kx, 9));
-            store_stride8(ko, ipa_offset + 6, load_blade8(kx, 10));
-
-            const __m256 q14 = load_blade8(qx, 14);
-            const __m256 q_norm = _mm256_div_ps(q14, _mm256_add_ps(_mm256_mul_ps(q14, q14), eps_vec));
-            const __m256 qn0 = _mm256_mul_ps(load_blade8(qx, 11), q_norm);
-            const __m256 qn1 = _mm256_mul_ps(load_blade8(qx, 12), q_norm);
-            const __m256 qn2 = _mm256_mul_ps(load_blade8(qx, 13), q_norm);
-            const __m256 qn3 = _mm256_mul_ps(q14, q_norm);
-            const __m256 qsum = _mm256_add_ps(
-                _mm256_add_ps(_mm256_mul_ps(qn0, qn0), _mm256_mul_ps(qn1, qn1)),
-                _mm256_mul_ps(qn2, qn2));
-            store_stride8(qo, daa_offset + 0, _mm256_mul_ps(qsum, daa_w_v));
-            store_stride8(qo, daa_offset + 1, _mm256_mul_ps(_mm256_mul_ps(qn3, qn3), daa_w_v));
-            store_stride8(qo, daa_offset + 2, _mm256_mul_ps(_mm256_mul_ps(qn0, qn3), daa_w_v));
-            store_stride8(qo, daa_offset + 3, _mm256_mul_ps(_mm256_mul_ps(qn1, qn3), daa_w_v));
-            store_stride8(qo, daa_offset + 4, _mm256_mul_ps(_mm256_mul_ps(qn2, qn3), daa_w_v));
-
-            const __m256 k14 = load_blade8(kx, 14);
-            const __m256 k_norm = _mm256_div_ps(k14, _mm256_add_ps(_mm256_mul_ps(k14, k14), eps_vec));
-            const __m256 kn0 = _mm256_mul_ps(load_blade8(kx, 11), k_norm);
-            const __m256 kn1 = _mm256_mul_ps(load_blade8(kx, 12), k_norm);
-            const __m256 kn2 = _mm256_mul_ps(load_blade8(kx, 13), k_norm);
-            const __m256 kn3 = _mm256_mul_ps(k14, k_norm);
-            const __m256 ksum = _mm256_add_ps(
-                _mm256_add_ps(_mm256_mul_ps(kn0, kn0), _mm256_mul_ps(kn1, kn1)),
-                _mm256_mul_ps(kn2, kn2));
-            store_stride8(ko, daa_offset + 0, _mm256_sub_ps(_mm256_setzero_ps(), _mm256_mul_ps(kn3, kn3)));
-            store_stride8(ko, daa_offset + 1, _mm256_sub_ps(_mm256_setzero_ps(), ksum));
-            store_stride8(ko, daa_offset + 2, _mm256_mul_ps(two, _mm256_mul_ps(kn0, kn3)));
-            store_stride8(ko, daa_offset + 3, _mm256_mul_ps(two, _mm256_mul_ps(kn1, kn3)));
-            store_stride8(ko, daa_offset + 4, _mm256_mul_ps(two, _mm256_mul_ps(kn2, kn3)));
-        }
-        return true;
-    }
-
-    const __m128 ipa_w_v = _mm_set1_ps(ipa_w);
-    const __m128 daa_w_v = _mm_set1_ps(daa_w);
-    const __m128 eps_vec = _mm_set1_ps(eps_v);
-    const __m128 two = _mm_set1_ps(2.0f);
+    const __m256 ipa_w_v = _mm256_set1_ps(ipa_w);
+    const __m256 daa_w_v = _mm256_set1_ps(daa_w);
+    const __m256 eps_vec = _mm256_set1_ps(eps_v);
+    const __m256 two = _mm256_set1_ps(2.0f);
 
     for (int64_t block = 0; block < num_blocks; ++block) {
         const float* qx = q_in + block * channels * 16;
@@ -421,51 +344,51 @@ bool build_interleaved_ipa_daa_qk_simd_float(
         float* qo = q_out + block * channels * 12;
         float* ko = k_out + block * channels * 12;
 
-        store_stride4(qo, ipa_offset + 0, _mm_mul_ps(load_blade4(qx, 0), ipa_w_v));
-        store_stride4(qo, ipa_offset + 1, _mm_mul_ps(load_blade4(qx, 2), ipa_w_v));
-        store_stride4(qo, ipa_offset + 2, _mm_mul_ps(load_blade4(qx, 3), ipa_w_v));
-        store_stride4(qo, ipa_offset + 3, _mm_mul_ps(load_blade4(qx, 4), ipa_w_v));
-        store_stride4(qo, ipa_offset + 4, _mm_mul_ps(load_blade4(qx, 8), ipa_w_v));
-        store_stride4(qo, ipa_offset + 5, _mm_mul_ps(load_blade4(qx, 9), ipa_w_v));
-        store_stride4(qo, ipa_offset + 6, _mm_mul_ps(load_blade4(qx, 10), ipa_w_v));
+        store_stride8(qo, ipa_offset + 0, _mm256_mul_ps(load_blade8(qx, 0), ipa_w_v));
+        store_stride8(qo, ipa_offset + 1, _mm256_mul_ps(load_blade8(qx, 2), ipa_w_v));
+        store_stride8(qo, ipa_offset + 2, _mm256_mul_ps(load_blade8(qx, 3), ipa_w_v));
+        store_stride8(qo, ipa_offset + 3, _mm256_mul_ps(load_blade8(qx, 4), ipa_w_v));
+        store_stride8(qo, ipa_offset + 4, _mm256_mul_ps(load_blade8(qx, 8), ipa_w_v));
+        store_stride8(qo, ipa_offset + 5, _mm256_mul_ps(load_blade8(qx, 9), ipa_w_v));
+        store_stride8(qo, ipa_offset + 6, _mm256_mul_ps(load_blade8(qx, 10), ipa_w_v));
 
-        store_stride4(ko, ipa_offset + 0, load_blade4(kx, 0));
-        store_stride4(ko, ipa_offset + 1, load_blade4(kx, 2));
-        store_stride4(ko, ipa_offset + 2, load_blade4(kx, 3));
-        store_stride4(ko, ipa_offset + 3, load_blade4(kx, 4));
-        store_stride4(ko, ipa_offset + 4, load_blade4(kx, 8));
-        store_stride4(ko, ipa_offset + 5, load_blade4(kx, 9));
-        store_stride4(ko, ipa_offset + 6, load_blade4(kx, 10));
+        store_stride8(ko, ipa_offset + 0, load_blade8(kx, 0));
+        store_stride8(ko, ipa_offset + 1, load_blade8(kx, 2));
+        store_stride8(ko, ipa_offset + 2, load_blade8(kx, 3));
+        store_stride8(ko, ipa_offset + 3, load_blade8(kx, 4));
+        store_stride8(ko, ipa_offset + 4, load_blade8(kx, 8));
+        store_stride8(ko, ipa_offset + 5, load_blade8(kx, 9));
+        store_stride8(ko, ipa_offset + 6, load_blade8(kx, 10));
 
-        const __m128 q14 = load_blade4(qx, 14);
-        const __m128 q_norm = _mm_div_ps(q14, _mm_add_ps(_mm_mul_ps(q14, q14), eps_vec));
-        const __m128 qn0 = _mm_mul_ps(load_blade4(qx, 11), q_norm);
-        const __m128 qn1 = _mm_mul_ps(load_blade4(qx, 12), q_norm);
-        const __m128 qn2 = _mm_mul_ps(load_blade4(qx, 13), q_norm);
-        const __m128 qn3 = _mm_mul_ps(q14, q_norm);
-        const __m128 qsum = _mm_add_ps(
-            _mm_add_ps(_mm_mul_ps(qn0, qn0), _mm_mul_ps(qn1, qn1)),
-            _mm_mul_ps(qn2, qn2));
-        store_stride4(qo, daa_offset + 0, _mm_mul_ps(qsum, daa_w_v));
-        store_stride4(qo, daa_offset + 1, _mm_mul_ps(_mm_mul_ps(qn3, qn3), daa_w_v));
-        store_stride4(qo, daa_offset + 2, _mm_mul_ps(_mm_mul_ps(qn0, qn3), daa_w_v));
-        store_stride4(qo, daa_offset + 3, _mm_mul_ps(_mm_mul_ps(qn1, qn3), daa_w_v));
-        store_stride4(qo, daa_offset + 4, _mm_mul_ps(_mm_mul_ps(qn2, qn3), daa_w_v));
+        const __m256 q14 = load_blade8(qx, 14);
+        const __m256 q_norm = _mm256_div_ps(q14, _mm256_add_ps(_mm256_mul_ps(q14, q14), eps_vec));
+        const __m256 qn0 = _mm256_mul_ps(load_blade8(qx, 11), q_norm);
+        const __m256 qn1 = _mm256_mul_ps(load_blade8(qx, 12), q_norm);
+        const __m256 qn2 = _mm256_mul_ps(load_blade8(qx, 13), q_norm);
+        const __m256 qn3 = _mm256_mul_ps(q14, q_norm);
+        const __m256 qsum = _mm256_add_ps(
+            _mm256_add_ps(_mm256_mul_ps(qn0, qn0), _mm256_mul_ps(qn1, qn1)),
+            _mm256_mul_ps(qn2, qn2));
+        store_stride8(qo, daa_offset + 0, _mm256_mul_ps(qsum, daa_w_v));
+        store_stride8(qo, daa_offset + 1, _mm256_mul_ps(_mm256_mul_ps(qn3, qn3), daa_w_v));
+        store_stride8(qo, daa_offset + 2, _mm256_mul_ps(_mm256_mul_ps(qn0, qn3), daa_w_v));
+        store_stride8(qo, daa_offset + 3, _mm256_mul_ps(_mm256_mul_ps(qn1, qn3), daa_w_v));
+        store_stride8(qo, daa_offset + 4, _mm256_mul_ps(_mm256_mul_ps(qn2, qn3), daa_w_v));
 
-        const __m128 k14 = load_blade4(kx, 14);
-        const __m128 k_norm = _mm_div_ps(k14, _mm_add_ps(_mm_mul_ps(k14, k14), eps_vec));
-        const __m128 kn0 = _mm_mul_ps(load_blade4(kx, 11), k_norm);
-        const __m128 kn1 = _mm_mul_ps(load_blade4(kx, 12), k_norm);
-        const __m128 kn2 = _mm_mul_ps(load_blade4(kx, 13), k_norm);
-        const __m128 kn3 = _mm_mul_ps(k14, k_norm);
-        const __m128 ksum = _mm_add_ps(
-            _mm_add_ps(_mm_mul_ps(kn0, kn0), _mm_mul_ps(kn1, kn1)),
-            _mm_mul_ps(kn2, kn2));
-        store_stride4(ko, daa_offset + 0, _mm_sub_ps(_mm_setzero_ps(), _mm_mul_ps(kn3, kn3)));
-        store_stride4(ko, daa_offset + 1, _mm_sub_ps(_mm_setzero_ps(), ksum));
-        store_stride4(ko, daa_offset + 2, _mm_mul_ps(two, _mm_mul_ps(kn0, kn3)));
-        store_stride4(ko, daa_offset + 3, _mm_mul_ps(two, _mm_mul_ps(kn1, kn3)));
-        store_stride4(ko, daa_offset + 4, _mm_mul_ps(two, _mm_mul_ps(kn2, kn3)));
+        const __m256 k14 = load_blade8(kx, 14);
+        const __m256 k_norm = _mm256_div_ps(k14, _mm256_add_ps(_mm256_mul_ps(k14, k14), eps_vec));
+        const __m256 kn0 = _mm256_mul_ps(load_blade8(kx, 11), k_norm);
+        const __m256 kn1 = _mm256_mul_ps(load_blade8(kx, 12), k_norm);
+        const __m256 kn2 = _mm256_mul_ps(load_blade8(kx, 13), k_norm);
+        const __m256 kn3 = _mm256_mul_ps(k14, k_norm);
+        const __m256 ksum = _mm256_add_ps(
+            _mm256_add_ps(_mm256_mul_ps(kn0, kn0), _mm256_mul_ps(kn1, kn1)),
+            _mm256_mul_ps(kn2, kn2));
+        store_stride8(ko, daa_offset + 0, _mm256_sub_ps(_mm256_setzero_ps(), _mm256_mul_ps(kn3, kn3)));
+        store_stride8(ko, daa_offset + 1, _mm256_sub_ps(_mm256_setzero_ps(), ksum));
+        store_stride8(ko, daa_offset + 2, _mm256_mul_ps(two, _mm256_mul_ps(kn0, kn3)));
+        store_stride8(ko, daa_offset + 3, _mm256_mul_ps(two, _mm256_mul_ps(kn1, kn3)));
+        store_stride8(ko, daa_offset + 4, _mm256_mul_ps(two, _mm256_mul_ps(kn2, kn3)));
     }
     return true;
 }
