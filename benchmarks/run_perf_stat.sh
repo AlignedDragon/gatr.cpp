@@ -7,7 +7,7 @@ if ! command -v perf >/dev/null 2>&1; then
 fi
 
 TARGET="${1:-equi_geometric_attention}"
-PRESET="${2:-small}"
+N="${2:-1}"
 REPEATS="${3:-5}"
 
 EVENTS="${EVENTS:-cycles,instructions,branches,branch-misses,cache-references,cache-misses,page-faults,task-clock}"
@@ -17,7 +17,7 @@ EVENTS="${EVENTS:-cycles,instructions,branches,branch-misses,cache-references,ca
 perf stat -r "${REPEATS}" -e "${EVENTS}" \
   .venv/bin/python benchmarks/benchmark_repo.py \
   --target "${TARGET}" \
-  --preset "${PRESET}" \
+  --n "${N}" \
   --warmup 5 \
   --repeats 1 \
   --inner-iters 100 \
