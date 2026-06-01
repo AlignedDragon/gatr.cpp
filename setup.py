@@ -9,7 +9,14 @@ for environment/dependency management and this script's only job is to compile
 the extension into src/ezgatr/opt/ where the editable install picks it up.
 """
 from setuptools import setup
+from setuptools.dist import Distribution
 from torch.utils.cpp_extension import BuildExtension, CppExtension
+
+
+class StandaloneExtensionDistribution(Distribution):
+    def parse_config_files(self, filenames=None, ignore_option_errors=False):
+        return None
+
 
 ext = CppExtension(
     name="ezgatr.opt._opt_ops",
@@ -35,6 +42,7 @@ ext = CppExtension(
 setup(
     name="ezgatr-opt-ext",
     package_dir={"": "src"},
+    distclass=StandaloneExtensionDistribution,
     ext_modules=[ext],
     cmdclass={"build_ext": BuildExtension},
 )
