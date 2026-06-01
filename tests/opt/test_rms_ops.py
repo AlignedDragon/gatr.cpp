@@ -12,7 +12,7 @@ from ezgatr.opt import scaler_gated_gelu_ver_2 as gelu_cpp
 
 
 batch_shape = st.lists(st.integers(min_value=1, max_value=4), min_size=0, max_size=3)
-batch_shape_rms = st.lists(st.integers(min_value=1, max_value=4), min_size=1, max_size=3)
+batch_shape_rms = st.lists(st.integers(min_value=1, max_value=20), min_size=1, max_size=3)
 
 
 
