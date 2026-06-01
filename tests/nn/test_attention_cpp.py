@@ -9,14 +9,15 @@ from ezgatr.nn.functional.attention_cpp import (
     equi_geometric_attention_cpp_ver_0,
     equi_geometric_attention_cpp_ver_1,
     equi_geometric_attention_cpp_ver_2,
+    equi_geometric_attention_cpp_ver_3,
 )
 
 
-def _make_inputs():
+def _make_inputs(channels: int = 4):
     torch.manual_seed(0)
-    q = torch.randn(2, 3, 5, 4, 16)
-    k = torch.randn(2, 3, 5, 4, 16)
-    v = torch.randn(2, 3, 5, 4, 16)
+    q = torch.randn(2, 3, 5, channels, 16)
+    k = torch.randn(2, 3, 5, channels, 16)
+    v = torch.randn(2, 3, 5, channels, 16)
     return q, k, v
 
 
@@ -26,6 +27,7 @@ def _make_inputs():
         equi_geometric_attention_cpp_ver_0,
         equi_geometric_attention_cpp_ver_1,
         equi_geometric_attention_cpp_ver_2,
+        equi_geometric_attention_cpp_ver_3,
         equi_geometric_attention_cpp,
     ],
 )
@@ -69,6 +71,7 @@ def test_equi_geometric_attention_cpp_matches_python(impl, kinds, weight):
         equi_geometric_attention_cpp_ver_0,
         equi_geometric_attention_cpp_ver_1,
         equi_geometric_attention_cpp_ver_2,
+        equi_geometric_attention_cpp_ver_3,
         equi_geometric_attention_cpp,
     ],
 )
@@ -93,3 +96,30 @@ def test_equi_geometric_attention_cpp_supports_causal_attention(impl):
     )
 
     torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("channels", [4, 8, 12, 16])
+def test_equi_geometric_attention_cpp_ver_3_supports_benchmark_channels(channels):
+    q, k, v = _make_inputs(channels=channels)
+
+    expected, _ = equi_geometric_attention(
+        q,
+        k,
+        v,
+        kinds={"ipa": None, "daa": {"eps": 1e-3}},
+        weight=[0.5, 1.25],
+        dropout_p=0.0,
+        is_causal=False,
+    )
+    actual, actual_scalar = equi_geometric_attention_cpp_ver_3(
+        q,
+        k,
+        v,
+        kinds={"ipa": None, "daa": {"eps": 1e-3}},
+        weight=[0.5, 1.25],
+        dropout_p=0.0,
+        is_causal=False,
+    )
+
+    assert actual_scalar is None
+    torch.testing.assert_close(actual, expected, atol=5e-5, rtol=1e-4)
