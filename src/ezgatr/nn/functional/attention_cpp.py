@@ -85,7 +85,7 @@ def equi_geometric_attention_cpp_ver_1(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""Cache-optimized C++ port of the multivector-only geometric attention."""
+    r"""Math optimizations: explicit DAA formula (direct computation replaces einsum) + cached mathematical constants."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
@@ -118,7 +118,7 @@ def equi_geometric_attention_cpp_ver_2(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""Pre-SIMD C++ port using explicit DAA formulas and compact Q/K assembly."""
+    r"""Scalar memory + compiler: compact single-pass Q/K assembly (no intermediate torch::cat), manual loop unrolling for channels=4,8."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
@@ -151,7 +151,7 @@ def equi_geometric_attention_cpp_ver_3(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""SIMD C++ port with vectorized compact Q/K assembly."""
+    r"""SIMD: AVX2 with SoA unit-stride stores, FMA for DAA products, reciprocal+Newton-Raphson for normalization division."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
@@ -160,39 +160,6 @@ def equi_geometric_attention_cpp_ver_3(
 
     ext = _load_attention_cpp_extension()
     ret = ext.equi_geometric_attention_mv_only_ver_3(
-        query,
-        key,
-        value,
-        kinds,
-        weight,
-        attn_mask,
-        dropout_p,
-        is_causal,
-        scale,
-    )
-    return ret, None
-
-
-def equi_geometric_attention_cpp_ver_4(
-    query: GeometricQKVType,
-    key: GeometricQKVType,
-    value: GeometricQKVType,
-    kinds: dict[GeometricAttnKindType, dict[str, object] | None],
-    weight: list[torch.Tensor | float] | None = None,
-    attn_mask: torch.Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = False,
-    scale: float | None = None,
-) -> GeometricQKVType:
-    r"""Experimental SIMD path kept for benchmarking as a failed optimization."""
-
-    if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
-        raise NotImplementedError(
-            "The C++ port currently supports the multivector-only attention path."
-        )
-
-    ext = _load_attention_cpp_extension()
-    ret = ext.equi_geometric_attention_mv_only_ver_4(
         query,
         key,
         value,

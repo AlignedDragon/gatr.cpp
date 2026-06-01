@@ -50,17 +50,6 @@ torch::Tensor equi_geometric_attention_mv_only_ver_3(
     bool is_causal = false,
     const py::object& scale = py::none());
 
-torch::Tensor equi_geometric_attention_mv_only_ver_4(
-    const torch::Tensor& query,
-    const torch::Tensor& key,
-    const torch::Tensor& value,
-    const py::dict& kinds,
-    const py::object& weight = py::none(),
-    const py::object& attn_mask = py::none(),
-    double dropout_p = 0.0,
-    bool is_causal = false,
-    const py::object& scale = py::none());
-
 torch::Tensor equi_geometric_attention_mv_only(
     const torch::Tensor& query,
     const torch::Tensor& key,
