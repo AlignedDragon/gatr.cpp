@@ -913,6 +913,25 @@ torch::Tensor equi_geometric_attention_mv_only_ver_3(
         query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale);
 }
 
+torch::Tensor equi_geometric_attention_mv_only_ver_4(
+    const torch::Tensor& query,
+    const torch::Tensor& key,
+    const torch::Tensor& value,
+    const py::dict& kinds,
+    const py::object& weight,
+    const py::object& attn_mask,
+    double dropout_p,
+    bool is_causal,
+    const py::object& scale) {
+    if (query.scalar_type() != torch::kFloat32 || query.size(-2) < 8) {
+        return equi_geometric_attention_mv_only_ver_2(
+            query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale);
+    }
+
+    return equi_geometric_attention_mv_only_impl(
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true, true, true);
+}
+
 torch::Tensor equi_geometric_attention_mv_only(
     const torch::Tensor& query,
     const torch::Tensor& key,
