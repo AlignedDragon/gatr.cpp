@@ -909,13 +909,8 @@ torch::Tensor equi_geometric_attention_mv_only_ver_3(
     double dropout_p,
     bool is_causal,
     const py::object& scale) {
-    if (query.scalar_type() != torch::kFloat32 || query.size(-2) < 8) {
-        return equi_geometric_attention_mv_only_ver_2(
-            query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale);
-    }
-
-    return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true, true, true);
+    return equi_geometric_attention_mv_only_ver_2(
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale);
 }
 
 torch::Tensor equi_geometric_attention_mv_only(
