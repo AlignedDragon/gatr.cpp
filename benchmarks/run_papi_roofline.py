@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import statistics
 import sys
@@ -23,6 +24,58 @@ DEFAULT_EVENTS = [
 
 FLOP_EVENTS = ("PAPI_FP_OPS", "PAPI_SP_OPS", "PAPI_DP_OPS")
 MEMORY_EVENTS = ("PAPI_L3_TCM",)
+
+
+class SystemPapi:
+    PAPI_VER_CURRENT = 0x07020000
+    PAPI_OK = 0
+    PAPI_NULL = -1
+
+    def __init__(self, event_names: list[str]):
+        self.lib = ctypes.CDLL("libpapi.so")
+        version = self.lib.PAPI_library_init(self.PAPI_VER_CURRENT)
+        if version < 0:
+            raise SystemExit(f"PAPI_library_init failed with code {version}")
+        self.event_names = event_names
+        self.event_codes = [self._event_code(name) for name in event_names]
+        self.event_set = self._create_event_set(self.event_codes)
+
+    def _event_code(self, name: str) -> int:
+        code = ctypes.c_int()
+        ret = self.lib.PAPI_event_name_to_code(name.encode(), ctypes.byref(code))
+        if ret != self.PAPI_OK:
+            raise SystemExit(f"PAPI_event_name_to_code({name}) failed with code {ret}")
+        return int(code.value)
+
+    def _create_event_set(self, event_codes: list[int]) -> ctypes.c_int:
+        event_set = ctypes.c_int(self.PAPI_NULL)
+        ret = self.lib.PAPI_create_eventset(ctypes.byref(event_set))
+        if ret != self.PAPI_OK:
+            raise SystemExit(f"PAPI_create_eventset failed with code {ret}")
+        for name, code in zip(self.event_names, event_codes):
+            ret = self.lib.PAPI_add_event(event_set, code)
+            if ret != self.PAPI_OK:
+                raise SystemExit(f"PAPI_add_event({name}) failed with code {ret}")
+        return event_set
+
+    def measure(self, fn, inner_iters: int, device: torch.device) -> tuple[float, dict[str, int]]:
+        ret = self.lib.PAPI_start(self.event_set)
+        if ret != self.PAPI_OK:
+            raise SystemExit(f"PAPI_start failed with code {ret}")
+        start = time.perf_counter()
+        for _ in range(inner_iters):
+            fn()
+        synchronize(device)
+        elapsed_s = time.perf_counter() - start
+        values = (ctypes.c_longlong * len(self.event_names))()
+        ret = self.lib.PAPI_stop(self.event_set, values)
+        if ret != self.PAPI_OK:
+            raise SystemExit(f"PAPI_stop failed with code {ret}")
+        return elapsed_s, dict(zip(self.event_names, [int(v) for v in values]))
+
+    def close(self) -> None:
+        self.lib.PAPI_cleanup_eventset(self.event_set)
+        self.lib.PAPI_destroy_eventset(ctypes.byref(self.event_set))
 
 
 def load_papi_events(event_names: list[str]):
@@ -49,6 +102,20 @@ def load_papi_events(event_names: list[str]):
             ) from exc
 
     return papi_high, resolved_names, event_codes
+
+
+def split_event_groups(event_names: list[str]) -> list[list[str]]:
+    """Split events that cannot be counted together on common Intel/PAPI setups."""
+    fp_events = set(FLOP_EVENTS)
+    memory_events = set(MEMORY_EVENTS)
+    has_fp = any(name in fp_events for name in event_names)
+    has_memory = any(name in memory_events for name in event_names)
+    if not (has_fp and has_memory):
+        return [event_names]
+
+    base = [name for name in event_names if name not in memory_events]
+    memory = [name for name in event_names if name in memory_events]
+    return [base, memory]
 
 
 def synchronize(device: torch.device) -> None:
@@ -91,7 +158,6 @@ def measure_target_with_papi(
     dtype_bytes: int,
     estimate_missing: bool,
 ) -> dict:
-    papi_high, resolved_event_names, event_codes = load_papi_events(event_names)
     fn = br.build_target(target_name, device=device, n=n)
 
     with torch.inference_mode():
@@ -100,18 +166,21 @@ def measure_target_with_papi(
         synchronize(device)
 
         rows = []
-        for _ in range(repeats):
-            papi_high.start_counters(event_codes)
-            start = time.perf_counter()
-            for _ in range(inner_iters):
-                fn()
-            synchronize(device)
-            elapsed_s = time.perf_counter() - start
-            values = papi_high.stop_counters()
-            counters = dict(zip(resolved_event_names, values))
-            rows.append((elapsed_s, counters))
+        event_groups = split_event_groups(event_names)
+        for group_index, group in enumerate(event_groups):
+            papi = SystemPapi(group)
+            try:
+                for _ in range(repeats):
+                    elapsed_s, counters = papi.measure(fn, inner_iters, device)
+                    if group_index == 0:
+                        rows.append((elapsed_s, counters))
+                    else:
+                        rows[len(rows) - repeats + _][1].update(counters)
+            finally:
+                papi.close()
 
     elapsed_per_call = [elapsed / inner_iters for elapsed, _ in rows]
+    resolved_event_names = list(dict.fromkeys(name for group in event_groups for name in group))
     counter_lists = {
         name: [counters[name] for _, counters in rows]
         for name in resolved_event_names
@@ -201,6 +270,20 @@ def main() -> None:
     target_names = br.get_target_names() if "all" in targets else targets
 
     results = []
+    payload = {
+        "n": args.n,
+        "cfg": br.make_cfg(args.n),
+        "device": str(device),
+        "threads": args.threads,
+        "warmup": args.warmup,
+        "repeats": args.repeats,
+        "inner_iters": args.inner_iters,
+        "events": event_names,
+        "cache_line_bytes": args.cache_line_bytes,
+        "dtype_bytes": args.dtype_bytes,
+        "results": results,
+    }
+    args.json_out.parent.mkdir(parents=True, exist_ok=True)
     for name in target_names:
         row = measure_target_with_papi(
             target_name=name,
@@ -222,22 +305,8 @@ def main() -> None:
             f"{gf if gf is not None else float('nan'):10.3f} GF/s "
             f"{ai if ai is not None else float('nan'):10.3f} FLOP/B"
         )
-
-    payload = {
-        "n": args.n,
-        "cfg": br.make_cfg(args.n),
-        "device": str(device),
-        "threads": args.threads,
-        "warmup": args.warmup,
-        "repeats": args.repeats,
-        "inner_iters": args.inner_iters,
-        "events": event_names,
-        "cache_line_bytes": args.cache_line_bytes,
-        "dtype_bytes": args.dtype_bytes,
-        "results": results,
-    }
-    args.json_out.parent.mkdir(parents=True, exist_ok=True)
-    args.json_out.write_text(json.dumps(payload, indent=2))
+        args.json_out.write_text(json.dumps(payload, indent=2) + "\n")
+        print(f"checkpointed {args.json_out}")
     print(f"wrote {args.json_out}")
 
 
