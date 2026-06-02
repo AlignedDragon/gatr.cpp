@@ -1,3 +1,20 @@
+# Advanced Systems Lab - Team #26
+
+CPU-inference optimized variant of EzGATr (Geometric Algebra Transformer).
+
+Team members:
+
+- Anastasija Tortevska
+- Glenn Schönbächler
+- Kristijan Zafirovski
+- Mukhammadali Sayfiddinov
+
+Slides: https://docs.google.com/presentation/d/1znu0kcxWRBG2q-T0RSiTfL3pvKltQKpec6rvvNRY7oQ/edit?usp=sharing
+
+---
+
+Below is the original README for the project.
+
 <html>
     <h1 align="center">
       <img src="https://raw.githubusercontent.com/Guest400123064/ezgatr/refs/heads/main/docs/images/ezgatr_logo.png" width="256"/>
