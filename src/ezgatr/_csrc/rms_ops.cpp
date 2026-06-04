@@ -618,364 +618,12 @@ void rms_norm_kernel_intrins(
 
 
 
-//packed intrins intel
-// #include <immintrin.h>
-// #include <cmath>
-// #include <algorithm>
-// #include <type_traits>
 
+// ---------------------------------------------------------------------------
+// Packed SOA AVX2 kernel
+// ---------------------------------------------------------------------------
 // template <typename scalar_t, bool HasWeight>
-// void rms_norm_kernel_intrins(
-//     const scalar_t* __restrict__ X,        // [groups][M][16]
-//     const scalar_t* __restrict__ X_sel,    // [groups][M][8]
-//     scalar_t* __restrict__ O,              // [groups][M][16]
-//     const scalar_t* __restrict__ W,        // [M]
-//     int64_t groups,
-//     int64_t M,
-//     double eps
-// ) {
-//     const scalar_t eps_t = static_cast<scalar_t>(eps);
-
-//     if constexpr (std::is_same_v<scalar_t, float>) {
-
-//         for (int64_t g = 0; g < groups; ++g) {
-
-//             const float* group_x   = X + g * (M << 4);
-//             const float* group_sel = X_sel + g * (M << 3);
-//             float* group_o         = O + g * (M << 4);
-
-//             __m256 acc = _mm256_setzero_ps();
-
-//             int64_t m = 0;
-
-//             // ---------------------------
-//             // vectorized RMS over X_sel
-//             // ---------------------------
-//             for (; m + 7 < M; m += 8) {
-
-//                 const float* s0 = group_sel + (m << 3);
-//                 const float* s1 = s0 + 8;
-//                 const float* s2 = s1 + 8;
-//                 const float* s3 = s2 + 8;
-//                 const float* s4 = s3 + 8;
-//                 const float* s5 = s4 + 8;
-//                 const float* s6 = s5 + 8;
-//                 const float* s7 = s6 + 8;
-
-//                 __m256 v0 = _mm256_loadu_ps(s0);
-//                 __m256 v1 = _mm256_loadu_ps(s1);
-//                 __m256 v2 = _mm256_loadu_ps(s2);
-//                 __m256 v3 = _mm256_loadu_ps(s3);
-//                 __m256 v4 = _mm256_loadu_ps(s4);
-//                 __m256 v5 = _mm256_loadu_ps(s5);
-//                 __m256 v6 = _mm256_loadu_ps(s6);
-//                 __m256 v7 = _mm256_loadu_ps(s7);
-
-//                 acc = _mm256_fmadd_ps(v0, v0, acc);
-//                 acc = _mm256_fmadd_ps(v1, v1, acc);
-//                 acc = _mm256_fmadd_ps(v2, v2, acc);
-//                 acc = _mm256_fmadd_ps(v3, v3, acc);
-//                 acc = _mm256_fmadd_ps(v4, v4, acc);
-//                 acc = _mm256_fmadd_ps(v5, v5, acc);
-//                 acc = _mm256_fmadd_ps(v6, v6, acc);
-//                 acc = _mm256_fmadd_ps(v7, v7, acc);
-//             }
-
-//             
-//             // horizontal reduce
-//            
-//             __m128 lo = _mm256_castps256_ps128(acc);
-//             __m128 hi = _mm256_extractf128_ps(acc, 1);
-
-//             __m128 sum = _mm_add_ps(lo, hi);
-//             sum = _mm_hadd_ps(sum, sum);
-//             sum = _mm_hadd_ps(sum, sum);
-
-//             float accs = _mm_cvtss_f32(sum);
-
-//             // tail
-//             for (; m < M; ++m) {
-//                 const float* s = group_sel + (m << 3);
-
-//                 accs +=
-//                     s[0]*s[0] + s[1]*s[1] + s[2]*s[2] + s[3]*s[3] +
-//                     s[4]*s[4] + s[5]*s[5] + s[6]*s[6] + s[7]*s[7];
-//             }
-
-//             accs /= static_cast<float>(M);
-
-//             float scale = 1.0f / std::sqrt(std::max(accs, eps_t));
-
-//             
-//             // scale using original X
-//            
-//             for (int64_t i = 0; i < M; ++i) {
-
-//                 const float* x = group_x + (i << 4);
-//                 float* o       = group_o + (i << 4);
-
-//                 float scalew = scale;
-
-//                 if constexpr (HasWeight) {
-//                     scalew *= W[i];
-//                 }
-
-//                 __m256 vscale = _mm256_set1_ps(scalew);
-
-//                 __m256 v0 = _mm256_loadu_ps(x + 0);
-//                 __m256 v1 = _mm256_loadu_ps(x + 8);
-
-//                 v0 = _mm256_mul_ps(v0, vscale);
-//                 v1 = _mm256_mul_ps(v1, vscale);
-
-//                 _mm256_storeu_ps(o + 0, v0);
-//                 _mm256_storeu_ps(o + 8, v1);
-//             }
-//         }
-
-//     } else if constexpr (std::is_same_v<scalar_t, double>) {
-
-//         for (int64_t g = 0; g < groups; ++g) {
-
-//             const double* group_x   = X + g * (M << 4);
-//             const double* group_sel = X_sel + g * (M << 3);
-//             double* group_o         = O + g * (M << 4);
-
-//             __m256d acc = _mm256_setzero_pd();
-
-//             int64_t m = 0;
-
-//             for (; m + 3 < M; m += 4) {
-
-//                 const double* s0 = group_sel + (m << 3);
-//                 const double* s1 = s0 + 8;
-//                 const double* s2 = s1 + 8;
-//                 const double* s3 = s2 + 8;
-
-//                 __m256d v0 = _mm256_loadu_pd(s0);
-//                 __m256d v1 = _mm256_loadu_pd(s1);
-//                 __m256d v2 = _mm256_loadu_pd(s2);
-//                 __m256d v3 = _mm256_loadu_pd(s3);
-
-//                 acc = _mm256_fmadd_pd(v0, v0, acc);
-//                 acc = _mm256_fmadd_pd(v1, v1, acc);
-//                 acc = _mm256_fmadd_pd(v2, v2, acc);
-//                 acc = _mm256_fmadd_pd(v3, v3, acc);
-//             }
-
-//             __m128d lo = _mm256_castpd256_pd128(acc);
-//             __m128d hi = _mm256_extractf128_pd(acc, 1);
-
-//             __m128d sum = _mm_add_pd(lo, hi);
-
-//             double accs =
-//                 _mm_cvtsd_f64(sum) +
-//                 _mm_cvtsd_f64(_mm_unpackhi_pd(sum, sum));
-
-//             for (; m < M; ++m) {
-//                 const double* s = group_sel + (m << 3);
-
-//                 accs +=
-//                     s[0]*s[0] + s[1]*s[1] + s[2]*s[2] + s[3]*s[3] +
-//                     s[4]*s[4] + s[5]*s[5] + s[6]*s[6] + s[7]*s[7];
-//             }
-
-//             accs /= static_cast<double>(M);
-
-//             double scale = 1.0 / std::sqrt(std::max(accs, eps_t));
-
-//             for (int64_t i = 0; i < M; ++i) {
-
-//                 const double* x = group_x + (i << 4);
-//                 double* o       = group_o + (i << 4);
-
-//                 double scalew = scale;
-
-//                 if constexpr (HasWeight) {
-//                     scalew *= W[i];
-//                 }
-
-//                 __m256d vscale = _mm256_set1_pd(scalew);
-
-//                 __m256d v0 = _mm256_loadu_pd(x + 0);
-//                 __m256d v1 = _mm256_loadu_pd(x + 4);
-
-//                 v0 = _mm256_mul_pd(v0, vscale);
-//                 v1 = _mm256_mul_pd(v1, vscale);
-
-//                 _mm256_storeu_pd(o + 0, v0);
-//                 _mm256_storeu_pd(o + 4, v1);
-//             }
-//         }
-//     }
-// }
-
-
-//fixed version
-// template <typename scalar_t, bool HasWeight>
-// void rms_norm_kernel_intrins(
-//     const scalar_t* __restrict__ X,
-//     const scalar_t* __restrict__ P,   // [groups, 8, M]
-//     scalar_t* __restrict__ O,
-//     const scalar_t* __restrict__ W,
-//     int64_t groups,
-//     int64_t M,
-//     double eps
-// ) {
-//     const scalar_t eps_t = static_cast<scalar_t>(eps);
-
-//     if constexpr (std::is_same_v<scalar_t, float>) {
-
-//         for (int64_t g = 0; g < groups; ++g) {
-
-//             const float* xg = X + g * (M << 4);
-//             const float* pg = P + g * (8 * M);
-//             float* og       = O + g * (M << 4);
-
-//             // -------------------------
-//             // RMS over packed tensor
-//             // sum_{m,k} P[g,k,m]^2
-//             // -------------------------
-//             __m256 acc = _mm256_setzero_ps();
-
-//             int64_t m = 0;
-
-//             for (; m + 7 < M; m += 8) {
-
-//                 for (int k = 0; k < 8; ++k) {
-
-//                     const float* pk = pg + k * M + m;
-
-//                     __m256 v = _mm256_loadu_ps(pk);
-//                     acc = _mm256_fmadd_ps(v, v, acc);
-//                 }
-//             }
-
-//             float accs = 0.f;
-
-//             // horizontal reduce
-//             __m128 lo = _mm256_castps256_ps128(acc);
-//             __m128 hi = _mm256_extractf128_ps(acc, 1);
-//             __m128 sum = _mm_add_ps(lo, hi);
-//             sum = _mm_hadd_ps(sum, sum);
-//             sum = _mm_hadd_ps(sum, sum);
-//             accs = _mm_cvtss_f32(sum);
-
-//             // tail
-//             for (; m < M; ++m) {
-//                 for (int k = 0; k < 8; ++k) {
-//                     const float* pk = pg + k * M + m;
-//                     float v = pk[0];
-//                     accs += v * v;
-//                 }
-//             }
-
-//             accs /= static_cast<float>(M);
-
-//             float scale = 1.f / std::sqrt(std::max(accs, (float)eps_t));
-
-//             if constexpr (HasWeight) {
-//                 for (int k = 0; k < 8; ++k)
-//                     scale *= W[k];
-//             }
-
-//             __m256 vscale = _mm256_set1_ps(scale);
-
-//             // -------------------------
-//             // write-back from X
-//             // -------------------------
-//             for (int64_t m = 0; m < M; ++m) {
-
-//                 const float* x = xg + (m << 4);
-//                 float* o       = og + (m << 4);
-
-//                 __m256 v0 = _mm256_loadu_ps(x + 0);
-//                 __m256 v1 = _mm256_loadu_ps(x + 8);
-
-//                 v0 = _mm256_mul_ps(v0, vscale);
-//                 v1 = _mm256_mul_ps(v1, vscale);
-
-//                 _mm256_storeu_ps(o + 0, v0);
-//                 _mm256_storeu_ps(o + 8, v1);
-//             }
-//         }
-//     }
-
-//     else if constexpr (std::is_same_v<scalar_t, double>) {
-
-//         for (int64_t g = 0; g < groups; ++g) {
-
-//             const double* xg = X + g * (M << 4);
-//             const double* pg = P + g * (8 * M);
-//             double* og       = O + g * (M << 4);
-
-//             __m256d acc = _mm256_setzero_pd();
-
-//             int64_t m = 0;
-
-//             for (; m + 3 < M; m += 4) {
-
-//                 for (int k = 0; k < 8; ++k) {
-
-//                     const double* pk = pg + k * M + m;
-
-//                     __m256d v = _mm256_loadu_pd(pk);
-//                     acc = _mm256_fmadd_pd(v, v, acc);
-//                 }
-//             }
-
-//             __m128d lo = _mm256_castpd256_pd128(acc);
-//             __m128d hi = _mm256_extractf128_pd(acc, 1);
-
-//             __m128d sum = _mm_add_pd(lo, hi);
-
-//             double accs =
-//                 _mm_cvtsd_f64(sum) +
-//                 _mm_cvtsd_f64(_mm_unpackhi_pd(sum, sum));
-
-//             for (; m < M; ++m) {
-//                 for (int k = 0; k < 8; ++k) {
-//                     const double* pk = pg + k * M + m;
-//                     double v = pk[0];
-//                     accs += v * v;
-//                 }
-//             }
-
-//             accs /= static_cast<double>(M);
-
-//             double scale = 1.0 / std::sqrt(std::max(accs, eps_t));
-
-//             if constexpr (HasWeight) {
-//                 for (int k = 0; k < 8; ++k)
-//                     scale *= W[k];
-//             }
-
-//             __m256d vscale = _mm256_set1_pd(scale);
-
-//             for (int64_t i = 0; i < M; ++i) {
-
-//                 const double* x = xg + (i << 4);
-//                 double* o       = og + (i << 4);
-
-//                 __m256d v0 = _mm256_loadu_pd(x + 0);
-//                 __m256d v1 = _mm256_loadu_pd(x + 4);
-
-//                 v0 = _mm256_mul_pd(v0, vscale);
-//                 v1 = _mm256_mul_pd(v1, vscale);
-
-//                 _mm256_storeu_pd(o + 0, v0);
-//                 _mm256_storeu_pd(o + 4, v1);
-//             }
-//         }
-//     }
-// }
-
-
-
-
-//AMD packed
-// template <typename scalar_t, bool HasWeight>
-// void rms_norm_kernel_intrins(
+// void rms_norm_kernel_packed(
 //     const scalar_t* __restrict__ X,
 //     const scalar_t* __restrict__ X_sel,
 //     scalar_t* __restrict__ O,
@@ -986,360 +634,126 @@ void rms_norm_kernel_intrins(
 // ) {
 //     const scalar_t eps_t = static_cast<scalar_t>(eps);
 
-//     // ========================================================
-//     // FLOAT32 PATH (NEON 4-lane)
-//     // ========================================================
 //     if constexpr (std::is_same_v<scalar_t, float>) {
 
 //         for (int64_t g = 0; g < groups; ++g) {
 
-//             const float* group_x   = X + g * (M << 4);
-//             const float* group_sel = X_sel + g * (M << 3);
-//             float* group_o         = O + g * (M << 4);
+//             const float* gx   = X     + g * (M << 4);
+//             const float* gsel = X_sel + g * (8 * M);
+//             float*       go   = O     + g * (M << 4);
 
-//             float32x4_t acc = vdupq_n_f32(0.0f);
+//             const float* s0 = gsel + 0 * M;
+//             const float* s1 = gsel + 1 * M;
+//             const float* s2 = gsel + 2 * M;
+//             const float* s3 = gsel + 3 * M;
+//             const float* s4 = gsel + 4 * M;
+//             const float* s5 = gsel + 5 * M;
+//             const float* s6 = gsel + 6 * M;
+//             const float* s7 = gsel + 7 * M;
 
+//             __m256 acc = _mm256_setzero_ps();
 //             int64_t m = 0;
 
-//             for (; m + 3 < M; m += 4) {
-//                 printf("iam here");
-//                 const float* s0 = group_sel + (m << 3);
-//                 const float* s1 = s0 + 8;
-//                 const float* s2 = s1 + 8;
-//                 const float* s3 = s2 + 8;
-//                 const float* s4 = s3 + 8;
-//                 const float* s5 = s4 + 8;
-//                 const float* s6 = s5 + 8;
-//                 const float* s7 = s6 + 8;
-
-//                 float32x4_t v0 = vld1q_f32(s0);
-//                 float32x4_t v1 = vld1q_f32(s1);
-//                 float32x4_t v2 = vld1q_f32(s2);
-//                 float32x4_t v3 = vld1q_f32(s3);
-//                 float32x4_t v4 = vld1q_f32(s4);
-//                 float32x4_t v5 = vld1q_f32(s5);
-//                 float32x4_t v6 = vld1q_f32(s6);
-//                 float32x4_t v7 = vld1q_f32(s7);
-
-//                 acc = vfmaq_f32(acc, v0, v0);
-//                 acc = vfmaq_f32(acc, v1, v1);
-//                 acc = vfmaq_f32(acc, v2, v2);
-//                 acc = vfmaq_f32(acc, v3, v3);
-//                 acc = vfmaq_f32(acc, v4, v4);
-//                 acc = vfmaq_f32(acc, v5, v5);
-//                 acc = vfmaq_f32(acc, v6, v6);
-//                 acc = vfmaq_f32(acc, v7, v7);
-//             }
-
-//             float accs = vaddvq_f32(acc);
-
-//             for (; m < M; ++m) {
-//                 const float* s = group_sel + (m << 3);
-
-//                 accs +=
-//                     s[0]*s[0] + s[1]*s[1] + s[2]*s[2] + s[3]*s[3] +
-//                     s[4]*s[4] + s[5]*s[5] + s[6]*s[6] + s[7]*s[7];
-//             }
-
-//             accs /= (float)M;
-
-//             float scale = 1.0f / sqrtf(fmaxf(accs, eps_t));
-
-//             for (int64_t i = 0; i < M; ++i) {
-
-//                 const float* x = group_x + (i << 4);
-//                 float* o       = group_o + (i << 4);
-
-//                 float scalew = scale;
-
-//                 if constexpr (HasWeight) {
-//                     scalew *= W[i];
-//                 }
-
-//                 float32x4_t vscale = vdupq_n_f32(scalew);
-
-//                 float32x4_t v0 = vld1q_f32(x + 0);
-//                 float32x4_t v1 = vld1q_f32(x + 4);
-
-//                 v0 = vmulq_f32(v0, vscale);
-//                 v1 = vmulq_f32(v1, vscale);
-
-//                 vst1q_f32(o + 0, v0);
-//                 vst1q_f32(o + 4, v1);
-//             }
-//         }
-//     }
-
-//     // ========================================================
-//     // DOUBLE PATH (NEON 2-lane)
-//     // ========================================================
-//     else if constexpr (std::is_same_v<scalar_t, double>) {
-
-//         for (int64_t g = 0; g < groups; ++g) {
-
-//             const double* group_x   = X + g * (M << 4);
-//             const double* group_sel = X_sel + g * (M << 3);
-//             double* group_o         = O + g * (M << 4);
-
-//             float64x2_t acc = vdupq_n_f64(0.0);
-
-//             int64_t m = 0;
-
-//             for (; m + 1 < M; m += 2) {
-
-//                 const double* s0 = group_sel + (m << 3);
-//                 const double* s1 = s0 + 8;
-//                 const double* s2 = s1 + 8;
-//                 const double* s3 = s2 + 8;
-//                 const double* s4 = s3 + 8;
-//                 const double* s5 = s4 + 8;
-//                 const double* s6 = s5 + 8;
-//                 const double* s7 = s6 + 8;
-
-//                 float64x2_t v0 = vld1q_f64(s0);
-//                 float64x2_t v1 = vld1q_f64(s1);
-//                 float64x2_t v2 = vld1q_f64(s2);
-//                 float64x2_t v3 = vld1q_f64(s3);
-//                 float64x2_t v4 = vld1q_f64(s4);
-//                 float64x2_t v5 = vld1q_f64(s5);
-//                 float64x2_t v6 = vld1q_f64(s6);
-//                 float64x2_t v7 = vld1q_f64(s7);
-
-//                 acc = vfmaq_f64(acc, v0, v0);
-//                 acc = vfmaq_f64(acc, v1, v1);
-//                 acc = vfmaq_f64(acc, v2, v2);
-//                 acc = vfmaq_f64(acc, v3, v3);
-//                 acc = vfmaq_f64(acc, v4, v4);
-//                 acc = vfmaq_f64(acc, v5, v5);
-//                 acc = vfmaq_f64(acc, v6, v6);
-//                 acc = vfmaq_f64(acc, v7, v7);
-//             }
-
-//             // horizontal reduce (double)
-//             double accs =
-//                 vgetq_lane_f64(acc, 0) +
-//                 vgetq_lane_f64(acc, 1);
-
-//             for (; m < M; ++m) {
-//                 const double* s = group_sel + (m << 3);
-
-//                 accs +=
-//                     s[0]*s[0] + s[1]*s[1] + s[2]*s[2] + s[3]*s[3] +
-//                     s[4]*s[4] + s[5]*s[5] + s[6]*s[6] + s[7]*s[7];
-//             }
-
-//             accs /= (double)M;
-
-//             double scale = 1.0 / sqrt(std::max(accs, (double)eps_t));
-
-//             for (int64_t i = 0; i < M; ++i) {
-
-//                 const double* x = group_x + (i << 4);
-//                 double* o       = group_o + (i << 4);
-
-//                 double scalew = scale;
-
-//                 if constexpr (HasWeight) {
-//                     scalew *= W[i];
-//                 }
-
-//                 float64x2_t vscale = vdupq_n_f64(scalew);
-
-//                 float64x2_t v0 = vld1q_f64(x + 0);
-//                 float64x2_t v1 = vld1q_f64(x + 2);
-
-//                 v0 = vmulq_f64(v0, vscale);
-//                 v1 = vmulq_f64(v1, vscale);
-
-//                 vst1q_f64(o + 0, v0);
-//                 vst1q_f64(o + 2, v1);
-//             }
-//         }
-//     }
-// }
-
-
-
-//fixed version
-// template <typename scalar_t, bool HasWeight>
-// void rms_norm_kernel_intrins(
-//     const scalar_t* __restrict__ X,
-//     const scalar_t* __restrict__ P,   // [groups, 8, M]
-//     scalar_t* __restrict__ O,
-//     const scalar_t* __restrict__ W,
-//     int64_t groups,
-//     int64_t M,
-//     double eps
-// ) {
-//     const scalar_t eps_t = static_cast<scalar_t>(eps);
-
-//     if constexpr (std::is_same_v<scalar_t, float>) {
-
-//         for (int64_t g = 0; g < groups; ++g) {
-
-//             const float* xg = X + g * (M << 4);
-//             const float* pg = P + g * (8 * M);
-//             float* og       = O + g * (M << 4);
-
-//             float32x4_t acc = vdupq_n_f32(0.0f);
-
-//             int64_t m = 0;
-
-//             // ---- SIMD over M ----
-//             for (; m + 3 < M; m += 4) {
-
-//                 float32x4_t sum8 = vdupq_n_f32(0.0f);
-
-//                 #pragma unroll
-//                 for (int k = 0; k < 8; ++k) {
-//                     const float* pk = pg + k * M + m;
-
-//                     float32x4_t v = vld1q_f32(pk);
-//                     sum8 = vfmaq_f32(sum8, v, v);
-//                 }
-
-//                 acc = vaddq_f32(acc, sum8);
+//             for (; m + 7 < M; m += 8) {
+//                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(s0 + m), _mm256_loadu_ps(s0 + m), acc);
+//                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(s1 + m), _mm256_loadu_ps(s1 + m), acc);
+//                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(s2 + m), _mm256_loadu_ps(s2 + m), acc);
+//                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(s3 + m), _mm256_loadu_ps(s3 + m), acc);
+//                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(s4 + m), _mm256_loadu_ps(s4 + m), acc);
+//                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(s5 + m), _mm256_loadu_ps(s5 + m), acc);
+//                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(s6 + m), _mm256_loadu_ps(s6 + m), acc);
+//                 acc = _mm256_fmadd_ps(_mm256_loadu_ps(s7 + m), _mm256_loadu_ps(s7 + m), acc);
 //             }
 
 //             // horizontal reduce
-//             float32x2_t low  = vget_low_f32(acc);
-//             float32x2_t high = vget_high_f32(acc);
-//             float32x2_t sum2 = vadd_f32(low, high);
-//             sum2 = vpadd_f32(sum2, sum2);
+//             __m128 lo  = _mm256_castps256_ps128(acc);
+//             __m128 hi  = _mm256_extractf128_ps(acc, 1);
+//             __m128 sum = _mm_add_ps(lo, hi);
+//             sum = _mm_hadd_ps(sum, sum);
+//             sum = _mm_hadd_ps(sum, sum);
+//             float accs = _mm_cvtss_f32(sum);
 
-//             float accs = vget_lane_f32(sum2, 0);
-
-//             // tail
 //             for (; m < M; ++m) {
-//                 float sum8 = 0.f;
-
-//                 #pragma unroll
-//                 for (int k = 0; k < 8; ++k) {
-//                     const float* pk = pg + k * M + m;
-//                     float v = pk[0];
-//                     sum8 += v * v;
-//                 }
-
-//                 accs += sum8;
+//                 accs += s0[m]*s0[m] + s1[m]*s1[m] + s2[m]*s2[m] + s3[m]*s3[m]
+//                       + s4[m]*s4[m] + s5[m]*s5[m] + s6[m]*s6[m] + s7[m]*s7[m];
 //             }
 
-//             accs /= static_cast<scalar_t>(M);
+//             accs /= static_cast<float>(M);
+//             float scale = 1.0f / std::sqrt(std::max(accs, eps_t));
 
-//             float scale = 1.f / sqrtf(fmaxf(accs, (float)eps_t));
+//             for (int64_t i = 0; i < M; ++i) {
+//                 const float* x = gx + (i << 4);
+//                 float*       o = go + (i << 4);
 
-//             if constexpr (HasWeight) {
-//                 for (int k = 0; k < 8; ++k)
-//                     scale *= W[k];
-//             }
+//                 float scalew = scale;
+//                 if constexpr (HasWeight) scalew *= W[i];
 
-//             float32x4_t vscale = vdupq_n_f32(scale);
-
-//             // ---- write-back ----
-//             for (int64_t m = 0; m < M; ++m) {
-
-//                 const float* x = xg + (m << 4);
-//                 float* o       = og + (m << 4);
-
-//                 float32x4_t v0 = vld1q_f32(x + 0);
-//                 float32x4_t v1 = vld1q_f32(x + 4);
-//                 float32x4_t v2 = vld1q_f32(x + 8);
-//                 float32x4_t v3 = vld1q_f32(x + 12);
-
-//                 v0 = vmulq_f32(v0, vscale);
-//                 v1 = vmulq_f32(v1, vscale);
-//                 v2 = vmulq_f32(v2, vscale);
-//                 v3 = vmulq_f32(v3, vscale);
-
-//                 vst1q_f32(o + 0, v0);
-//                 vst1q_f32(o + 4, v1);
-//                 vst1q_f32(o + 8, v2);
-//                 vst1q_f32(o + 12, v3);
+//                 __m256 vs = _mm256_set1_ps(scalew);
+//                 _mm256_storeu_ps(o + 0, _mm256_mul_ps(_mm256_loadu_ps(x + 0), vs));
+//                 _mm256_storeu_ps(o + 8, _mm256_mul_ps(_mm256_loadu_ps(x + 8), vs));
 //             }
 //         }
-//     }
 
-//     else if constexpr (std::is_same_v<scalar_t, double>) {
+//     } else if constexpr (std::is_same_v<scalar_t, double>) {
 
 //         for (int64_t g = 0; g < groups; ++g) {
 
-//             const double* xg = X + g * (M << 4);
-//             const double* pg = P + g * (8 * M);
-//             double* og       = O + g * (M << 4);
+//             const double* gx   = X     + g * (M << 4);
+//             const double* gsel = X_sel + g * (8 * M);
+//             double*       go   = O     + g * (M << 4);
 
-//             float64x2_t acc = vdupq_n_f64(0.0);
+//             const double* s0 = gsel + 0 * M;
+//             const double* s1 = gsel + 1 * M;
+//             const double* s2 = gsel + 2 * M;
+//             const double* s3 = gsel + 3 * M;
+//             const double* s4 = gsel + 4 * M;
+//             const double* s5 = gsel + 5 * M;
+//             const double* s6 = gsel + 6 * M;
+//             const double* s7 = gsel + 7 * M;
 
+//             __m256d acc = _mm256_setzero_pd();
 //             int64_t m = 0;
 
-//             for (; m + 1 < M; m += 2) {
-
-//                 float64x2_t sum8 = vdupq_n_f64(0.0);
-
-//                 #pragma unroll
-//                 for (int k = 0; k < 8; ++k) {
-//                     const double* pk = pg + k * M + m;
-
-//                     float64x2_t v = vld1q_f64(pk);
-//                     sum8 = vfmaq_f64(sum8, v, v);
-//                 }
-
-//                 acc = vaddq_f64(acc, sum8);
+//             for (; m + 3 < M; m += 4) {
+//                 acc = _mm256_fmadd_pd(_mm256_loadu_pd(s0 + m), _mm256_loadu_pd(s0 + m), acc);
+//                 acc = _mm256_fmadd_pd(_mm256_loadu_pd(s1 + m), _mm256_loadu_pd(s1 + m), acc);
+//                 acc = _mm256_fmadd_pd(_mm256_loadu_pd(s2 + m), _mm256_loadu_pd(s2 + m), acc);
+//                 acc = _mm256_fmadd_pd(_mm256_loadu_pd(s3 + m), _mm256_loadu_pd(s3 + m), acc);
+//                 acc = _mm256_fmadd_pd(_mm256_loadu_pd(s4 + m), _mm256_loadu_pd(s4 + m), acc);
+//                 acc = _mm256_fmadd_pd(_mm256_loadu_pd(s5 + m), _mm256_loadu_pd(s5 + m), acc);
+//                 acc = _mm256_fmadd_pd(_mm256_loadu_pd(s6 + m), _mm256_loadu_pd(s6 + m), acc);
+//                 acc = _mm256_fmadd_pd(_mm256_loadu_pd(s7 + m), _mm256_loadu_pd(s7 + m), acc);
 //             }
 
-//             double accs =
-//                 vgetq_lane_f64(acc, 0) +
-//                 vgetq_lane_f64(acc, 1);
+//             __m128d lo  = _mm256_castpd256_pd128(acc);
+//             __m128d hi  = _mm256_extractf128_pd(acc, 1);
+//             __m128d sum = _mm_add_pd(lo, hi);
+//             double accs = _mm_cvtsd_f64(sum) + _mm_cvtsd_f64(_mm_unpackhi_pd(sum, sum));
 
 //             for (; m < M; ++m) {
-//                 double sum8 = 0.0;
-
-//                 #pragma unroll
-//                 for (int k = 0; k < 8; ++k) {
-//                     const double* pk = pg + k * M + m;
-//                     double v = pk[0];
-//                     sum8 += v * v;
-//                 }
-
-//                 accs += sum8;
+//                 accs += s0[m]*s0[m] + s1[m]*s1[m] + s2[m]*s2[m] + s3[m]*s3[m]
+//                       + s4[m]*s4[m] + s5[m]*s5[m] + s6[m]*s6[m] + s7[m]*s7[m];
 //             }
 
-//             accs /= static_cast<scalar_t>(M);
-
-//             double scale = 1.0 / sqrt(std::max(accs, eps_t));
-
-//             if constexpr (HasWeight) {
-//                 for (int k = 0; k < 8; ++k)
-//                     scale *= W[k];
-//             }
-
-//             float64x2_t vscale = vdupq_n_f64(scale);
+//             accs /= static_cast<double>(M);
+//             double scale = 1.0 / std::sqrt(std::max(accs, eps_t));
 
 //             for (int64_t i = 0; i < M; ++i) {
+//                 const double* x = gx + (i << 4);
+//                 double*       o = go + (i << 4);
 
-//                 const double* x = xg + (i << 4);
-//                 double* o       = og + (i << 4);
+//                 double scalew = scale;
+//                 if constexpr (HasWeight) scalew *= W[i];
 
-//                 float64x2_t v0 = vld1q_f64(x + 0);
-//                 float64x2_t v1 = vld1q_f64(x + 2);
-//                 float64x2_t v2 = vld1q_f64(x + 4);
-//                 float64x2_t v3 = vld1q_f64(x + 6);
-
-//                 v0 = vmulq_f64(v0, vscale);
-//                 v1 = vmulq_f64(v1, vscale);
-//                 v2 = vmulq_f64(v2, vscale);
-//                 v3 = vmulq_f64(v3, vscale);
-
-//                 vst1q_f64(o + 0, v0);
-//                 vst1q_f64(o + 2, v1);
-//                 vst1q_f64(o + 4, v2);
-//                 vst1q_f64(o + 6, v3);
+//                 __m256d vs = _mm256_set1_pd(scalew);
+//                 _mm256_storeu_pd(o + 0,  _mm256_mul_pd(_mm256_loadu_pd(x + 0),  vs));
+//                 _mm256_storeu_pd(o + 4,  _mm256_mul_pd(_mm256_loadu_pd(x + 4),  vs));
+//                 _mm256_storeu_pd(o + 8,  _mm256_mul_pd(_mm256_loadu_pd(x + 8),  vs));
+//                 _mm256_storeu_pd(o + 12, _mm256_mul_pd(_mm256_loadu_pd(x + 12), vs));
 //             }
 //         }
 //     }
 // }
-
-
-
-
 
 
 
@@ -1591,6 +1005,139 @@ void rms_norm_kernel_intrins(
 // }
 
 
+
+// ---------------------------------------------------------------------------
+// Packed AMD kernel.
+// ---------------------------------------------------------------------------
+// template <typename scalar_t, bool HasWeight>
+// void rms_norm_kernel_packed(
+//     const scalar_t* __restrict__ X,
+//     const scalar_t* __restrict__ X_sel,
+//     scalar_t* __restrict__ O,
+//     const scalar_t* __restrict__ W,
+//     int64_t groups,
+//     int64_t M,
+//     double eps
+// ) {
+//     const scalar_t eps_t = static_cast<scalar_t>(eps);
+
+//     if constexpr (std::is_same_v<scalar_t, float>) {
+
+//         for (int64_t g = 0; g < groups; ++g) {
+
+//             const float* gx   = X     + g * (M << 4);
+//             const float* gsel = X_sel + g * (8 * M);
+//             float*       go   = O     + g * (M << 4);
+
+//             const float* s0 = gsel + 0 * M;
+//             const float* s1 = gsel + 1 * M;
+//             const float* s2 = gsel + 2 * M;
+//             const float* s3 = gsel + 3 * M;
+//             const float* s4 = gsel + 4 * M;
+//             const float* s5 = gsel + 5 * M;
+//             const float* s6 = gsel + 6 * M;
+//             const float* s7 = gsel + 7 * M;
+
+//             float32x4_t acc = vdupq_n_f32(0.0f);
+//             int64_t m = 0;
+
+//             for (; m + 3 < M; m += 4) {
+//                 acc = vfmaq_f32(acc, vld1q_f32(s0 + m), vld1q_f32(s0 + m));
+//                 acc = vfmaq_f32(acc, vld1q_f32(s1 + m), vld1q_f32(s1 + m));
+//                 acc = vfmaq_f32(acc, vld1q_f32(s2 + m), vld1q_f32(s2 + m));
+//                 acc = vfmaq_f32(acc, vld1q_f32(s3 + m), vld1q_f32(s3 + m));
+//                 acc = vfmaq_f32(acc, vld1q_f32(s4 + m), vld1q_f32(s4 + m));
+//                 acc = vfmaq_f32(acc, vld1q_f32(s5 + m), vld1q_f32(s5 + m));
+//                 acc = vfmaq_f32(acc, vld1q_f32(s6 + m), vld1q_f32(s6 + m));
+//                 acc = vfmaq_f32(acc, vld1q_f32(s7 + m), vld1q_f32(s7 + m));
+//             }
+
+//             float accs = vaddvq_f32(acc);
+
+//             for (; m < M; ++m) {
+//                 accs += s0[m]*s0[m] + s1[m]*s1[m] + s2[m]*s2[m] + s3[m]*s3[m]
+//                       + s4[m]*s4[m] + s5[m]*s5[m] + s6[m]*s6[m] + s7[m]*s7[m];
+//             }
+
+//             accs /= static_cast<float>(M);
+//             float scale = 1.0f / std::sqrt(std::max(accs, eps_t));
+
+//             for (int64_t i = 0; i < M; ++i) {
+//                 const float* x = gx + (i << 4);
+//                 float*       o = go + (i << 4);
+
+//                 float scalew = scale;
+//                 if constexpr (HasWeight) scalew *= W[i];
+
+//                 float32x4_t vs = vdupq_n_f32(scalew);
+//                 vst1q_f32(o + 0,  vmulq_f32(vld1q_f32(x + 0),  vs));
+//                 vst1q_f32(o + 4,  vmulq_f32(vld1q_f32(x + 4),  vs));
+//                 vst1q_f32(o + 8,  vmulq_f32(vld1q_f32(x + 8),  vs));
+//                 vst1q_f32(o + 12, vmulq_f32(vld1q_f32(x + 12), vs));
+//             }
+//         }
+
+//     } else if constexpr (std::is_same_v<scalar_t, double>) {
+
+//         for (int64_t g = 0; g < groups; ++g) {
+
+//             const double* gx   = X     + g * (M << 4);
+//             const double* gsel = X_sel + g * (8 * M);
+//             double*       go   = O     + g * (M << 4);
+
+//             const double* s0 = gsel + 0 * M;
+//             const double* s1 = gsel + 1 * M;
+//             const double* s2 = gsel + 2 * M;
+//             const double* s3 = gsel + 3 * M;
+//             const double* s4 = gsel + 4 * M;
+//             const double* s5 = gsel + 5 * M;
+//             const double* s6 = gsel + 6 * M;
+//             const double* s7 = gsel + 7 * M;
+
+//             float64x2_t acc = vdupq_n_f64(0.0);
+//             int64_t m = 0;
+
+//             for (; m + 1 < M; m += 2) {
+//                 acc = vfmaq_f64(acc, vld1q_f64(s0 + m), vld1q_f64(s0 + m));
+//                 acc = vfmaq_f64(acc, vld1q_f64(s1 + m), vld1q_f64(s1 + m));
+//                 acc = vfmaq_f64(acc, vld1q_f64(s2 + m), vld1q_f64(s2 + m));
+//                 acc = vfmaq_f64(acc, vld1q_f64(s3 + m), vld1q_f64(s3 + m));
+//                 acc = vfmaq_f64(acc, vld1q_f64(s4 + m), vld1q_f64(s4 + m));
+//                 acc = vfmaq_f64(acc, vld1q_f64(s5 + m), vld1q_f64(s5 + m));
+//                 acc = vfmaq_f64(acc, vld1q_f64(s6 + m), vld1q_f64(s6 + m));
+//                 acc = vfmaq_f64(acc, vld1q_f64(s7 + m), vld1q_f64(s7 + m));
+//             }
+
+//             double accs = vaddvq_f64(acc);
+
+//             if (m < M) {
+//                 accs += s0[m]*s0[m] + s1[m]*s1[m] + s2[m]*s2[m] + s3[m]*s3[m]
+//                       + s4[m]*s4[m] + s5[m]*s5[m] + s6[m]*s6[m] + s7[m]*s7[m];
+//             }
+
+//             accs /= static_cast<double>(M);
+//             double scale = 1.0 / std::sqrt(std::max(accs, eps_t));
+
+//             for (int64_t i = 0; i < M; ++i) {
+//                 const double* x = gx + (i << 4);
+//                 double*       o = go + (i << 4);
+
+//                 double scalew = scale;
+//                 if constexpr (HasWeight) scalew *= W[i];
+
+//                 float64x2_t vs = vdupq_n_f64(scalew);
+//                 vst1q_f64(o + 0,  vmulq_f64(vld1q_f64(x + 0),  vs));
+//                 vst1q_f64(o + 2,  vmulq_f64(vld1q_f64(x + 2),  vs));
+//                 vst1q_f64(o + 4,  vmulq_f64(vld1q_f64(x + 4),  vs));
+//                 vst1q_f64(o + 6,  vmulq_f64(vld1q_f64(x + 6),  vs));
+//                 vst1q_f64(o + 8,  vmulq_f64(vld1q_f64(x + 8),  vs));
+//                 vst1q_f64(o + 10, vmulq_f64(vld1q_f64(x + 10), vs));
+//                 vst1q_f64(o + 12, vmulq_f64(vld1q_f64(x + 12), vs));
+//                 vst1q_f64(o + 14, vmulq_f64(vld1q_f64(x + 14), vs));
+//             }
+//         }
+//     }
+// }
 
 
 
@@ -1846,8 +1393,9 @@ torch::Tensor equi_rms_norm_ver_2(
 
 // ---------------------------------------------------------------------------
 // ver_3 - 
-//create new tensor of x and pack it [16] -> [8]. tile loops and do intrinsics
-//8 vectors for each index one and then multiply
+//Tested two simd version. one were we use the mamory layout from version 2 
+//and use gather intrinsics. also tested a packed version, where we change the
+//memory layout such that we can load the vectors directly. 
 // ---------------------------------------------------------------------------
 torch::Tensor equi_rms_norm_ver_3(
     const torch::Tensor& x,
@@ -1919,7 +1467,11 @@ torch::Tensor equi_rms_norm_ver_3(
 
 
 
-//packed rmsnorm
+
+
+// ---------------------------------------------------------------------------
+// Packed rmsnormver3
+// ---------------------------------------------------------------------------
 // torch::Tensor equi_rms_norm_ver_3(
 //     const torch::Tensor& x,
 //     const c10::optional<torch::Tensor>& weight,
@@ -1933,78 +1485,37 @@ torch::Tensor equi_rms_norm_ver_3(
 //     auto out = torch::empty_like(xc);
 
 //     int64_t M = x.size(-2);
-
 //     int64_t groups = 1;
 //     for (int64_t i = 0; i < x.dim() - 2; ++i)
 //         groups *= x.size(i);
 
-//     bool use_intrins =
-//         (xc.scalar_type() == torch::kFloat32 ||
-//          xc.scalar_type() == torch::kFloat64);
-
-//     // -----------------------------
-//     // BUILD PACKED X_SEL (NEW)
-//     // -----------------------------
-//     torch::Tensor x_sel = torch::empty({groups, 8, M}, xc.options());
+//     // pack [groups][M][16] -> [groups][8][M]
+//     auto x_sel = torch::empty({groups, 8, M}, xc.options());
 
 //     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "pack_groups_16_to_8_soa", [&] {
 //         pack_groups_16_to_8_soa<scalar_t>(
 //             xc.data_ptr<scalar_t>(),
 //             x_sel.data_ptr<scalar_t>(),
-//             groups,
-//             M
+//             groups, M
 //         );
 //     });
 
-//     // -----------------------------
-//     // FALLBACK PATH
-//     // -----------------------------
-//     if (!use_intrins) {
-
-//         AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel", [&] {
-//             if (weight.has_value()) {
-//                 rms_norm_kernel<scalar_t, true>(
-//                     xc.data_ptr<scalar_t>(),
-//                     out.data_ptr<scalar_t>(),
-//                     weight->data_ptr<scalar_t>(),
-//                     groups, M, eps
-//                 );
-//             } else {
-//                 rms_norm_kernel<scalar_t, false>(
-//                     xc.data_ptr<scalar_t>(),
-//                     out.data_ptr<scalar_t>(),
-//                     nullptr,
-//                     groups, M, eps
-//                 );
-//             }
-//         });
-
-//         return out;
-//     }
-
-//     // -----------------------------
-//     // FAST PATH (AVX2)
-//     // -----------------------------
-//     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel_intrins", [&] {
+//     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel_packed", [&] {
 //         if (weight.has_value()) {
-//             rms_norm_kernel_intrins<scalar_t, true>(
+//             rms_norm_kernel_packed<scalar_t, true>(
 //                 xc.data_ptr<scalar_t>(),
-//                 x_sel.data_ptr<scalar_t>(),   // <-- NEW
+//                 x_sel.data_ptr<scalar_t>(),
 //                 out.data_ptr<scalar_t>(),
-//                 weight->data_ptr<scalar_t>(),
-//                 groups,
-//                 M,
-//                 eps
+//                 weight->contiguous().data_ptr<scalar_t>(),
+//                 groups, M, eps
 //             );
 //         } else {
-//             rms_norm_kernel_intrins<scalar_t, false>(
+//             rms_norm_kernel_packed<scalar_t, false>(
 //                 xc.data_ptr<scalar_t>(),
-//                 x_sel.data_ptr<scalar_t>(),   // <-- NEW
+//                 x_sel.data_ptr<scalar_t>(),
 //                 out.data_ptr<scalar_t>(),
 //                 nullptr,
-//                 groups,
-//                 M,
-//                 eps
+//                 groups, M, eps
 //             );
 //         }
 //     });
@@ -2033,6 +1544,82 @@ torch::Tensor scaler_gated_gelu_ver_0(const torch::Tensor& x,
 
 
 
+// torch::Tensor scaler_gated_gelu_ver_1(const torch::Tensor& x,
+//                                 const std::string& approximate){
+//     check_multivector(x, "scalar_gated_gelu: x");
+//     TORCH_CHECK(
+//         approximate == "none" || approximate == "tanh",
+//         "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
+//         approximate
+//     );
+
+//     if(approximate == "tanh"){
+//         auto xc = x.contiguous();
+//         auto out = torch::empty_like(xc);
+//         auto outc = out.contiguous();
+//         int64_t N = xc.numel() / 16;
+//         //int64_t N = x.size(-2);
+//         AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
+//             scalar_gated_gelu_kernel<scalar_t>(
+//                 xc.data_ptr<scalar_t>(),
+//                 outc.data_ptr<scalar_t>(),
+//                 N
+//             );
+//         });
+//         return outc;
+
+//     }else{
+//         auto reduction = x.narrow(-1, 0, 1);
+//         auto gates = torch::nn::functional::gelu(
+//             reduction,
+//             torch::nn::functional::GELUFuncOptions().approximate(approximate)
+//         );
+//         return x * gates;
+//     }
+
+    
+// }
+
+
+
+// torch::Tensor scaler_gated_gelu_ver_2(
+//     const torch::Tensor& x,
+//     const std::string& approximate
+// ){
+//     check_multivector(x, "scalar_gated_gelu: x");
+//     TORCH_CHECK(
+//         approximate == "none" || approximate == "tanh",
+//         "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
+//         approximate
+//     );
+
+//     if(approximate == "tanh"){
+//         auto xc = x.contiguous();
+//         auto out = torch::empty_like(xc);
+//         auto outc = out.contiguous();
+//         int64_t N = xc.numel() / 16;
+//         //int64_t N = x.size(-2);
+
+//         AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
+//             scalar_gated_gelu_kernel<scalar_t>(
+//                 xc.data_ptr<scalar_t>(),
+//                 outc.data_ptr<scalar_t>(),
+//                 N
+//             );
+//         });
+//         return outc;
+
+//     }else{
+//         auto reduction = x.narrow(-1, 0, 1);
+//         auto gates = torch::nn::functional::gelu(
+//             reduction,
+//             torch::nn::functional::GELUFuncOptions().approximate(approximate)
+//         );
+//         return x * gates;
+//     }
+// }
+
+
 torch::Tensor scaler_gated_gelu_ver_1(const torch::Tensor& x,
                                 const std::string& approximate){
     check_multivector(x, "scalar_gated_gelu: x");
@@ -2042,39 +1629,50 @@ torch::Tensor scaler_gated_gelu_ver_1(const torch::Tensor& x,
         approximate
     );
 
-    if(approximate == "tanh"){
-        auto xc = x.contiguous();
-        auto out = torch::empty_like(xc);
-        auto outc = out.contiguous();
-        int64_t N = xc.numel() / 16;
-        //int64_t N = x.size(-2);
-        AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
-            scalar_gated_gelu_kernel<scalar_t>(
-                xc.data_ptr<scalar_t>(),
-                outc.data_ptr<scalar_t>(),
-                N
-            );
-        });
-        return outc;
+    auto xc = x.is_contiguous() ? x : x.contiguous();
+    auto out = torch::empty_like(xc);
+    int64_t N = xc.numel() / 16;
 
-    }else{
-        auto reduction = x.narrow(-1, 0, 1);
-        auto gates = torch::nn::functional::gelu(
-            reduction,
-            torch::nn::functional::GELUFuncOptions().approximate(approximate)
-        );
-        return x * gates;
-    }
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scaler_gated_gelu_ver_0", [&] {
+        const scalar_t* X = xc.data_ptr<scalar_t>();
+        scalar_t*       O = out.data_ptr<scalar_t>();
 
-    
+        constexpr scalar_t kSqrtHalf = static_cast<scalar_t>(0.7071067811865476);
+
+        for (int64_t n = 0; n < N; ++n) {
+            const scalar_t* xi = X + (n << 4);
+            scalar_t*       oi = O + (n << 4);
+
+            // exact GeLU: 0.5 * x * (1 + erf(x / sqrt(2)))
+            scalar_t gate = static_cast<scalar_t>(0.5) * xi[0] *
+                            (static_cast<scalar_t>(1.0) + std::erf(xi[0] * kSqrtHalf));
+
+            oi[0]  = xi[0]  * gate;
+            oi[1]  = xi[1]  * gate;
+            oi[2]  = xi[2]  * gate;
+            oi[3]  = xi[3]  * gate;
+            oi[4]  = xi[4]  * gate;
+            oi[5]  = xi[5]  * gate;
+            oi[6]  = xi[6]  * gate;
+            oi[7]  = xi[7]  * gate;
+            oi[8]  = xi[8]  * gate;
+            oi[9]  = xi[9]  * gate;
+            oi[10] = xi[10] * gate;
+            oi[11] = xi[11] * gate;
+            oi[12] = xi[12] * gate;
+            oi[13] = xi[13] * gate;
+            oi[14] = xi[14] * gate;
+            oi[15] = xi[15] * gate;
+        }
+    });
+
+    return out;
 }
 
 
 
-torch::Tensor scaler_gated_gelu_ver_2(
-    const torch::Tensor& x,
-    const std::string& approximate
-){
+torch::Tensor scaler_gated_gelu_ver_2(const torch::Tensor& x,
+                                const std::string& approximate){
     check_multivector(x, "scalar_gated_gelu: x");
     TORCH_CHECK(
         approximate == "none" || approximate == "tanh",
@@ -2082,30 +1680,70 @@ torch::Tensor scaler_gated_gelu_ver_2(
         approximate
     );
 
-    if(approximate == "tanh"){
-        auto xc = x.contiguous();
-        auto out = torch::empty_like(xc);
-        auto outc = out.contiguous();
-        int64_t N = xc.numel() / 16;
-        //int64_t N = x.size(-2);
+    auto xc = x.is_contiguous() ? x : x.contiguous();
+    auto out = torch::empty_like(xc);
+    int64_t N = xc.numel() / 16;
 
-        AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
-            scalar_gated_gelu_kernel<scalar_t>(
-                xc.data_ptr<scalar_t>(),
-                outc.data_ptr<scalar_t>(),
-                N
-            );
-        });
-        return outc;
+    if (xc.scalar_type() == torch::kFloat32) {
 
-    }else{
-        auto reduction = x.narrow(-1, 0, 1);
-        auto gates = torch::nn::functional::gelu(
-            reduction,
-            torch::nn::functional::GELUFuncOptions().approximate(approximate)
-        );
-        return x * gates;
+        const float* X = xc.data_ptr<float>();
+        float*       O = out.data_ptr<float>();
+
+        constexpr float kSqrtHalf = 0.7071067811865476f;
+
+        for (int64_t n = 0; n < N; ++n) {
+            const float* xi = X + (n << 4);
+            float*       oi = O + (n << 4);
+
+            float gate = 0.5f * xi[0] * (1.0f + std::erff(xi[0] * kSqrtHalf));
+
+#ifdef __AVX2__
+            __m256 vg = _mm256_set1_ps(gate);
+            _mm256_storeu_ps(oi + 0, _mm256_mul_ps(_mm256_loadu_ps(xi + 0), vg));
+            _mm256_storeu_ps(oi + 8, _mm256_mul_ps(_mm256_loadu_ps(xi + 8), vg));
+#else
+            float32x4_t vg = vdupq_n_f32(gate);
+            vst1q_f32(oi + 0,  vmulq_f32(vld1q_f32(xi + 0),  vg));
+            vst1q_f32(oi + 4,  vmulq_f32(vld1q_f32(xi + 4),  vg));
+            vst1q_f32(oi + 8,  vmulq_f32(vld1q_f32(xi + 8),  vg));
+            vst1q_f32(oi + 12, vmulq_f32(vld1q_f32(xi + 12), vg));
+#endif
+        }
+
+    } else {
+        // double fallback — scalar stores
+        const double* X = xc.data_ptr<double>();
+        double*       O = out.data_ptr<double>();
+
+        constexpr double kSqrtHalf = 0.7071067811865476;
+
+        for (int64_t n = 0; n < N; ++n) {
+            const double* xi = X + (n << 4);
+            double*       oi = O + (n << 4);
+
+            double gate = 0.5 * xi[0] * (1.0 + std::erf(xi[0] * kSqrtHalf));
+
+#ifdef __AVX2__
+            __m256d vg = _mm256_set1_pd(gate);
+            _mm256_storeu_pd(oi + 0,  _mm256_mul_pd(_mm256_loadu_pd(xi + 0),  vg));
+            _mm256_storeu_pd(oi + 4,  _mm256_mul_pd(_mm256_loadu_pd(xi + 4),  vg));
+            _mm256_storeu_pd(oi + 8,  _mm256_mul_pd(_mm256_loadu_pd(xi + 8),  vg));
+            _mm256_storeu_pd(oi + 12, _mm256_mul_pd(_mm256_loadu_pd(xi + 12), vg));
+#else
+            float64x2_t vg = vdupq_n_f64(gate);
+            vst1q_f64(oi + 0,  vmulq_f64(vld1q_f64(xi + 0),  vg));
+            vst1q_f64(oi + 2,  vmulq_f64(vld1q_f64(xi + 2),  vg));
+            vst1q_f64(oi + 4,  vmulq_f64(vld1q_f64(xi + 4),  vg));
+            vst1q_f64(oi + 6,  vmulq_f64(vld1q_f64(xi + 6),  vg));
+            vst1q_f64(oi + 8,  vmulq_f64(vld1q_f64(xi + 8),  vg));
+            vst1q_f64(oi + 10, vmulq_f64(vld1q_f64(xi + 10), vg));
+            vst1q_f64(oi + 12, vmulq_f64(vld1q_f64(xi + 12), vg));
+            vst1q_f64(oi + 14, vmulq_f64(vld1q_f64(xi + 14), vg));
+#endif
+        }
     }
+
+    return out;
 }
 
 
