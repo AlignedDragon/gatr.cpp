@@ -879,6 +879,32 @@ static inline void qk_block_simd(const float* __restrict__ Qi,
         const float* q2 = Qi + (r0 + 2) * d;
         const float* q3 = Qi + (r0 + 3) * d;
         int64_t c0 = 0;
+        for (; c0 + 16 <= bc; c0 += 16) {  // 4x16: 8 accumulators, each Q broadcast hits 2 K vectors
+            __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+            __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
+            __m256 b0 = _mm256_setzero_ps(), b1 = _mm256_setzero_ps();
+            __m256 b2 = _mm256_setzero_ps(), b3 = _mm256_setzero_ps();
+            for (int64_t k = 0; k < d; ++k) {
+                const __m256 kv0 = _mm256_loadu_ps(Kp + k * kFlashBc + c0);
+                const __m256 kv1 = _mm256_loadu_ps(Kp + k * kFlashBc + c0 + 8);
+                const __m256 w0 = _mm256_set1_ps(q0[k]);
+                const __m256 w1 = _mm256_set1_ps(q1[k]);
+                const __m256 w2 = _mm256_set1_ps(q2[k]);
+                const __m256 w3 = _mm256_set1_ps(q3[k]);
+                a0 = _mm256_fmadd_ps(w0, kv0, a0); b0 = _mm256_fmadd_ps(w0, kv1, b0);
+                a1 = _mm256_fmadd_ps(w1, kv0, a1); b1 = _mm256_fmadd_ps(w1, kv1, b1);
+                a2 = _mm256_fmadd_ps(w2, kv0, a2); b2 = _mm256_fmadd_ps(w2, kv1, b2);
+                a3 = _mm256_fmadd_ps(w3, kv0, a3); b3 = _mm256_fmadd_ps(w3, kv1, b3);
+            }
+            _mm256_storeu_ps(S + (r0 + 0) * kFlashBc + c0,     _mm256_mul_ps(a0, sv));
+            _mm256_storeu_ps(S + (r0 + 1) * kFlashBc + c0,     _mm256_mul_ps(a1, sv));
+            _mm256_storeu_ps(S + (r0 + 2) * kFlashBc + c0,     _mm256_mul_ps(a2, sv));
+            _mm256_storeu_ps(S + (r0 + 3) * kFlashBc + c0,     _mm256_mul_ps(a3, sv));
+            _mm256_storeu_ps(S + (r0 + 0) * kFlashBc + c0 + 8, _mm256_mul_ps(b0, sv));
+            _mm256_storeu_ps(S + (r0 + 1) * kFlashBc + c0 + 8, _mm256_mul_ps(b1, sv));
+            _mm256_storeu_ps(S + (r0 + 2) * kFlashBc + c0 + 8, _mm256_mul_ps(b2, sv));
+            _mm256_storeu_ps(S + (r0 + 3) * kFlashBc + c0 + 8, _mm256_mul_ps(b3, sv));
+        }
         for (; c0 + 8 <= bc; c0 += 8) {
             __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
             __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
@@ -919,6 +945,73 @@ static inline void qk_block_simd(const float* __restrict__ Qi,
             float s0 = 0;
             for (int64_t k = 0; k < d; ++k) s0 += q0[k] * Kp[k * kFlashBc + c0];
             S[r0 * kFlashBc + c0] = s0 * scale;
+        }
+    }
+}
+
+// O = diag(es) * O + P @ V, with P [br, kFlashBc] and V [bc, dv] row-major.
+// 4x8 register block over (rows, dv): each V vector load is reused across 4
+// query rows, and the es[] rescale is folded into the accumulator init.
+static inline void pv_block_simd(float* __restrict__ O, const float* __restrict__ P,
+                                 const float* __restrict__ V, const float* __restrict__ es,
+                                 int64_t br, int64_t bc, int64_t dv) {
+    int64_t r0 = 0;
+    for (; r0 + 4 <= br; r0 += 4) {
+        float* o0 = O + (r0 + 0) * dv;
+        float* o1 = O + (r0 + 1) * dv;
+        float* o2 = O + (r0 + 2) * dv;
+        float* o3 = O + (r0 + 3) * dv;
+        const float* p0 = P + (r0 + 0) * kFlashBc;
+        const float* p1 = P + (r0 + 1) * kFlashBc;
+        const float* p2 = P + (r0 + 2) * kFlashBc;
+        const float* p3 = P + (r0 + 3) * kFlashBc;
+        const __m256 e0 = _mm256_set1_ps(es[r0 + 0]);
+        const __m256 e1 = _mm256_set1_ps(es[r0 + 1]);
+        const __m256 e2 = _mm256_set1_ps(es[r0 + 2]);
+        const __m256 e3 = _mm256_set1_ps(es[r0 + 3]);
+        int64_t v = 0;
+        for (; v + 8 <= dv; v += 8) {
+            __m256 a0 = _mm256_mul_ps(_mm256_loadu_ps(o0 + v), e0);
+            __m256 a1 = _mm256_mul_ps(_mm256_loadu_ps(o1 + v), e1);
+            __m256 a2 = _mm256_mul_ps(_mm256_loadu_ps(o2 + v), e2);
+            __m256 a3 = _mm256_mul_ps(_mm256_loadu_ps(o3 + v), e3);
+            for (int64_t c = 0; c < bc; ++c) {
+                const __m256 vv = _mm256_loadu_ps(V + c * dv + v);
+                a0 = _mm256_fmadd_ps(_mm256_set1_ps(p0[c]), vv, a0);
+                a1 = _mm256_fmadd_ps(_mm256_set1_ps(p1[c]), vv, a1);
+                a2 = _mm256_fmadd_ps(_mm256_set1_ps(p2[c]), vv, a2);
+                a3 = _mm256_fmadd_ps(_mm256_set1_ps(p3[c]), vv, a3);
+            }
+            _mm256_storeu_ps(o0 + v, a0);
+            _mm256_storeu_ps(o1 + v, a1);
+            _mm256_storeu_ps(o2 + v, a2);
+            _mm256_storeu_ps(o3 + v, a3);
+        }
+        for (; v < dv; ++v) {  // dv remainder
+            float s0 = o0[v] * es[r0 + 0], s1 = o1[v] * es[r0 + 1];
+            float s2 = o2[v] * es[r0 + 2], s3 = o3[v] * es[r0 + 3];
+            for (int64_t c = 0; c < bc; ++c) {
+                const float vv = V[c * dv + v];
+                s0 += p0[c] * vv; s1 += p1[c] * vv; s2 += p2[c] * vv; s3 += p3[c] * vv;
+            }
+            o0[v] = s0; o1[v] = s1; o2[v] = s2; o3[v] = s3;
+        }
+    }
+    for (; r0 < br; ++r0) {  // row remainder (MR=1)
+        float* o0 = O + r0 * dv;
+        const float* p0 = P + r0 * kFlashBc;
+        const __m256 e0 = _mm256_set1_ps(es[r0]);
+        int64_t v = 0;
+        for (; v + 8 <= dv; v += 8) {
+            __m256 a0 = _mm256_mul_ps(_mm256_loadu_ps(o0 + v), e0);
+            for (int64_t c = 0; c < bc; ++c)
+                a0 = _mm256_fmadd_ps(_mm256_set1_ps(p0[c]), _mm256_loadu_ps(V + c * dv + v), a0);
+            _mm256_storeu_ps(o0 + v, a0);
+        }
+        for (; v < dv; ++v) {
+            float s0 = o0[v] * es[r0];
+            for (int64_t c = 0; c < bc; ++c) s0 += p0[c] * V[c * dv + v];
+            o0[v] = s0;
         }
     }
 }
@@ -966,7 +1059,8 @@ static void flash_attn_head_f32(
     std::memset(O, 0, static_cast<size_t>(T * dv) * sizeof(float));
 
     alignas(32) float S_block[kFlashBr * kFlashBc];
-    alignas(32) float P_row[kFlashBc];
+    alignas(32) float P_block[kFlashBr * kFlashBc];
+    alignas(32) float es[kFlashBr];
 
     for (int64_t qi = 0; qi < T; qi += kFlashBr) {
         const int64_t br = std::min(kFlashBr, T - qi);
@@ -995,28 +1089,35 @@ static void flash_attn_head_f32(
                 }
             }
 
-            // Online softmax + O update for each query row.
+            // Online softmax: fill P_block, record the per-row rescale es[r], update m/l.
             for (int64_t r = 0; r < br; ++r) {
                 const float* Srow = S_block + r * kFlashBc;
+                float* Prow = P_block + r * kFlashBc;
 
                 float m_new = mi[r];
                 for (int64_t c = 0; c < bc; ++c) {
                     if (Srow[c] > m_new) m_new = Srow[c];
                 }
-                const float exp_shift = std::exp(mi[r] - m_new);
-
-                // P[c] = exp(S - m_new), and fold its sum into the new l.
-                const float l_new = exp_shift * li[r] + exp_row<SIMD>(Srow, P_row, bc, m_new);
-
-                // Correct the old O for the new max, then add P @ Vj.
-                float* Oi_row = Oi + r * dv;
-                flash_scale<SIMD>(Oi_row, exp_shift, dv);
-                for (int64_t c = 0; c < bc; ++c) {
-                    flash_axpy<SIMD>(Oi_row, Vj + c * dv, P_row[c], dv);
-                }
-
+                es[r] = std::exp(mi[r] - m_new);
+                li[r] = es[r] * li[r] + exp_row<SIMD>(Srow, Prow, bc, m_new);
                 mi[r] = m_new;
-                li[r] = l_new;
+            }
+
+            // O = diag(es) * O + P_block @ Vj
+#if defined(__AVX2__)
+            if constexpr (SIMD) {
+                pv_block_simd(Oi, P_block, Vj, es, br, bc, dv);
+            } else
+#endif
+            {
+                for (int64_t r = 0; r < br; ++r) {
+                    float* Oi_row = Oi + r * dv;
+                    flash_scale<SIMD>(Oi_row, es[r], dv);
+                    const float* Prow = P_block + r * kFlashBc;
+                    for (int64_t c = 0; c < bc; ++c) {
+                        flash_axpy<SIMD>(Oi_row, Vj + c * dv, Prow[c], dv);
+                    }
+                }
             }
         }
 
