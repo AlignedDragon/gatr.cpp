@@ -48,10 +48,11 @@ def equi_geometric_attention_cpp_ver_0(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""Baseline C++ port of the multivector-only geometric attention forward pass.
+    r"""Baseline mv-only geometric attention (v0).
 
-    This mirrors the path used by ``MVOnlyGATrModel``. Scalar side channels are
-    intentionally left to the Python implementation for now.
+    einsum Q/K assembly and a plain scalar SDPA (score a row, softmax, P @ V),
+    no PyTorch ``scaled_dot_product_attention``. Scalar side channels are left
+    to the Python path for now.
     """
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
@@ -85,7 +86,7 @@ def equi_geometric_attention_cpp_ver_1(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""Math optimizations: explicit DAA formula (direct computation replaces einsum) + cached mathematical constants."""
+    r"""v1 math: explicit DAA formula instead of einsum + cached constants. SDPA stays naive scalar."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
@@ -118,7 +119,7 @@ def equi_geometric_attention_cpp_ver_2(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""Scalar memory + compiler: compact single-pass Q/K assembly (no intermediate torch::cat), manual loop unrolling for channels=4,8."""
+    r"""v2 scalar/memory: single-pass Q/K assembly (no torch::cat), unrolled for channels=4,8, and a scalar flash SDPA (tiling + online softmax, no T x T matrix)."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
@@ -151,7 +152,7 @@ def equi_geometric_attention_cpp_ver_3(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""SIMD: AVX2 with SoA unit-stride stores, FMA for DAA products, reciprocal+Newton-Raphson for normalization division."""
+    r"""v3 SIMD: fused per-head Q/K assembly + AVX2 flash SDPA (cache-resident scratch so query/key never hit DRAM, packed-K register-blocked QK^T micro-kernel, register-blocked P@V, vectorized exp)."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
