@@ -288,23 +288,10 @@ Tensor assemble_two_part_flattened(
 }
 
 #if defined(__AVX2__)
-// SIMD kernel for interleaved IPA+DAA Q/K assembly using SoA output layout.
-//
-// Input layout: AoS [..., channels, 16]. Each blade `bl` for 8 consecutive
-// channels is loaded via 8 scalar gathers (unavoidable without changing the
-// upstream data layout). The computation (normalization, products) is fully
-// vectorized with AVX2.
-//
-// Output layout: SoA [..., 12, channels] (logically; flattened to
-// [..., 12*channels] bytes). Unit-stride stores replace the scatter pattern
-// in the original store_stride8 (which wrote to stride-12 offsets via a
-// temporary stack array). This eliminates ~8x as many store instructions
-// and reduces output cache-line pressure from ~60 lines/block to ~6.
-//
-// Correctness: Q and K are written with the same slot permutation, so the
-// dot product Q·K^T sums the same set of products as AoS ordering. The
-// result of scaled_dot_product_attention is numerically identical up to
-// floating-point reordering (within the existing atol=5e-5 tolerance).
+// AVX2 IPA+DAA Q/K assembly. Input is AoS [..., channels, 16]; we load each
+// blade for 8 channels with scalar gathers and vectorize the math. Output is
+// SoA [..., 12, channels] so the stores are unit-stride. Q and K use the same
+// slot order, so Q.K^T is unchanged up to fp reordering.
 bool build_interleaved_ipa_daa_qk_simd_float(
     const Tensor& query,
     const Tensor& key,
@@ -338,9 +325,8 @@ bool build_interleaved_ipa_daa_qk_simd_float(
     const __m256 two     = _mm256_set1_ps(2.0f);
     const __m256 neg_one = _mm256_set1_ps(-1.0f);
 
-    // AoS input:  [num_blocks, channels, 16] — qi + c*16 + bl for channel c, blade bl
-    // SoA output: [num_blocks, 12, channels] — qo + sl*C + c  for slot sl, channel c
-    //
+    // in:  [num_blocks, channels, 16] at qi + c*16 + bl
+    // out: [num_blocks, 12, channels] at qo + sl*C + c
     at::parallel_for(0, num_blocks, 0, [&](int64_t begin, int64_t end) {
     for (int64_t block = begin; block < end; ++block) {
         const float* qi = q_in + block * channels * 16;
@@ -353,10 +339,8 @@ bool build_interleaved_ipa_daa_qk_simd_float(
             const float* qx = qi + c * 16;
             const float* kx = ki + c * 16;
 
-            // Stride-16 gather: blade `bl` across 8 channels. Each of the 8 values
-            // is 64 bytes (one cache line) apart, so VGATHERDPS offers no conflict-free
-            // advantage over scalar loads here — scalar lets the out-of-order engine
-            // pipeline the loads independently while overlapping computation.
+            // Gather blade bl across 8 channels. The values are a cache line
+            // apart, so scalar loads beat vgatherdps here.
             auto lq = [&](int64_t bl) {
                 return _mm256_set_ps(
                     qx[7*16+bl], qx[6*16+bl], qx[5*16+bl], qx[4*16+bl],
@@ -389,14 +373,12 @@ bool build_interleaved_ipa_daa_qk_simd_float(
             sk(ipa_offset + 5, lk(9));
             sk(ipa_offset + 6, lk(10));
 
-            // DAA query: blades {11, 12, 13, 14}
-            // Reciprocal + one Newton-Raphson step replaces _mm256_div_ps (11-14 cy latency).
-            // _mm256_rcp_ps gives ~12-bit precision; NR lifts it to full float32.
-            // FMA (_mm256_fmadd_ps / _mm256_fnmadd_ps) fuses mul+add into one instruction.
+            // DAA query: blades {11, 12, 13, 14}.
+            // rcp + one Newton step instead of div (rcp is ~12-bit, NR brings it to fp32).
             const __m256 q14    = lq(14);
-            const __m256 q_den  = _mm256_fmadd_ps(q14, q14, eps_vec);   // q14² + eps
-            __m256 q_rcp        = _mm256_rcp_ps(q_den);                  // ≈ 1/denom
-            q_rcp = _mm256_mul_ps(q_rcp, _mm256_fnmadd_ps(q_den, q_rcp, two)); // NR: r*(2-d*r)
+            const __m256 q_den  = _mm256_fmadd_ps(q14, q14, eps_vec);   // q14*q14 + eps
+            __m256 q_rcp        = _mm256_rcp_ps(q_den);
+            q_rcp = _mm256_mul_ps(q_rcp, _mm256_fnmadd_ps(q_den, q_rcp, two)); // r*(2-d*r)
             const __m256 q_nrm  = _mm256_mul_ps(q14, q_rcp);
             const __m256 qn0    = _mm256_mul_ps(lq(11), q_nrm);
             const __m256 qn1    = _mm256_mul_ps(lq(12), q_nrm);
@@ -758,6 +740,451 @@ void check_mv_attention_tensor(const Tensor& tensor, const char* name) {
     TORCH_CHECK(tensor.is_floating_point(), name, ": expected floating-point dtype");
 }
 
+// Flash attention (FlashAttention-2 style): tile over query and key blocks and
+// keep a running max/sum so we never materialize the full T x T score matrix.
+// Per query tile, loop over key tiles updating O with the online-softmax
+// correction, then normalize once at the end. Br=Bc=32 keeps the tiles in L2.
+
+#if defined(__AVX2__)
+static inline float hsum256_ps(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    lo = _mm_add_ps(lo, hi);
+    __m128 sh = _mm_movehdup_ps(lo);
+    lo = _mm_add_ps(lo, sh);
+    sh = _mm_movehl_ps(lo, lo);
+    return _mm_cvtss_f32(_mm_add_ss(lo, sh));
+}
+
+// 8-wide exp, Cephes minimax (~1e-6 rel error). Softmax only feeds x <= 0 and
+// our tolerance is 5e-5, so this is plenty. Avoids scalar std::exp in the loop.
+static inline __m256 exp256_ps(__m256 x) {
+    const __m256 hi = _mm256_set1_ps(88.3762626647949f);
+    const __m256 lo = _mm256_set1_ps(-88.3762626647949f);
+    x = _mm256_min_ps(_mm256_max_ps(x, lo), hi);
+
+    const __m256 LOG2EF = _mm256_set1_ps(1.44269504088896341f);
+    const __m256 C1 = _mm256_set1_ps(0.693359375f);
+    const __m256 C2 = _mm256_set1_ps(-2.12194440e-4f);
+
+    __m256 fx = _mm256_fmadd_ps(x, LOG2EF, _mm256_set1_ps(0.5f));
+    fx = _mm256_floor_ps(fx);
+
+    __m256 z = _mm256_fnmadd_ps(fx, C1, x);   // x - fx*C1
+    z = _mm256_fnmadd_ps(fx, C2, z);          // - fx*C2
+    const __m256 z2 = _mm256_mul_ps(z, z);
+
+    __m256 p = _mm256_set1_ps(1.9875691500e-4f);
+    p = _mm256_fmadd_ps(p, z, _mm256_set1_ps(1.3981999507e-3f));
+    p = _mm256_fmadd_ps(p, z, _mm256_set1_ps(8.3334519073e-3f));
+    p = _mm256_fmadd_ps(p, z, _mm256_set1_ps(4.1665795894e-2f));
+    p = _mm256_fmadd_ps(p, z, _mm256_set1_ps(1.6666665459e-1f));
+    p = _mm256_fmadd_ps(p, z, _mm256_set1_ps(5.0000001201e-1f));
+    p = _mm256_fmadd_ps(p, z2, z);
+    p = _mm256_add_ps(p, _mm256_set1_ps(1.0f));
+
+    // 2^fx by assembling the float exponent field.
+    __m256i emm0 = _mm256_cvttps_epi32(fx);
+    emm0 = _mm256_add_epi32(emm0, _mm256_set1_epi32(0x7f));
+    emm0 = _mm256_slli_epi32(emm0, 23);
+    return _mm256_mul_ps(p, _mm256_castsi256_ps(emm0));
+}
+#endif
+
+// Dot product over n floats. SIMD picks the AVX2 (v3) or scalar (v2) path.
+template <bool SIMD>
+static inline float flash_dot(const float* __restrict__ a, const float* __restrict__ b, int64_t n) {
+#if defined(__AVX2__)
+    if constexpr (SIMD) {
+        __m256 acc0 = _mm256_setzero_ps();
+        __m256 acc1 = _mm256_setzero_ps();
+        int64_t k = 0;
+        for (; k + 15 < n; k += 16) {
+            acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + k),     _mm256_loadu_ps(b + k),     acc0);
+            acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(a + k + 8), _mm256_loadu_ps(b + k + 8), acc1);
+        }
+        for (; k + 7 < n; k += 8) {
+            acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(a + k), _mm256_loadu_ps(b + k), acc0);
+        }
+        float s = hsum256_ps(_mm256_add_ps(acc0, acc1));
+        for (; k < n; ++k) s += a[k] * b[k];
+        return s;
+    }
+#endif
+    float s = 0.0f;
+    for (int64_t k = 0; k < n; ++k) s += a[k] * b[k];
+    return s;
+}
+
+// AXPY: out[v] += alpha * x[v] for dv elements.
+template <bool SIMD>
+static inline void flash_axpy(float* __restrict__ out, const float* __restrict__ x, float alpha, int64_t dv) {
+#if defined(__AVX2__)
+    if constexpr (SIMD) {
+        __m256 a = _mm256_set1_ps(alpha);
+        int64_t v = 0;
+        for (; v + 7 < dv; v += 8) {
+            _mm256_storeu_ps(out + v,
+                _mm256_fmadd_ps(a, _mm256_loadu_ps(x + v), _mm256_loadu_ps(out + v)));
+        }
+        for (; v < dv; ++v) out[v] += alpha * x[v];
+        return;
+    }
+#endif
+    for (int64_t v = 0; v < dv; ++v) out[v] += alpha * x[v];
+}
+
+// Scale: out[v] *= alpha for dv elements.
+template <bool SIMD>
+static inline void flash_scale(float* __restrict__ out, float alpha, int64_t dv) {
+#if defined(__AVX2__)
+    if constexpr (SIMD) {
+        __m256 a = _mm256_set1_ps(alpha);
+        int64_t v = 0;
+        for (; v + 7 < dv; v += 8) {
+            _mm256_storeu_ps(out + v, _mm256_mul_ps(_mm256_loadu_ps(out + v), a));
+        }
+        for (; v < dv; ++v) out[v] *= alpha;
+        return;
+    }
+#endif
+    for (int64_t v = 0; v < dv; ++v) out[v] *= alpha;
+}
+
+static constexpr int64_t kFlashBr = 32;
+static constexpr int64_t kFlashBc = 32;
+
+#if defined(__AVX2__)
+// Transpose a key tile [bc, d] into [d, kFlashBc] so the keys for a fixed k are
+// contiguous. Done once per key tile, reused across all query rows.
+static inline void pack_k_tile(const float* __restrict__ Kj, float* __restrict__ Kp,
+                               int64_t bc, int64_t d) {
+    for (int64_t c = 0; c < bc; ++c) {
+        const float* krow = Kj + c * d;
+        for (int64_t k = 0; k < d; ++k) Kp[k * kFlashBc + c] = krow[k];
+    }
+}
+
+// S = scale * (Qi @ Kp). 4x8 register block: 4 query rows reuse each K vector
+// load and accumulate over k with FMAs, so there's no horizontal sum per output.
+static inline void qk_block_simd(const float* __restrict__ Qi,
+                                 const float* __restrict__ Kp,
+                                 float* __restrict__ S,
+                                 int64_t br, int64_t bc, int64_t d, float scale) {
+    const __m256 sv = _mm256_set1_ps(scale);
+    int64_t r0 = 0;
+    for (; r0 + 4 <= br; r0 += 4) {
+        const float* q0 = Qi + (r0 + 0) * d;
+        const float* q1 = Qi + (r0 + 1) * d;
+        const float* q2 = Qi + (r0 + 2) * d;
+        const float* q3 = Qi + (r0 + 3) * d;
+        int64_t c0 = 0;
+        for (; c0 + 8 <= bc; c0 += 8) {
+            __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+            __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
+            for (int64_t k = 0; k < d; ++k) {
+                const __m256 kv = _mm256_loadu_ps(Kp + k * kFlashBc + c0);
+                a0 = _mm256_fmadd_ps(_mm256_set1_ps(q0[k]), kv, a0);
+                a1 = _mm256_fmadd_ps(_mm256_set1_ps(q1[k]), kv, a1);
+                a2 = _mm256_fmadd_ps(_mm256_set1_ps(q2[k]), kv, a2);
+                a3 = _mm256_fmadd_ps(_mm256_set1_ps(q3[k]), kv, a3);
+            }
+            _mm256_storeu_ps(S + (r0 + 0) * kFlashBc + c0, _mm256_mul_ps(a0, sv));
+            _mm256_storeu_ps(S + (r0 + 1) * kFlashBc + c0, _mm256_mul_ps(a1, sv));
+            _mm256_storeu_ps(S + (r0 + 2) * kFlashBc + c0, _mm256_mul_ps(a2, sv));
+            _mm256_storeu_ps(S + (r0 + 3) * kFlashBc + c0, _mm256_mul_ps(a3, sv));
+        }
+        for (; c0 < bc; ++c0) {  // column remainder
+            float s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+            for (int64_t k = 0; k < d; ++k) {
+                const float kk = Kp[k * kFlashBc + c0];
+                s0 += q0[k] * kk; s1 += q1[k] * kk; s2 += q2[k] * kk; s3 += q3[k] * kk;
+            }
+            S[(r0 + 0) * kFlashBc + c0] = s0 * scale;
+            S[(r0 + 1) * kFlashBc + c0] = s1 * scale;
+            S[(r0 + 2) * kFlashBc + c0] = s2 * scale;
+            S[(r0 + 3) * kFlashBc + c0] = s3 * scale;
+        }
+    }
+    for (; r0 < br; ++r0) {  // row remainder (MR=1)
+        const float* q0 = Qi + r0 * d;
+        int64_t c0 = 0;
+        for (; c0 + 8 <= bc; c0 += 8) {
+            __m256 a0 = _mm256_setzero_ps();
+            for (int64_t k = 0; k < d; ++k)
+                a0 = _mm256_fmadd_ps(_mm256_set1_ps(q0[k]), _mm256_loadu_ps(Kp + k * kFlashBc + c0), a0);
+            _mm256_storeu_ps(S + r0 * kFlashBc + c0, _mm256_mul_ps(a0, sv));
+        }
+        for (; c0 < bc; ++c0) {
+            float s0 = 0;
+            for (int64_t k = 0; k < d; ++k) s0 += q0[k] * Kp[k * kFlashBc + c0];
+            S[r0 * kFlashBc + c0] = s0 * scale;
+        }
+    }
+}
+#endif
+
+// out[c] = exp(in[c] - m); returns sum(out). Vectorized exp for v3, std::exp for v2.
+template <bool SIMD>
+static inline float exp_row(const float* __restrict__ in, float* __restrict__ out,
+                            int64_t n, float m) {
+#if defined(__AVX2__)
+    if constexpr (SIMD) {
+        const __m256 mv = _mm256_set1_ps(m);
+        __m256 acc = _mm256_setzero_ps();
+        int64_t c = 0;
+        for (; c + 8 <= n; c += 8) {
+            const __m256 e = exp256_ps(_mm256_sub_ps(_mm256_loadu_ps(in + c), mv));
+            _mm256_storeu_ps(out + c, e);
+            acc = _mm256_add_ps(acc, e);
+        }
+        float s = hsum256_ps(acc);
+        for (; c < n; ++c) { const float e = std::exp(in[c] - m); out[c] = e; s += e; }
+        return s;
+    }
+#endif
+    float s = 0.0f;
+    for (int64_t c = 0; c < n; ++c) { const float e = std::exp(in[c] - m); out[c] = e; s += e; }
+    return s;
+}
+
+// Per-head flash attention, float32. Q/K [T,d], V/O [T,dv], all contiguous.
+// l, m, Kp are caller-supplied scratch. SIMD picks the v3 (AVX2) or v2 path.
+template <bool SIMD>
+static void flash_attn_head_f32(
+    const float* __restrict__ Q,
+    const float* __restrict__ K,
+    const float* __restrict__ V,
+    float*       __restrict__ O,
+    int64_t T, int64_t d, int64_t dv, float scale,
+    float* __restrict__ l,
+    float* __restrict__ m,
+    float* __restrict__ Kp)
+{
+    (void)Kp;
+    for (int64_t i = 0; i < T; ++i) { l[i] = 0.0f; m[i] = -1e30f; }
+    std::memset(O, 0, static_cast<size_t>(T * dv) * sizeof(float));
+
+    alignas(32) float S_block[kFlashBr * kFlashBc];
+    alignas(32) float P_row[kFlashBc];
+
+    for (int64_t qi = 0; qi < T; qi += kFlashBr) {
+        const int64_t br = std::min(kFlashBr, T - qi);
+        const float* Qi = Q + qi * d;
+        float*       Oi = O + qi * dv;
+        float*       li = l + qi;
+        float*       mi = m + qi;
+
+        for (int64_t ki = 0; ki < T; ki += kFlashBc) {
+            const int64_t bc = std::min(kFlashBc, T - ki);
+            const float* Kj = K + ki * d;
+            const float* Vj = V + ki * dv;
+
+            // S = scale * Qi @ Kj^T  (br x bc)
+#if defined(__AVX2__)
+            if constexpr (SIMD) {
+                pack_k_tile(Kj, Kp, bc, d);
+                qk_block_simd(Qi, Kp, S_block, br, bc, d, scale);
+            } else
+#endif
+            {
+                for (int64_t r = 0; r < br; ++r) {
+                    for (int64_t c = 0; c < bc; ++c) {
+                        S_block[r * kFlashBc + c] = flash_dot<SIMD>(Qi + r * d, Kj + c * d, d) * scale;
+                    }
+                }
+            }
+
+            // Online softmax + O update for each query row.
+            for (int64_t r = 0; r < br; ++r) {
+                const float* Srow = S_block + r * kFlashBc;
+
+                float m_new = mi[r];
+                for (int64_t c = 0; c < bc; ++c) {
+                    if (Srow[c] > m_new) m_new = Srow[c];
+                }
+                const float exp_shift = std::exp(mi[r] - m_new);
+
+                // P[c] = exp(S - m_new), and fold its sum into the new l.
+                const float l_new = exp_shift * li[r] + exp_row<SIMD>(Srow, P_row, bc, m_new);
+
+                // Correct the old O for the new max, then add P @ Vj.
+                float* Oi_row = Oi + r * dv;
+                flash_scale<SIMD>(Oi_row, exp_shift, dv);
+                for (int64_t c = 0; c < bc; ++c) {
+                    flash_axpy<SIMD>(Oi_row, Vj + c * dv, P_row[c], dv);
+                }
+
+                mi[r] = m_new;
+                li[r] = l_new;
+            }
+        }
+
+        for (int64_t r = 0; r < br; ++r) {
+            flash_scale<SIMD>(Oi + r * dv, 1.0f / li[r], dv);
+        }
+    }
+}
+
+// Naive per-head SDPA for v0/v1: per query row, score all keys, softmax, O = P@V.
+// One score row at a time, plain scalar loops. The reference baseline.
+static void naive_sdpa_head_f32(
+    const float* __restrict__ Q,
+    const float* __restrict__ K,
+    const float* __restrict__ V,
+    float*       __restrict__ O,
+    int64_t T, int64_t d, int64_t dv, float scale,
+    float* __restrict__ s)
+{
+    for (int64_t i = 0; i < T; ++i) {
+        const float* Qi = Q + i * d;
+
+        // Scores for this query row, tracking the running max.
+        float m = -1e30f;
+        for (int64_t j = 0; j < T; ++j) {
+            const float* Kj = K + j * d;
+            float acc = 0.0f;
+            for (int64_t k = 0; k < d; ++k) acc += Qi[k] * Kj[k];
+            acc *= scale;
+            s[j] = acc;
+            if (acc > m) m = acc;
+        }
+
+        // Softmax: exponentiate (shifted by max) and accumulate the partition sum.
+        float sum = 0.0f;
+        for (int64_t j = 0; j < T; ++j) {
+            s[j] = std::exp(s[j] - m);
+            sum += s[j];
+        }
+        const float inv = 1.0f / sum;
+
+        // Weighted sum of value rows.
+        float* Oi = O + i * dv;
+        for (int64_t v = 0; v < dv; ++v) Oi[v] = 0.0f;
+        for (int64_t j = 0; j < T; ++j) {
+            const float p = s[j] * inv;
+            const float* Vj = V + j * dv;
+            for (int64_t v = 0; v < dv; ++v) Oi[v] += p * Vj[v];
+        }
+    }
+}
+
+Tensor compute_naive_sdpa(
+    const Tensor& query,
+    const Tensor& key,
+    const Tensor& value,
+    const py::object& attn_mask_obj,
+    double dropout_p,
+    bool is_causal,
+    const py::object& scale_obj)
+{
+    if (query.scalar_type() != torch::kFloat32 ||
+        query.dim() != 4 ||
+        !query.is_contiguous() || !key.is_contiguous() || !value.is_contiguous() ||
+        !attn_mask_obj.is_none() || dropout_p > 0.0 || is_causal) {
+        return compute_scaled_dot_product_attention(
+            query, key, value, attn_mask_obj, dropout_p, is_causal, scale_obj);
+    }
+
+    const int64_t B  = query.size(0);
+    const int64_t H  = query.size(1);
+    const int64_t T  = query.size(2);
+    const int64_t d  = query.size(3);
+    const int64_t dv = value.size(3);
+
+    const float scale = scale_obj.is_none()
+        ? 1.0f / std::sqrt(static_cast<float>(d))
+        : static_cast<float>(scale_obj.cast<double>());
+
+    auto output = torch::empty({B, H, T, dv}, query.options());
+
+    const float* Q_ptr = query.data_ptr<float>();
+    const float* K_ptr = key.data_ptr<float>();
+    const float* V_ptr = value.data_ptr<float>();
+    float*       O_ptr = output.data_ptr<float>();
+
+    at::parallel_for(0, B * H, 0, [&](int64_t begin, int64_t end) {
+        std::vector<float> s_buf(T);
+        for (int64_t bh = begin; bh < end; ++bh) {
+            naive_sdpa_head_f32(
+                Q_ptr + bh * T * d,
+                K_ptr + bh * T * d,
+                V_ptr + bh * T * dv,
+                O_ptr + bh * T * dv,
+                T, d, dv, scale,
+                s_buf.data());
+        }
+    });
+
+    return output;
+}
+
+// Flash attention over the whole tensor. Falls back to PyTorch SDPA for cases we
+// don't handle (non-float32, masks, dropout, causal, non-4D). use_simd = v3 path.
+Tensor compute_flash_attention_sdpa(
+    const Tensor& query,
+    const Tensor& key,
+    const Tensor& value,
+    const py::object& attn_mask_obj,
+    double dropout_p,
+    bool is_causal,
+    const py::object& scale_obj,
+    bool use_simd)
+{
+    if (query.scalar_type() != torch::kFloat32 ||
+        query.dim() != 4 ||
+        !query.is_contiguous() || !key.is_contiguous() || !value.is_contiguous() ||
+        !attn_mask_obj.is_none() || dropout_p > 0.0 || is_causal) {
+        return compute_scaled_dot_product_attention(
+            query, key, value, attn_mask_obj, dropout_p, is_causal, scale_obj);
+    }
+
+    const int64_t B  = query.size(0);
+    const int64_t H  = query.size(1);
+    const int64_t T  = query.size(2);
+    const int64_t d  = query.size(3);
+    const int64_t dv = value.size(3);
+
+    const float scale = scale_obj.is_none()
+        ? 1.0f / std::sqrt(static_cast<float>(d))
+        : static_cast<float>(scale_obj.cast<double>());
+
+    auto output = torch::zeros({B, H, T, dv}, query.options());
+
+    const float* Q_ptr = query.data_ptr<float>();
+    const float* K_ptr = key.data_ptr<float>();
+    const float* V_ptr = value.data_ptr<float>();
+    float*       O_ptr = output.data_ptr<float>();
+
+    // Parallelize over (batch, head) pairs; each thread owns its l/m scratch and
+    // (for the SIMD path) a transposed key-tile pack buffer of d * kFlashBc floats.
+    at::parallel_for(0, B * H, 0, [&](int64_t begin, int64_t end) {
+        std::vector<float> l_buf(T), m_buf(T);
+        std::vector<float> kp_buf(use_simd ? static_cast<size_t>(d * kFlashBc) : 0);
+        for (int64_t bh = begin; bh < end; ++bh) {
+            if (use_simd) {
+                flash_attn_head_f32<true>(
+                    Q_ptr + bh * T * d,
+                    K_ptr + bh * T * d,
+                    V_ptr + bh * T * dv,
+                    O_ptr + bh * T * dv,
+                    T, d, dv, scale,
+                    l_buf.data(), m_buf.data(), kp_buf.data());
+            } else {
+                flash_attn_head_f32<false>(
+                    Q_ptr + bh * T * d,
+                    K_ptr + bh * T * d,
+                    V_ptr + bh * T * dv,
+                    O_ptr + bh * T * dv,
+                    T, d, dv, scale,
+                    l_buf.data(), m_buf.data(), nullptr);
+            }
+        }
+    });
+
+    return output;
+}
+
 }  // namespace
 
 torch::Tensor equi_geometric_attention_mv_only_impl(
@@ -773,7 +1200,11 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
     bool use_cache,
     bool use_direct_daa,
     bool use_fast_paths,
-    bool use_simd) {
+    bool use_simd,
+    int sdpa_mode = 0) {
+    // sdpa_mode selects how the scaled-dot-product-attention core is computed:
+    //   0 = naive scalar (v0/v1), 1 = flash tiled scalar (v2),
+    //   2 = flash tiled AVX2/FMA (v3), other = PyTorch library SDPA.
     check_mv_attention_tensor(query, "equi_geometric_attention_mv_only: query");
     check_mv_attention_tensor(key, "equi_geometric_attention_mv_only: key");
     check_mv_attention_tensor(value, "equi_geometric_attention_mv_only: value");
@@ -884,14 +1315,29 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
     }
     auto value_flat = flatten_ck(value);
 
-    auto ret = compute_scaled_dot_product_attention(
-        query_flat,
-        key_flat,
-        value_flat,
-        attn_mask,
-        dropout_p,
-        is_causal,
-        scale);
+    Tensor ret;
+    switch (sdpa_mode) {
+        case 0:  // naive scalar SDPA (v0/v1 baseline)
+            ret = compute_naive_sdpa(
+                query_flat, key_flat, value_flat,
+                attn_mask, dropout_p, is_causal, scale);
+            break;
+        case 1:  // flash attention, scalar inner kernel (v2: tiling / memory layout)
+            ret = compute_flash_attention_sdpa(
+                query_flat, key_flat, value_flat,
+                attn_mask, dropout_p, is_causal, scale, /*use_simd=*/false);
+            break;
+        case 2:  // flash attention, AVX2/FMA inner kernel (v3: SIMD)
+            ret = compute_flash_attention_sdpa(
+                query_flat, key_flat, value_flat,
+                attn_mask, dropout_p, is_causal, scale, /*use_simd=*/true);
+            break;
+        default:  // PyTorch library SDPA (reference fallback)
+            ret = compute_scaled_dot_product_attention(
+                query_flat, key_flat, value_flat,
+                attn_mask, dropout_p, is_causal, scale);
+            break;
+    }
     return inflate_ck(ret);
 }
 
@@ -905,8 +1351,11 @@ torch::Tensor equi_geometric_attention_mv_only_ver_0(
     double dropout_p,
     bool is_causal,
     const py::object& scale) {
+    // Naive everything: einsum QK assembly + naive scalar SDPA core.
     return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, false, false, false, false);
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale,
+        /*use_cache=*/false, /*use_direct_daa=*/false, /*use_fast_paths=*/false,
+        /*use_simd=*/false, /*sdpa_mode=*/0);
 }
 
 torch::Tensor equi_geometric_attention_mv_only_ver_1(
@@ -919,10 +1368,12 @@ torch::Tensor equi_geometric_attention_mv_only_ver_1(
     double dropout_p,
     bool is_causal,
     const py::object& scale) {
-    // Math optimizations: explicit DAA formula (direct computation replaces einsum)
-    // + cached mathematical constants (inner product selector, DAA basis tensors).
+    // Math: explicit DAA formula instead of einsum, plus cached constants
+    // (IPA selector, DAA basis). SDPA core is still the naive scalar one.
     return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true, false, false);
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale,
+        /*use_cache=*/true, /*use_direct_daa=*/true, /*use_fast_paths=*/false,
+        /*use_simd=*/false, /*sdpa_mode=*/0);
 }
 
 torch::Tensor equi_geometric_attention_mv_only_ver_2(
@@ -935,8 +1386,12 @@ torch::Tensor equi_geometric_attention_mv_only_ver_2(
     double dropout_p,
     bool is_causal,
     const py::object& scale) {
+    // Scalar memory/compiler optimizations: compact single-pass Q/K assembly +
+    // flash-attention SDPA core (tiling + online softmax, scalar inner loops).
     return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true, true, false);
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale,
+        /*use_cache=*/true, /*use_direct_daa=*/true, /*use_fast_paths=*/true,
+        /*use_simd=*/false, /*sdpa_mode=*/1);
 }
 
 torch::Tensor equi_geometric_attention_mv_only_ver_3(
@@ -949,11 +1404,13 @@ torch::Tensor equi_geometric_attention_mv_only_ver_3(
     double dropout_p,
     bool is_causal,
     const py::object& scale) {
-    // SIMD: AVX2 vectorization with AoS gather loads + SoA unit-stride stores,
-    // FMA for DAA products, reciprocal+Newton-Raphson for normalization division.
-    // Falls back to v2 scalar path for non-float32 or channels < 8.
+    // SIMD: AVX2 Q/K assembly (SoA stores, FMA, rcp+NR for the divide) and the
+    // AVX2 flash SDPA (packed-K 4x8 QK^T micro-kernel + vectorized exp).
+    // Falls back to the v2 scalar path for non-float32 or channels < 8.
     return equi_geometric_attention_mv_only_impl(
-        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale, true, true, true, true);
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale,
+        /*use_cache=*/true, /*use_direct_daa=*/true, /*use_fast_paths=*/true,
+        /*use_simd=*/true, /*sdpa_mode=*/2);
 }
 
 torch::Tensor equi_geometric_attention_mv_only(
