@@ -221,10 +221,10 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("x"),
             py::arg("approximate") = "tanh",
             "Scalar gated GELU version 2.");
-      // m.def("scaler_gated_gelu_ver_3", &ezgatr::opt::scaler_gated_gelu_ver_2,
-      //       py::arg("x"),
-      //       py::arg("approximate") = "tanh",
-      //       "Scalar gated GELU version 3 fallback alias.");
+      m.def("scaler_gated_gelu_ver_3", &ezgatr::opt::scaler_gated_gelu_ver_3,
+            py::arg("x"),
+            py::arg("approximate") = "tanh",
+            "Scalar gated GELU version 3 (AVX2-vectorized tanh, float32 fast path).");
 
       m.def("equi_geometric_attention_mv_only",
             &ezgatr::opt::equi_geometric_attention_mv_only,

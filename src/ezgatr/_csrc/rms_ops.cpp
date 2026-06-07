@@ -120,6 +120,93 @@ static void scalar_gated_gelu_kernel(
     }
 }
 
+#if defined(__AVX2__) && defined(__FMA__)
+// Vectorized expf (Cephes minimax, ~1 ulp for float32). Standard range reduction
+// e^x = 2^k * e^r with k = round(x*log2(e)) and r = x - k*ln2.
+static inline __m256 exp256_ps(__m256 x) {
+    const __m256 hi = _mm256_set1_ps(88.3762626647949f);
+    const __m256 lo = _mm256_set1_ps(-88.3762626647949f);
+    const __m256 LOG2EF = _mm256_set1_ps(1.44269504088896341f);
+    const __m256 C1 = _mm256_set1_ps(0.693359375f);      // ln2 split, hi part
+    const __m256 C2 = _mm256_set1_ps(-2.12194440e-4f);   // ln2 split, lo part
+    const __m256 one = _mm256_set1_ps(1.f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+
+    x = _mm256_min_ps(_mm256_max_ps(x, lo), hi);
+    __m256 fx = _mm256_floor_ps(_mm256_fmadd_ps(x, LOG2EF, half));
+    // r = x - fx*ln2  (two-step to preserve precision)
+    x = _mm256_sub_ps(x, _mm256_mul_ps(fx, C1));
+    x = _mm256_sub_ps(x, _mm256_mul_ps(fx, C2));
+
+    const __m256 z = _mm256_mul_ps(x, x);
+    __m256 y = _mm256_set1_ps(1.9875691500E-4f);
+    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.3981999507E-3f));
+    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(8.3334519073E-3f));
+    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(4.1665795894E-2f));
+    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.6666665459E-1f));
+    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(5.0000001201E-1f));
+    y = _mm256_fmadd_ps(y, z, x);
+    y = _mm256_add_ps(y, one);
+
+    // 2^fx via direct exponent-field construction.
+    __m256i emm0 = _mm256_cvttps_epi32(fx);
+    emm0 = _mm256_slli_epi32(_mm256_add_epi32(emm0, _mm256_set1_epi32(0x7f)), 23);
+    return _mm256_mul_ps(y, _mm256_castsi256_ps(emm0));
+}
+
+// tanh(x) = 1 - 2/(e^{2x}+1). Accurate to ~1e-6 in float32 over the gelu range.
+static inline __m256 tanh256_ps(__m256 x) {
+    const __m256 one = _mm256_set1_ps(1.f);
+    const __m256 two = _mm256_set1_ps(2.f);
+    __m256 e = exp256_ps(_mm256_mul_ps(x, two));
+    return _mm256_sub_ps(one, _mm256_div_ps(two, _mm256_add_ps(e, one)));
+}
+
+// AVX2 scaler-gated GELU (tanh approx, float32). Computes 8 gates per iteration
+// with a vectorized tanh, then broadcasts each gate across its 16-lane
+// multivector. The expensive transcendental is amortized 8-wide instead of the
+// per-multivector scalar std::tanh call in the v0-v2 kernel.
+static void gelu_gate_kernel_avx2(const float* __restrict__ X,
+                                  float* __restrict__ O, int64_t N) {
+    const __m256 half   = _mm256_set1_ps(0.5f);
+    const __m256 one    = _mm256_set1_ps(1.f);
+    const __m256 kAlpha = _mm256_set1_ps(0.7978845608028654f);
+    const __m256 kBeta  = _mm256_set1_ps(0.044715f);
+    // Scalar blade of 8 consecutive multivectors: float offsets 0,16,...,112.
+    const __m256i sidx = _mm256_setr_epi32(0, 16, 32, 48, 64, 80, 96, 112);
+
+    int64_t n = 0;
+    for (; n + 8 <= N; n += 8) {
+        const float* base = X + (n << 4);
+        const __m256 s  = _mm256_i32gather_ps(base, sidx, 4);
+        const __m256 s2 = _mm256_mul_ps(s, s);
+        // arg = alpha * s * (1 + beta*s^2)
+        const __m256 arg = _mm256_mul_ps(_mm256_mul_ps(kAlpha, s),
+                                         _mm256_fmadd_ps(kBeta, s2, one));
+        const __m256 gate = _mm256_mul_ps(_mm256_mul_ps(half, s),
+                                          _mm256_add_ps(one, tanh256_ps(arg)));
+        alignas(32) float g[8];
+        _mm256_store_ps(g, gate);
+        for (int j = 0; j < 8; ++j) {
+            const float* xi = base + (j << 4);
+            float* oi = O + ((n + j) << 4);
+            const __m256 gj = _mm256_set1_ps(g[j]);
+            _mm256_storeu_ps(oi,     _mm256_mul_ps(_mm256_loadu_ps(xi),     gj));
+            _mm256_storeu_ps(oi + 8, _mm256_mul_ps(_mm256_loadu_ps(xi + 8), gj));
+        }
+    }
+    // Scalar tail (< 8 multivectors).
+    for (; n < N; ++n) {
+        const float* xi = X + (n << 4);
+        float* oi = O + (n << 4);
+        const float sc = xi[0];
+        const float gate = 0.5f * sc *
+            (1.f + std::tanh(0.7978845608028654f * (sc + 0.044715f * sc * sc * sc)));
+        for (int i = 0; i < 16; ++i) oi[i] = xi[i] * gate;
+    }
+}
+#endif  // __AVX2__ && __FMA__
+
 
 
 void check_multivector(const torch::Tensor& t, const char* name) {
@@ -1962,6 +2049,34 @@ torch::Tensor scaler_gated_gelu_ver_2(
         );
         return x * gates;
     }
+}
+
+
+
+// ver_3 — AVX2-vectorized scaler-gated GELU (float32 + "tanh" fast path).
+// Falls back to ver_2 for float64, the "none"/erf variant, or non-AVX2 builds.
+torch::Tensor scaler_gated_gelu_ver_3(
+    const torch::Tensor& x,
+    const std::string& approximate
+){
+    check_multivector(x, "scalar_gated_gelu: x");
+    TORCH_CHECK(
+        approximate == "none" || approximate == "tanh",
+        "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
+        approximate
+    );
+
+#if defined(__AVX2__) && defined(__FMA__)
+    if (approximate == "tanh" && x.scalar_type() == torch::kFloat) {
+        auto xc = x.contiguous();
+        auto out = torch::empty_like(xc);
+        const int64_t N = xc.numel() / 16;
+        gelu_gate_kernel_avx2(xc.data_ptr<float>(), out.data_ptr<float>(), N);
+        return out;
+    }
+#endif
+    // float64 / "none" / non-AVX2: numerically identical scalar path.
+    return scaler_gated_gelu_ver_2(x, approximate);
 }
 
 

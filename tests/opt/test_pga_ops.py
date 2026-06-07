@@ -28,6 +28,7 @@ from ezgatr.opt import (
     scaler_gated_gelu_ver_0 as gelu_v0,
     scaler_gated_gelu_ver_1 as gelu_v1,
     scaler_gated_gelu_ver_2 as gelu_v2,
+    scaler_gated_gelu_ver_3 as gelu_v3,
 )
 
 
@@ -235,8 +236,10 @@ ALL_JOIN_F64 = [
 ]
 ALL_JOIN_F64_IDS = ["v0","v1","v2","v2_1","v2_2","v2_3","v2_4","v2_5","v2_6","v2_7"]
 
-ALL_GELU_VERSIONS = [gelu_v0, gelu_v1, gelu_v2]
-ALL_GELU_IDS = ["v0", "v1", "v2"]
+# v3 on float64 / "none" delegates to v2 (exact), so it joins the tight-tolerance
+# float64 sweep; its AVX2 float32 "tanh" path is checked separately below.
+ALL_GELU_VERSIONS = [gelu_v0, gelu_v1, gelu_v2, gelu_v3]
+ALL_GELU_IDS = ["v0", "v1", "v2", "v3"]
 
 
 @pytest.mark.parametrize("fn", ALL_GP_F64, ids=ALL_GP_F64_IDS)
@@ -285,3 +288,14 @@ def test_scaler_gated_gelu_all_versions(fn, batch):
     torch.testing.assert_close(fn(x),         gelu_py(x),         rtol=1e-10, atol=1e-12)
     torch.testing.assert_close(fn(x, "tanh"), gelu_py(x, "tanh"), rtol=1e-10, atol=1e-12)
     torch.testing.assert_close(fn(x, "none"), gelu_py(x, "none"), rtol=1e-10, atol=1e-12)
+
+
+# Sizes spanning the 8-wide AVX2 block boundary (incl. < 8 scalar tail, and a
+# non-multiple-of-8 that mixes vector body + tail).
+@pytest.mark.parametrize("n", [1, 4, 7, 8, 13, 64, 257])
+def test_scaler_gated_gelu_v3_float32(n):
+    x = torch.randn(n, 16, dtype=torch.float32)
+    # AVX2 tanh fast path: vectorized expf approximation -> float32 tolerance.
+    torch.testing.assert_close(gelu_v3(x, "tanh"), gelu_py(x, "tanh"), rtol=2e-4, atol=2e-6)
+    # "none" (erf) path delegates to the exact ver_2 implementation.
+    torch.testing.assert_close(gelu_v3(x, "none"), gelu_py(x, "none"), rtol=1e-5, atol=1e-6)
