@@ -6,17 +6,29 @@ from hypothesis import given, settings
 from ezgatr.nn.functional import equi_join as join_py
 from ezgatr.nn.functional import geometric_product as gp_py
 from ezgatr.nn.functional import equi_linear as el_py
+from ezgatr.nn.functional import scaler_gated_gelu as gelu_py
 from ezgatr.opt import equi_join as join_cpp
-from ezgatr.opt import equi_join_v2_1, equi_join_v2_2
-from ezgatr.opt import equi_join_v2_3, equi_join_v2_4
+from ezgatr.opt import (
+    equi_join_v0, equi_join_v1, equi_join_v2, equi_join_v3,
+    equi_join_v2_1, equi_join_v2_2, equi_join_v2_3, equi_join_v2_4,
+    equi_join_v2_5, equi_join_v2_6, equi_join_v2_7,
+)
 from ezgatr.opt import geometric_product as gp_cpp
-from ezgatr.opt import geometric_product_v2_1, geometric_product_v2_2
-from ezgatr.opt import geometric_product_v2_3, geometric_product_v2_4
+from ezgatr.opt import (
+    geometric_product_v0, geometric_product_v1, geometric_product_v2, geometric_product_v3,
+    geometric_product_v2_1, geometric_product_v2_2, geometric_product_v2_3, geometric_product_v2_4,
+    geometric_product_v2_5, geometric_product_v2_6, geometric_product_v2_7,
+)
 from ezgatr.opt import equi_linear as el_cpp
 from ezgatr.opt import equi_linear_v0 as el_cpp_v0
 from ezgatr.opt import equi_linear_v1 as el_cpp_v1
 from ezgatr.opt import equi_linear_v2 as el_cpp_v2
 from ezgatr.opt import equi_linear_v3 as el_cpp_v3
+from ezgatr.opt import (
+    scaler_gated_gelu_ver_0 as gelu_v0,
+    scaler_gated_gelu_ver_1 as gelu_v1,
+    scaler_gated_gelu_ver_2 as gelu_v2,
+)
 
 
 batch_shape = st.lists(st.integers(min_value=1, max_value=4), min_size=0, max_size=3)
@@ -201,3 +213,75 @@ def test_caches_warm_up_idempotently():
     a2 = join_cpp(x, y)
     b2 = join_cpp(x, y)
     torch.testing.assert_close(a2, b2)
+
+
+# ---------------------------------------------------------------------------
+# Parametrized correctness tests — every exported version against Python ref
+# ---------------------------------------------------------------------------
+
+# v0–v2.x support float64; v3 is float32-only (AVX2/FMA SIMD path).
+ALL_GP_F64 = [
+    geometric_product_v0, geometric_product_v1,
+    geometric_product_v2, geometric_product_v2_1, geometric_product_v2_2,
+    geometric_product_v2_3, geometric_product_v2_4, geometric_product_v2_5,
+    geometric_product_v2_6, geometric_product_v2_7,
+]
+ALL_GP_F64_IDS = ["v0","v1","v2","v2_1","v2_2","v2_3","v2_4","v2_5","v2_6","v2_7"]
+
+ALL_JOIN_F64 = [
+    equi_join_v0, equi_join_v1,
+    equi_join_v2, equi_join_v2_1, equi_join_v2_2, equi_join_v2_3,
+    equi_join_v2_4, equi_join_v2_5, equi_join_v2_6, equi_join_v2_7,
+]
+ALL_JOIN_F64_IDS = ["v0","v1","v2","v2_1","v2_2","v2_3","v2_4","v2_5","v2_6","v2_7"]
+
+ALL_GELU_VERSIONS = [gelu_v0, gelu_v1, gelu_v2]
+ALL_GELU_IDS = ["v0", "v1", "v2"]
+
+
+@pytest.mark.parametrize("fn", ALL_GP_F64, ids=ALL_GP_F64_IDS)
+@given(batch_shape)
+@settings(deadline=None, max_examples=15)
+def test_geometric_product_all_versions(fn, batch):
+    x = torch.randn(*batch, 16, dtype=torch.float64)
+    y = torch.randn(*batch, 16, dtype=torch.float64)
+    torch.testing.assert_close(fn(x, y), gp_py(x, y), rtol=1e-10, atol=1e-12)
+
+
+@given(batch_shape)
+@settings(deadline=None, max_examples=15)
+def test_geometric_product_v3_float32(batch):
+    x = torch.randn(*batch, 16, dtype=torch.float32)
+    y = torch.randn(*batch, 16, dtype=torch.float32)
+    torch.testing.assert_close(geometric_product_v3(x, y), gp_py(x, y), rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("fn", ALL_JOIN_F64, ids=ALL_JOIN_F64_IDS)
+@given(batch_shape)
+@settings(deadline=None, max_examples=15)
+def test_equi_join_all_versions(fn, batch):
+    x = torch.randn(*batch, 16, dtype=torch.float64)
+    y = torch.randn(*batch, 16, dtype=torch.float64)
+    ref = torch.randn(*batch, 16, dtype=torch.float64)
+    torch.testing.assert_close(fn(x, y),      join_py(x, y),      rtol=1e-10, atol=1e-12)
+    torch.testing.assert_close(fn(x, y, ref), join_py(x, y, ref), rtol=1e-10, atol=1e-12)
+
+
+@given(batch_shape)
+@settings(deadline=None, max_examples=15)
+def test_equi_join_v3_float32(batch):
+    x = torch.randn(*batch, 16, dtype=torch.float32)
+    y = torch.randn(*batch, 16, dtype=torch.float32)
+    ref = torch.randn(*batch, 16, dtype=torch.float32)
+    torch.testing.assert_close(equi_join_v3(x, y),      join_py(x, y),      rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(equi_join_v3(x, y, ref), join_py(x, y, ref), rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("fn", ALL_GELU_VERSIONS, ids=ALL_GELU_IDS)
+@given(batch_shape)
+@settings(deadline=None, max_examples=15)
+def test_scaler_gated_gelu_all_versions(fn, batch):
+    x = torch.randn(*batch, 16, dtype=torch.float64)
+    torch.testing.assert_close(fn(x),         gelu_py(x),         rtol=1e-10, atol=1e-12)
+    torch.testing.assert_close(fn(x, "tanh"), gelu_py(x, "tanh"), rtol=1e-10, atol=1e-12)
+    torch.testing.assert_close(fn(x, "none"), gelu_py(x, "none"), rtol=1e-10, atol=1e-12)

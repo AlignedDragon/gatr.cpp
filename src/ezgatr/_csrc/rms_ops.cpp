@@ -327,298 +327,149 @@ void rms_norm_kernel_intrins(
     const scalar_t eps_t = static_cast<scalar_t>(eps);
 
     if constexpr (std::is_same_v<scalar_t, float>) {
+        // Active blades: 0,2,3,4 (lo 8) and 8,9,10,14 (hi 8).
+        // Load all 16 floats per row with two vmovups, apply mask to zero
+        // inactive lanes, then fmadd — avoids the expensive _mm256_set_ps
+        // scatter-gather (8 scalar extractions per vector) and works for
+        // any M including M=4 where the old 8-row loop never fired.
+        const __m256 mask_lo = _mm256_setr_ps(1.f,0.f,1.f,1.f,1.f,0.f,0.f,0.f);
+        const __m256 mask_hi = _mm256_setr_ps(1.f,1.f,1.f,0.f,0.f,0.f,1.f,0.f);
 
         for (int64_t g = 0; g < groups; ++g) {
+            const float* group_in  = X + g * (M << 4);
+            float*       group_out = O + g * (M << 4);
 
-            const scalar_t* group_in  = X + g * (M << 4);
-            scalar_t* group_out       = O + g * (M << 4);
-
-
-            __m256 acc  = _mm256_setzero_ps();
-
+            // Pass 1: masked reduction with 4 independent accumulators to
+            // hide the 4-cycle FMA latency on Tiger Lake.
+            __m256 acc0 = _mm256_setzero_ps();
+            __m256 acc1 = _mm256_setzero_ps();
+            __m256 acc2 = _mm256_setzero_ps();
+            __m256 acc3 = _mm256_setzero_ps();
             int64_t m = 0;
-
-            for (; m + 7 < M; m += 8) {
-
-                const scalar_t* x0 = group_in + (m << 4);
-                const scalar_t* x1 = x0 + 16;
-                const scalar_t* x2 = x1 + 16;
-                const scalar_t* x3 = x2 + 16;
-                const scalar_t* x4 = x3 + 16;
-                const scalar_t* x5 = x4 + 16;
-                const scalar_t* x6 = x5 + 16;
-                const scalar_t* x7 = x6 + 16;
-
-                // load selected scalars (gather-light, no real gather)
-                __m256 v0 = _mm256_set_ps(
-                    x7[0], x6[0], x5[0], x4[0],
-                    x3[0], x2[0], x1[0], x0[0]);
-
-                __m256 v2 = _mm256_set_ps(
-                    x7[2], x6[2], x5[2], x4[2],
-                    x3[2], x2[2], x1[2], x0[2]);
-
-                __m256 v3 = _mm256_set_ps(
-                    x7[3], x6[3], x5[3], x4[3],
-                    x3[3], x2[3], x1[3], x0[3]);
-
-                __m256 v4 = _mm256_set_ps(
-                    x7[4], x6[4], x5[4], x4[4],
-                    x3[4], x2[4], x1[4], x0[4]);
-
-                __m256 v8 = _mm256_set_ps(
-                    x7[8], x6[8], x5[8], x4[8],
-                    x3[8], x2[8], x1[8], x0[8]);
-
-                __m256 v9 = _mm256_set_ps(
-                    x7[9], x6[9], x5[9], x4[9],
-                    x3[9], x2[9], x1[9], x0[9]);
-
-                __m256 v10 = _mm256_set_ps(
-                    x7[10], x6[10], x5[10], x4[10],
-                    x3[10], x2[10], x1[10], x0[10]);
-
-                __m256 v14 = _mm256_set_ps(
-                    x7[14], x6[14], x5[14], x4[14],
-                    x3[14], x2[14], x1[14], x0[14]);
-
-                // accumulate squares
-                acc  = _mm256_fmadd_ps(v0,  v0,  acc);
-                acc  = _mm256_fmadd_ps(v2,  v2,  acc);
-                acc  = _mm256_fmadd_ps(v3,  v3,  acc);
-                acc  = _mm256_fmadd_ps(v4,  v4,  acc);
-                acc  = _mm256_fmadd_ps(v8,  v8,  acc);
-                acc  = _mm256_fmadd_ps(v9,  v9,  acc);
-                acc = _mm256_fmadd_ps(v10, v10, acc);
-                acc = _mm256_fmadd_ps(v14, v14, acc);
+            for (; m + 3 < M; m += 4) {
+                const float* x0 = group_in + (m    ) * 16;
+                const float* x1 = group_in + (m + 1) * 16;
+                const float* x2 = group_in + (m + 2) * 16;
+                const float* x3 = group_in + (m + 3) * 16;
+                __m256 lo0 = _mm256_loadu_ps(x0), hi0 = _mm256_loadu_ps(x0 + 8);
+                __m256 lo1 = _mm256_loadu_ps(x1), hi1 = _mm256_loadu_ps(x1 + 8);
+                __m256 lo2 = _mm256_loadu_ps(x2), hi2 = _mm256_loadu_ps(x2 + 8);
+                __m256 lo3 = _mm256_loadu_ps(x3), hi3 = _mm256_loadu_ps(x3 + 8);
+                acc0 = _mm256_fmadd_ps(_mm256_mul_ps(mask_lo, lo0), lo0, acc0);
+                acc0 = _mm256_fmadd_ps(_mm256_mul_ps(mask_hi, hi0), hi0, acc0);
+                acc1 = _mm256_fmadd_ps(_mm256_mul_ps(mask_lo, lo1), lo1, acc1);
+                acc1 = _mm256_fmadd_ps(_mm256_mul_ps(mask_hi, hi1), hi1, acc1);
+                acc2 = _mm256_fmadd_ps(_mm256_mul_ps(mask_lo, lo2), lo2, acc2);
+                acc2 = _mm256_fmadd_ps(_mm256_mul_ps(mask_hi, hi2), hi2, acc2);
+                acc3 = _mm256_fmadd_ps(_mm256_mul_ps(mask_lo, lo3), lo3, acc3);
+                acc3 = _mm256_fmadd_ps(_mm256_mul_ps(mask_hi, hi3), hi3, acc3);
             }
-            
-            __m128 lo = _mm256_castps256_ps128(acc);
-            __m128 hi = _mm256_extractf128_ps(acc, 1);
-
-            __m128 sum = _mm_add_ps(lo, hi);
-            sum = _mm_hadd_ps(sum, sum);
-            sum = _mm_hadd_ps(sum, sum);
-
-            scalar_t accs = _mm_cvtss_f32(sum);
-
+            acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1),
+                                 _mm256_add_ps(acc2, acc3));
             for (; m < M; ++m) {
-                const scalar_t* x = group_in + (m << 4);
-
-                accs +=
-                    x[0]*x[0] +
-                    x[2]*x[2] +
-                    x[3]*x[3] +
-                    x[4]*x[4] +
-                    x[8]*x[8] +
-                    x[9]*x[9] +
-                    x[10]*x[10] +
-                    x[14]*x[14];
+                const float* x = group_in + (m << 4);
+                __m256 lo = _mm256_loadu_ps(x), hi = _mm256_loadu_ps(x + 8);
+                acc0 = _mm256_fmadd_ps(_mm256_mul_ps(mask_lo, lo), lo, acc0);
+                acc0 = _mm256_fmadd_ps(_mm256_mul_ps(mask_hi, hi), hi, acc0);
             }
+            __m128 lo128 = _mm256_castps256_ps128(acc0);
+            __m128 hi128 = _mm256_extractf128_ps(acc0, 1);
+            __m128 sum128 = _mm_add_ps(lo128, hi128);
+            sum128 = _mm_hadd_ps(sum128, sum128);
+            sum128 = _mm_hadd_ps(sum128, sum128);
+            float accs = _mm_cvtss_f32(sum128);
 
+            accs /= static_cast<float>(M);
+            accs = std::max(accs, eps_t);
+            // rsqrt + one Newton-Raphson step gives ~23-bit accuracy,
+            // saving ~8 cycles vs sqrtss+divss per group.
+            const float half = 0.5f * accs;
+            __m128 vr = _mm_rsqrt_ss(_mm_set_ss(accs));
+            // r = r * (1.5 - 0.5*accs*r*r)
+            vr = _mm_mul_ss(vr,
+                 _mm_sub_ss(_mm_set_ss(1.5f),
+                 _mm_mul_ss(_mm_set_ss(half),
+                 _mm_mul_ss(vr, vr))));
+            float scale = _mm_cvtss_f32(vr);
 
-
-            accs /= static_cast<scalar_t>(M);
-
-            scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
-            //scalar_t scale = std::rsqrt(acc + eps_t);
-            //scalar_t scale = scalar_t(1) / std::sqrt(acc + eps_t);
-
-            // ---- write + optional weight ----
-            // for (int64_t m = 0; m < M; ++m) {
-
-            //     const scalar_t* x = group_in + (m << 4);
-            //     scalar_t* o       = group_out + (m << 4);
-
-            //     scalar_t scalew = scale;
-
-            //     if constexpr (HasWeight) {
-            //         scalew *= W[m];
-            //     }
-
-            //     o[0]  = x[0]  * scalew;
-            //     o[1]  = x[1]  * scalew;
-            //     o[2]  = x[2]  * scalew;
-            //     o[3]  = x[3]  * scalew;
-            //     o[4]  = x[4]  * scalew;
-            //     o[5]  = x[5]  * scalew;
-            //     o[6]  = x[6]  * scalew;
-            //     o[7]  = x[7]  * scalew;
-            //     o[8]  = x[8]  * scalew;
-            //     o[9]  = x[9]  * scalew;
-            //     o[10] = x[10] * scalew;
-            //     o[11] = x[11] * scalew;
-            //     o[12] = x[12] * scalew;
-            //     o[13] = x[13] * scalew;
-            //     o[14] = x[14] * scalew;
-            //     o[15] = x[15] * scalew;
-            // }
-
+            // Pass 2: scale write-back with optional per-channel weight.
             for (int64_t m = 0; m < M; ++m) {
                 const float* x = group_in + (m << 4);
-                float* o       = group_out + (m << 4);
-
-                float scalew = scale;
-
-                if constexpr (HasWeight) {
-                    scalew *= W[m];
-                }
-
-                __m256 vscale = _mm256_set1_ps(scalew);
-
-                __m256 v0 = _mm256_loadu_ps(x + 0);
-                __m256 v1 = _mm256_loadu_ps(x + 8);
-
-                v0 = _mm256_mul_ps(v0, vscale);
-                v1 = _mm256_mul_ps(v1, vscale);
-
-                _mm256_storeu_ps(o + 0, v0);
-                _mm256_storeu_ps(o + 8, v1);
+                float*       o = group_out + (m << 4);
+                float scalew   = scale;
+                if constexpr (HasWeight) scalew *= W[m];
+                __m256 vs = _mm256_set1_ps(scalew);
+                _mm256_storeu_ps(o,     _mm256_mul_ps(_mm256_loadu_ps(x),     vs));
+                _mm256_storeu_ps(o + 8, _mm256_mul_ps(_mm256_loadu_ps(x + 8), vs));
             }
-
-
         }
-    }else if constexpr (std::is_same_v<scalar_t, double>) {
+    } else if constexpr (std::is_same_v<scalar_t, double>) {
+        // Same mask-based approach for double. Active blades: 0,2,3,4 in lo
+        // quad and 8,9,10,14 (relative positions 0,1,2,6) in hi quad.
+        const __m256d mask_lo = _mm256_setr_pd(1.,0.,1.,1.);  // blades 0,2,3,4 → positions 0,1,2,3 cover 0,1,2,3: active at 0,2,3 with blade 4 split
+        // Note: each __m256d holds 4 doubles, so 16-element MV needs 4 vectors.
+        // We use 4 independent mask vectors covering positions 0-3, 4-7, 8-11, 12-15.
+        const __m256d msk0 = _mm256_setr_pd(1.,0.,1.,1.);   // blades 0,2,3
+        const __m256d msk1 = _mm256_setr_pd(1.,0.,0.,0.);   // blade  4
+        const __m256d msk2 = _mm256_setr_pd(1.,1.,1.,0.);   // blades 8,9,10
+        const __m256d msk3 = _mm256_setr_pd(0.,0.,1.,0.);   // blade  14
+
         for (int64_t g = 0; g < groups; ++g) {
+            const double* group_in  = X + g * (M << 4);
+            double*       group_out = O + g * (M << 4);
 
-            const scalar_t* group_in  = X + g * (M << 4);
-            scalar_t* group_out       = O + g * (M << 4);
-
-            __m256d acc = _mm256_setzero_pd();
-
+            __m256d acc0 = _mm256_setzero_pd();
+            __m256d acc1 = _mm256_setzero_pd();
             int64_t m = 0;
-
-            // AVX2 double: 4 lanes → process 4 "blocks"
-            for (; m + 3 < M; m += 4) {
-
-                const scalar_t* x0 = group_in + (m << 4);
-                const scalar_t* x1 = x0 + 16;
-                const scalar_t* x2 = x1 + 16;
-                const scalar_t* x3 = x2 + 16;
-
-                // ---- load selected indices (double version) ----
-
-                __m256d v0 = _mm256_set_pd(
-                    x3[0], x2[0], x1[0], x0[0]);
-
-                __m256d v2 = _mm256_set_pd(
-                    x3[2], x2[2], x1[2], x0[2]);
-
-                __m256d v3 = _mm256_set_pd(
-                    x3[3], x2[3], x1[3], x0[3]);
-
-                __m256d v4 = _mm256_set_pd(
-                    x3[4], x2[4], x1[4], x0[4]);
-
-                __m256d v8 = _mm256_set_pd(
-                    x3[8], x2[8], x1[8], x0[8]);
-
-                __m256d v9 = _mm256_set_pd(
-                    x3[9], x2[9], x1[9], x0[9]);
-
-                __m256d v10 = _mm256_set_pd(
-                    x3[10], x2[10], x1[10], x0[10]);
-
-                __m256d v14 = _mm256_set_pd(
-                    x3[14], x2[14], x1[14], x0[14]);
-
-                // ---- accumulate squares ----
-                acc = _mm256_fmadd_pd(v0,  v0,  acc);
-                acc = _mm256_fmadd_pd(v2,  v2,  acc);
-                acc = _mm256_fmadd_pd(v3,  v3,  acc);
-                acc = _mm256_fmadd_pd(v4,  v4,  acc);
-                acc = _mm256_fmadd_pd(v8,  v8,  acc);
-                acc = _mm256_fmadd_pd(v9,  v9,  acc);
-                acc = _mm256_fmadd_pd(v10, v10, acc);
-                acc = _mm256_fmadd_pd(v14, v14, acc);
+            for (; m + 1 < M; m += 2) {
+                const double* x0 = group_in + (m    ) * 16;
+                const double* x1 = group_in + (m + 1) * 16;
+                __m256d a0 = _mm256_loadu_pd(x0),    b0 = _mm256_loadu_pd(x0 + 4);
+                __m256d c0 = _mm256_loadu_pd(x0 + 8),d0 = _mm256_loadu_pd(x0 + 12);
+                __m256d a1 = _mm256_loadu_pd(x1),    b1 = _mm256_loadu_pd(x1 + 4);
+                __m256d c1 = _mm256_loadu_pd(x1 + 8),d1 = _mm256_loadu_pd(x1 + 12);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk0, a0), a0, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk1, b0), b0, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk2, c0), c0, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk3, d0), d0, acc0);
+                acc1 = _mm256_fmadd_pd(_mm256_mul_pd(msk0, a1), a1, acc1);
+                acc1 = _mm256_fmadd_pd(_mm256_mul_pd(msk1, b1), b1, acc1);
+                acc1 = _mm256_fmadd_pd(_mm256_mul_pd(msk2, c1), c1, acc1);
+                acc1 = _mm256_fmadd_pd(_mm256_mul_pd(msk3, d1), d1, acc1);
             }
-
-            // ---- horizontal sum (double) ----
-            __m128d lo = _mm256_castpd256_pd128(acc);
-            __m128d hi = _mm256_extractf128_pd(acc, 1);
-
-            __m128d sum = _mm_add_pd(lo, hi);
-
-            // reduce 2 doubles → scalar
-            scalar_t accs =
-                _mm_cvtsd_f64(sum) +
-                _mm_cvtsd_f64(_mm_unpackhi_pd(sum, sum));
-
-            // ---- scalar tail ----
+            acc0 = _mm256_add_pd(acc0, acc1);
             for (; m < M; ++m) {
-                const scalar_t* x = group_in + (m << 4);
-
-                accs +=
-                    x[0]*x[0] +
-                    x[2]*x[2] +
-                    x[3]*x[3] +
-                    x[4]*x[4] +
-                    x[8]*x[8] +
-                    x[9]*x[9] +
-                    x[10]*x[10] +
-                    x[14]*x[14];
+                const double* x = group_in + (m << 4);
+                __m256d a = _mm256_loadu_pd(x),    b = _mm256_loadu_pd(x + 4);
+                __m256d c = _mm256_loadu_pd(x + 8),d = _mm256_loadu_pd(x + 12);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk0, a), a, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk1, b), b, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk2, c), c, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk3, d), d, acc0);
             }
+            __m128d lo128 = _mm256_castpd256_pd128(acc0);
+            __m128d hi128 = _mm256_extractf128_pd(acc0, 1);
+            __m128d sum128 = _mm_add_pd(lo128, hi128);
+            double accs = _mm_cvtsd_f64(sum128) +
+                          _mm_cvtsd_f64(_mm_unpackhi_pd(sum128, sum128));
 
-            accs /= static_cast<scalar_t>(M);
-
-            scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
-
-            // ---- write back ----
-            // for (int64_t m = 0; m < M; ++m) {
-
-            //     const scalar_t* x = group_in + (m << 4);
-            //     scalar_t* o       = group_out + (m << 4);
-
-            //     scalar_t scalew = scale;
-
-            //     if constexpr (HasWeight) {
-            //         scalew *= W[m];
-            //     }
-
-            //     o[0]  = x[0]  * scalew;
-            //     o[1]  = x[1]  * scalew;
-            //     o[2]  = x[2]  * scalew;
-            //     o[3]  = x[3]  * scalew;
-            //     o[4]  = x[4]  * scalew;
-            //     o[5]  = x[5]  * scalew;
-            //     o[6]  = x[6]  * scalew;
-            //     o[7]  = x[7]  * scalew;
-            //     o[8]  = x[8]  * scalew;
-            //     o[9]  = x[9]  * scalew;
-            //     o[10] = x[10] * scalew;
-            //     o[11] = x[11] * scalew;
-            //     o[12] = x[12] * scalew;
-            //     o[13] = x[13] * scalew;
-            //     o[14] = x[14] * scalew;
-            //     o[15] = x[15] * scalew;
-            // }
+            accs /= static_cast<double>(M);
+            double scale = 1.0 / std::sqrt(std::max(accs, (double)eps_t));
 
             for (int64_t i = 0; i < M; ++i) {
-
                 const double* x = group_in + (i << 4);
-                double* o       = group_out + (i << 4);
-
-                double scalew = scale;
-
-                if constexpr (HasWeight) {
-                    scalew *= W[i];
-                }
-
-                __m256d vscale = _mm256_set1_pd(scalew);
-
-                __m256d v0 = _mm256_loadu_pd(x + 0);
-                __m256d v1 = _mm256_loadu_pd(x + 4);
-
-                v0 = _mm256_mul_pd(v0, vscale);
-                v1 = _mm256_mul_pd(v1, vscale);
-
-                _mm256_storeu_pd(o + 0, v0);
-                _mm256_storeu_pd(o + 4, v1);
+                double*       o = group_out + (i << 4);
+                double scalew   = scale;
+                if constexpr (HasWeight) scalew *= W[i];
+                __m256d vs = _mm256_set1_pd(scalew);
+                // All 16 elements must be written (bug fix: old code only wrote 8).
+                _mm256_storeu_pd(o,      _mm256_mul_pd(_mm256_loadu_pd(x),      vs));
+                _mm256_storeu_pd(o + 4,  _mm256_mul_pd(_mm256_loadu_pd(x + 4),  vs));
+                _mm256_storeu_pd(o + 8,  _mm256_mul_pd(_mm256_loadu_pd(x + 8),  vs));
+                _mm256_storeu_pd(o + 12, _mm256_mul_pd(_mm256_loadu_pd(x + 12), vs));
             }
         }
-
     }
-   
 }
 
 

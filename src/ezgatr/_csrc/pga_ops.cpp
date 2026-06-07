@@ -1542,27 +1542,138 @@ torch::Tensor equi_linear_v3(const torch::Tensor& x,
     alo = _mm256_fmadd_ps(_mm256_loadu_ps((wp) + 16), xplo, alo); \
     ahi = _mm256_fmadd_ps(_mm256_loadu_ps((wp) + 24), xphi, ahi);
 
-        for (int64_t b = 0; b < batch; ++b) {
-            const float* __restrict__ xb = xp_base + b * in_ch * 16;
+        // 2-batch × 2-channel blocking: load each weight vector once and apply to two
+        // consecutive batch elements, cutting weight loads from 18→12 per i-iteration.
+        // Peak register pressure: 15/16 YMM (8 acc + 4 x/xp + 1 weight transient + 2 idx).
+        const int64_t n_half   = out_ch / 2;
+        const int64_t rem_half = out_ch & 1;
+        const __m256 z = _mm256_setzero_ps();
 
-            // 4-channel groups
+        // x data exceeds L1D on Tiger Lake (48KB) and Zen 2 (32KB) for n>=1 workloads.
+        // Prefetch into L2 (T1) so x moves from L3→L2 before the inner loop needs it.
+        // For n=1/2 where x is already in L2 this is a no-op; for n>=3 (x in L3) it
+        // cuts effective load latency from ~40 cycles (L3) to ~12 cycles (L2).
+        // PF=8: inner body ~128 cycles per batch pair, L3 latency ~40 cycles → 3 pairs needed.
+        const int64_t PF = 8;
+        const int64_t pf_stride = in_ch * 16;  // floats between consecutive batch elements
+
+        int64_t b = 0;
+        for (; b + 1 < batch; b += 2) {
+            const float* __restrict__ xb0 = xp_base + b       * in_ch * 16;
+            const float* __restrict__ xb1 = xp_base + (b + 1) * in_ch * 16;
+            // Prefetch into L2 (T1) — neutral for L1/L2-resident x, beneficial for L3.
+            if (b + PF + 1 < batch) {
+                _mm_prefetch((const char*)(xb0 + PF       * pf_stride), _MM_HINT_T1);
+                _mm_prefetch((const char*)(xb0 + (PF + 1) * pf_stride), _MM_HINT_T1);
+            }
+
+            for (int64_t h = 0; h < n_half; ++h) {
+                const int64_t o0 = h * 2, o1 = o0 + 1;
+                __m256 a_lo0b0=z, a_hi0b0=z, a_lo0b1=z, a_hi0b1=z;
+                __m256 a_lo1b0=z, a_hi1b0=z, a_lo1b1=z, a_hi1b1=z;
+                const float* wv0 = wbuf + o0 * in_ch * 32;
+                const float* wv1 = wbuf + o1 * in_ch * 32;
+
+                for (int64_t i = 0; i < in_ch; ++i) {
+                    const float* __restrict__ xi0 = xb0 + i * 16;
+                    const float* __restrict__ xi1 = xb1 + i * 16;
+                    __m256 xplo0, xplo1, xphi0, xphi1;
+                    // lo half: DIAG (shared weight load for both batches) + permute.
+                    // xlo0/xlo1 go out of scope here so their registers free for xplo*.
+                    {
+                        const __m256 xlo0 = _mm256_loadu_ps(xi0);
+                        const __m256 xlo1 = _mm256_loadu_ps(xi1);
+                        { const __m256 wd = _mm256_loadu_ps(wv0 + i*32);
+                          a_lo0b0 = _mm256_fmadd_ps(wd, xlo0, a_lo0b0);
+                          a_lo0b1 = _mm256_fmadd_ps(wd, xlo1, a_lo0b1); }
+                        { const __m256 wd = _mm256_loadu_ps(wv1 + i*32);
+                          a_lo1b0 = _mm256_fmadd_ps(wd, xlo0, a_lo1b0);
+                          a_lo1b1 = _mm256_fmadd_ps(wd, xlo1, a_lo1b1); }
+                        xplo0 = _mm256_permutevar8x32_ps(xlo0, idx_off_lo);
+                        xplo1 = _mm256_permutevar8x32_ps(xlo1, idx_off_lo);
+                    }
+                    // hi half: DIAG (shared weight load) + permute.
+                    {
+                        const __m256 xhi0 = _mm256_loadu_ps(xi0 + 8);
+                        const __m256 xhi1 = _mm256_loadu_ps(xi1 + 8);
+                        { const __m256 wd = _mm256_loadu_ps(wv0 + i*32 + 8);
+                          a_hi0b0 = _mm256_fmadd_ps(wd, xhi0, a_hi0b0);
+                          a_hi0b1 = _mm256_fmadd_ps(wd, xhi1, a_hi0b1); }
+                        { const __m256 wd = _mm256_loadu_ps(wv1 + i*32 + 8);
+                          a_hi1b0 = _mm256_fmadd_ps(wd, xhi0, a_hi1b0);
+                          a_hi1b1 = _mm256_fmadd_ps(wd, xhi1, a_hi1b1); }
+                        xphi0 = _mm256_permutevar8x32_ps(xhi0, idx_off_hi);
+                        xphi1 = _mm256_permutevar8x32_ps(xhi1, idx_off_hi);
+                    }
+                    // OFFDIAG lo: shared weight, both batches.
+                    { const __m256 wo = _mm256_loadu_ps(wv0 + i*32 + 16);
+                      a_lo0b0 = _mm256_fmadd_ps(wo, xplo0, a_lo0b0);
+                      a_lo0b1 = _mm256_fmadd_ps(wo, xplo1, a_lo0b1); }
+                    { const __m256 wo = _mm256_loadu_ps(wv1 + i*32 + 16);
+                      a_lo1b0 = _mm256_fmadd_ps(wo, xplo0, a_lo1b0);
+                      a_lo1b1 = _mm256_fmadd_ps(wo, xplo1, a_lo1b1); }
+                    // OFFDIAG hi: shared weight, both batches.
+                    { const __m256 wo = _mm256_loadu_ps(wv0 + i*32 + 24);
+                      a_hi0b0 = _mm256_fmadd_ps(wo, xphi0, a_hi0b0);
+                      a_hi0b1 = _mm256_fmadd_ps(wo, xphi1, a_hi0b1); }
+                    { const __m256 wo = _mm256_loadu_ps(wv1 + i*32 + 24);
+                      a_hi1b0 = _mm256_fmadd_ps(wo, xphi0, a_hi1b0);
+                      a_hi1b1 = _mm256_fmadd_ps(wo, xphi1, a_hi1b1); }
+                }
+                float* op0b0 = op_base + (b       * out_ch + o0) * 16;
+                float* op1b0 = op_base + (b       * out_ch + o1) * 16;
+                float* op0b1 = op_base + ((b + 1) * out_ch + o0) * 16;
+                float* op1b1 = op_base + ((b + 1) * out_ch + o1) * 16;
+                _mm256_storeu_ps(op0b0,     a_lo0b0); _mm256_storeu_ps(op0b0 + 8, a_hi0b0);
+                _mm256_storeu_ps(op1b0,     a_lo1b0); _mm256_storeu_ps(op1b0 + 8, a_hi1b0);
+                _mm256_storeu_ps(op0b1,     a_lo0b1); _mm256_storeu_ps(op0b1 + 8, a_hi0b1);
+                _mm256_storeu_ps(op1b1,     a_lo1b1); _mm256_storeu_ps(op1b1 + 8, a_hi1b1);
+                if (bp) { op0b0[0]+=bp[o0]; op1b0[0]+=bp[o1];
+                          op0b1[0]+=bp[o0]; op1b1[0]+=bp[o1]; }
+            }
+            // 1-channel tail for 2 batches (rem_half == 1)
+            if (rem_half) {
+                const int64_t o = out_ch - 1;
+                __m256 a_lob0=z, a_hib0=z, a_lob1=z, a_hib1=z;
+                const float* wv = wbuf + o * in_ch * 32;
+                for (int64_t i = 0; i < in_ch; ++i) {
+                    const float* xi0 = xb0 + i*16, *xi1 = xb1 + i*16;
+                    const __m256 xlo0=_mm256_loadu_ps(xi0), xlo1=_mm256_loadu_ps(xi1);
+                    const __m256 xhi0=_mm256_loadu_ps(xi0+8), xhi1=_mm256_loadu_ps(xi1+8);
+                    { const __m256 wd=_mm256_loadu_ps(wv+i*32);
+                      a_lob0=_mm256_fmadd_ps(wd,xlo0,a_lob0); a_lob1=_mm256_fmadd_ps(wd,xlo1,a_lob1); }
+                    { const __m256 wd=_mm256_loadu_ps(wv+i*32+8);
+                      a_hib0=_mm256_fmadd_ps(wd,xhi0,a_hib0); a_hib1=_mm256_fmadd_ps(wd,xhi1,a_hib1); }
+                    { const __m256 wo=_mm256_loadu_ps(wv+i*32+16);
+                      a_lob0=_mm256_fmadd_ps(wo,_mm256_permutevar8x32_ps(xlo0,idx_off_lo),a_lob0);
+                      a_lob1=_mm256_fmadd_ps(wo,_mm256_permutevar8x32_ps(xlo1,idx_off_lo),a_lob1); }
+                    { const __m256 wo=_mm256_loadu_ps(wv+i*32+24);
+                      a_hib0=_mm256_fmadd_ps(wo,_mm256_permutevar8x32_ps(xhi0,idx_off_hi),a_hib0);
+                      a_hib1=_mm256_fmadd_ps(wo,_mm256_permutevar8x32_ps(xhi1,idx_off_hi),a_hib1); }
+                }
+                float* opb0 = op_base + (b       * out_ch + o) * 16;
+                float* opb1 = op_base + ((b + 1) * out_ch + o) * 16;
+                _mm256_storeu_ps(opb0, a_lob0); _mm256_storeu_ps(opb0+8, a_hib0);
+                _mm256_storeu_ps(opb1, a_lob1); _mm256_storeu_ps(opb1+8, a_hib1);
+                if (bp) { opb0[0]+=bp[o]; opb1[0]+=bp[o]; }
+            }
+        }
+
+        // Single-batch tail (last element when batch is odd): fall back to 4-channel blocking.
+        for (; b < batch; ++b) {
+            const float* __restrict__ xb = xp_base + b * in_ch * 16;
             for (int64_t g = 0; g < n_quad; ++g) {
                 const int64_t o0=g*4, o1=o0+1, o2=o0+2, o3=o0+3;
-                __m256 a_lo0=_mm256_setzero_ps(), a_hi0=_mm256_setzero_ps();
-                __m256 a_lo1=_mm256_setzero_ps(), a_hi1=_mm256_setzero_ps();
-                __m256 a_lo2=_mm256_setzero_ps(), a_hi2=_mm256_setzero_ps();
-                __m256 a_lo3=_mm256_setzero_ps(), a_hi3=_mm256_setzero_ps();
+                __m256 a_lo0=z, a_hi0=z, a_lo1=z, a_hi1=z;
+                __m256 a_lo2=z, a_hi2=z, a_lo3=z, a_hi3=z;
                 const float* wv0=wbuf+o0*in_ch*32, *wv1=wbuf+o1*in_ch*32;
                 const float* wv2=wbuf+o2*in_ch*32, *wv3=wbuf+o3*in_ch*32;
-
                 for (int64_t i = 0; i < in_ch; ++i) {
                     const float* __restrict__ xi = xb + i * 16;
                     const __m256 xlo  = _mm256_loadu_ps(xi);
                     const __m256 xhi  = _mm256_loadu_ps(xi + 8);
                     const __m256 xplo = _mm256_permutevar8x32_ps(xlo, idx_off_lo);
                     const __m256 xphi = _mm256_permutevar8x32_ps(xhi, idx_off_hi);
-                    // Diagonal FMAs first — independent of permute results, so
-                    // the 3-cycle permute latency is hidden behind FMA work.
                     DIAG(a_lo0,a_hi0,wv0+i*32) DIAG(a_lo1,a_hi1,wv1+i*32)
                     DIAG(a_lo2,a_hi2,wv2+i*32) DIAG(a_lo3,a_hi3,wv3+i*32)
                     OFFDIAG(a_lo0,a_hi0,wv0+i*32) OFFDIAG(a_lo1,a_hi1,wv1+i*32)
@@ -1576,12 +1687,9 @@ torch::Tensor equi_linear_v3(const torch::Tensor& x,
                 _mm256_storeu_ps(op3,   a_lo3); _mm256_storeu_ps(op3+8, a_hi3);
                 if (bp) { op0[0]+=bp[o0]; op1[0]+=bp[o1]; op2[0]+=bp[o2]; op3[0]+=bp[o3]; }
             }
-
-            // 2-channel tail (rem == 2 or 3)
             if (rem >= 2) {
                 const int64_t o0=n_quad*4, o1=o0+1;
-                __m256 a_lo0=_mm256_setzero_ps(), a_hi0=_mm256_setzero_ps();
-                __m256 a_lo1=_mm256_setzero_ps(), a_hi1=_mm256_setzero_ps();
+                __m256 a_lo0=z, a_hi0=z, a_lo1=z, a_hi1=z;
                 const float* wv0=wbuf+o0*in_ch*32, *wv1=wbuf+o1*in_ch*32;
                 for (int64_t i = 0; i < in_ch; ++i) {
                     const float* __restrict__ xi = xb + i * 16;
@@ -1597,11 +1705,9 @@ torch::Tensor equi_linear_v3(const torch::Tensor& x,
                 _mm256_storeu_ps(op1, a_lo1); _mm256_storeu_ps(op1+8, a_hi1);
                 if (bp) { op0[0]+=bp[o0]; op1[0]+=bp[o1]; }
             }
-
-            // 1-channel tail (rem == 1 or 3)
             if (rem & 1) {
                 const int64_t o = out_ch - 1;
-                __m256 acc_lo=_mm256_setzero_ps(), acc_hi=_mm256_setzero_ps();
+                __m256 acc_lo=z, acc_hi=z;
                 const float* wv_o = wbuf + o * in_ch * 32;
                 for (int64_t i = 0; i < in_ch; ++i) {
                     const float* __restrict__ xi = xb + i * 16;
