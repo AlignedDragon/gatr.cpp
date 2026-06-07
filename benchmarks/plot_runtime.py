@@ -28,7 +28,7 @@ ver_funcs = {
     'v0': ['geometric_product_v0','equi_join_v0','equi_linear_ver_0','equi_rms_norm_ver_0','scaler_gated_gelu_ver_0','equi_geometric_attention_ver_0'],
     'v1': ['geometric_product_v1','equi_join_v1','equi_linear_ver_1','equi_rms_norm_ver_1','scaler_gated_gelu_ver_1','equi_geometric_attention_ver_1'],
     'v2': ['geometric_product_v2','equi_join_v2','equi_linear_ver_2','equi_rms_norm_ver_2','scaler_gated_gelu_ver_2','equi_geometric_attention_ver_2'],
-    'v3': ['geometric_product_v3','equi_join_v3','equi_linear_ver_3','equi_rms_norm_ver_3','scaler_gated_gelu_ver_2','equi_geometric_attention_ver_3'],
+    'v3': ['geometric_product_v3','equi_join_v3','equi_linear_ver_3','equi_rms_norm_ver_3','scaler_gated_gelu_ver_3','equi_geometric_attention_ver_3'],
 }
 
 tot = {n: {v: sum(times[n].get(f,0) for f in fs) for v,fs in ver_funcs.items()}
@@ -43,7 +43,7 @@ func_info = [
     ('Equi.\nJoin',    ['equi_join_v0','equi_join_v1','equi_join_v2','equi_join_v3']),
     ('Equi.\nLinear',  ['equi_linear_ver_0','equi_linear_ver_1','equi_linear_ver_2','equi_linear_ver_3']),
     ('RMS\nNorm',      ['equi_rms_norm_ver_0','equi_rms_norm_ver_1','equi_rms_norm_ver_2','equi_rms_norm_ver_3']),
-    ('Gated\nGELU',   ['scaler_gated_gelu_ver_0','scaler_gated_gelu_ver_1','scaler_gated_gelu_ver_2','scaler_gated_gelu_ver_2']),
+    ('Gated\nGELU',   ['scaler_gated_gelu_ver_0','scaler_gated_gelu_ver_1','scaler_gated_gelu_ver_2','scaler_gated_gelu_ver_3']),
     ('Attention',      ['equi_geometric_attention_ver_0','equi_geometric_attention_ver_1','equi_geometric_attention_ver_2','equi_geometric_attention_ver_3']),
 ]
 
@@ -61,9 +61,10 @@ for fname, funcs in func_info:
             bx = x + ni*(4*bw+0.1) + vi*bw
             ax.bar(bx, sp, bw, color=color, edgecolor='white', lw=0.5,
                    alpha=nalpha, hatch=hatch, zorder=3)
-            if sp >= 5:
-                ax.text(bx+bw/2, sp*1.2, f'{sp:.0f}×', ha='center',
-                        va='bottom', fontsize=6.5, color='#222', fontweight='bold')
+            if sp >= 1.5:  # label every non-trivial bar (incl. low-speedup ops like gelu)
+                lbl = f'{sp:.0f}×' if sp >= 10 else f'{sp:.1f}×'
+                ax.text(bx+bw/2, sp*1.15, lbl, ha='center', va='bottom',
+                        rotation=90, fontsize=6, color='#222', fontweight='bold')
         mid = x + ni*(4*bw+0.1) + 1.5*bw
         xticks.append(mid)
         xlabels.append(f'{fname}\nn={n_val}')
@@ -86,7 +87,7 @@ l1 = ax.legend(handles=vp, loc='upper left', fontsize=9, ncol=2, framealpha=0.9,
 ax.add_artist(l1)
 ax.legend(handles=np_, loc='upper center', fontsize=9, framealpha=0.9, title='Problem size')
 plt.tight_layout()
-plt.savefig('benchmarks/results/run_2026_06_02/speedup_per_function.png', dpi=150, bbox_inches='tight')
+plt.savefig('benchmarks/results/plots/per_function_speedup.png', dpi=150, bbox_inches='tight')
 print('Saved speedup_per_function.png')
 plt.close()
 
@@ -127,5 +128,5 @@ ax2.set_xlim(-0.3, 3.8)
 
 plt.suptitle('EzGATr Runtime Scaling  |  Threads=1  |  Tiger Lake i7-1165G7', fontsize=11)
 plt.tight_layout()
-plt.savefig('benchmarks/results/run_2026_06_02/runtime_scaling.png', dpi=150, bbox_inches='tight')
+plt.savefig('benchmarks/results/plots/per_function_scaling.png', dpi=150, bbox_inches='tight')
 print('Saved runtime_scaling.png')

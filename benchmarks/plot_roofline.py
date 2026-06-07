@@ -41,7 +41,10 @@ for n in [1,2,3,4]:
     except: pass
 for fn in ['benchmarks/results/roofline/papi_attention_n3.json',
            'benchmarks/results/roofline/papi_attention_n4.json']:
-    d = json.load(open(fn))
+    try:
+        d = json.load(open(fn))
+    except FileNotFoundError:
+        continue  # no PAPI on this machine — PLOT 1 falls back to the analytical model
     n = d['n']
     for r in d['results']:
         if r.get('flops_per_call') and r.get('memory_bytes_per_call'):
@@ -71,7 +74,7 @@ funcs = [
      ['equi_rms_norm_ver_0','equi_rms_norm_ver_1','equi_rms_norm_ver_2','equi_rms_norm_ver_3'],
      'RMS Norm', '#9C27B0'),
     ('scaler_gated_gelu_ver_2',
-     ['scaler_gated_gelu_ver_0','scaler_gated_gelu_ver_1','scaler_gated_gelu_ver_2','scaler_gated_gelu_ver_2'],
+     ['scaler_gated_gelu_ver_0','scaler_gated_gelu_ver_1','scaler_gated_gelu_ver_2','scaler_gated_gelu_ver_3'],
      'Gated GELU', '#F44336'),
     ('equi_geometric_attention_ver_3',
      ['equi_geometric_attention_ver_0','equi_geometric_attention_ver_1',
@@ -92,6 +95,10 @@ for papi_tgt, ver_tgts, fname, color in funcs:
     for n, filled in [(3, True), (4, False)]:
         fl = papi_flops.get((papi_tgt, n))
         by = papi_bytes.get((papi_tgt, n))
+        if not fl or not by:  # no PAPI counters — use the analytical cost model
+            est = estimate_target_cost(papi_tgt, n) or {}
+            fl = est.get('estimated_flops_per_call')
+            by = est.get('estimated_bytes_per_call')
         if not fl or not by:
             continue
         ai = fl / by
@@ -137,7 +144,7 @@ ax.add_artist(l1)
 l2 = ax.legend(handles=ver_leg+n_leg, loc='upper left', fontsize=9, title='Version / Size', framealpha=0.9, ncol=2)
 
 plt.tight_layout()
-plt.savefig('benchmarks/results/run_2026_06_02/roofline_all_versions.png', dpi=150, bbox_inches='tight')
+plt.savefig('benchmarks/results/plots/roofline_all_versions.png', dpi=150, bbox_inches='tight')
 print('Saved roofline_all_versions.png')
 plt.close()
 
@@ -148,7 +155,7 @@ ver_funcs = {
     'v0': ['geometric_product_v0','equi_join_v0','equi_linear_ver_0','equi_rms_norm_ver_0','scaler_gated_gelu_ver_0','equi_geometric_attention_ver_0'],
     'v1': ['geometric_product_v1','equi_join_v1','equi_linear_ver_1','equi_rms_norm_ver_1','scaler_gated_gelu_ver_1','equi_geometric_attention_ver_1'],
     'v2': ['geometric_product_v2','equi_join_v2','equi_linear_ver_2','equi_rms_norm_ver_2','scaler_gated_gelu_ver_2','equi_geometric_attention_ver_2'],
-    'v3': ['geometric_product_v3','equi_join_v3','equi_linear_ver_3','equi_rms_norm_ver_3','scaler_gated_gelu_ver_2','equi_geometric_attention_ver_3'],
+    'v3': ['geometric_product_v3','equi_join_v3','equi_linear_ver_3','equi_rms_norm_ver_3','scaler_gated_gelu_ver_3','equi_geometric_attention_ver_3'],
 }
 ver_style = {
     'v0': ('#B0BEC5','o','v0 — Baseline C++'),
@@ -202,5 +209,5 @@ ax.grid(True, which='both', alpha=0.2, ls='--')
 ax.legend(loc='lower right', fontsize=9.5, framealpha=0.9)
 
 plt.tight_layout()
-plt.savefig('benchmarks/results/run_2026_06_02/roofline_project_versions.png', dpi=150, bbox_inches='tight')
+plt.savefig('benchmarks/results/plots/roofline_project_versions.png', dpi=150, bbox_inches='tight')
 print('Saved roofline_project_versions.png')

@@ -70,7 +70,7 @@ from ezgatr.opt import (
     #equi_join_v3,
     equi_linear_ver_3,
     equi_rms_norm_ver_3,
-    # scaler_gated_gelu_ver_3,
+    scaler_gated_gelu_ver_3,
     equi_geometric_attention_ver_3,
     #equi_geometric_attention_mv_only_ver_3,
 )
@@ -369,8 +369,8 @@ def build_target(name: str, device: torch.device, n: int):
         return lambda: equi_linear_ver_3(inputs["mv"], inputs["lin_w"], inputs["lin_b"])
     if name == "equi_rms_norm_ver_3":
         return lambda: equi_rms_norm_ver_3(inputs["mv"], inputs["norm_w"], 1e-7)
-    # if name == "scaler_gated_gelu_ver_3":
-    #     return lambda: scaler_gated_gelu_ver_3(inputs["mv"], "tanh")
+    if name == "scaler_gated_gelu_ver_3":
+        return lambda: scaler_gated_gelu_ver_3(inputs["mv"], "tanh")
     if name == "equi_geometric_attention_ver_3":
         return lambda: equi_geometric_attention_ver_3(
             inputs["attn_q"],
@@ -436,7 +436,7 @@ def get_target_names() -> list[str]:
         "scaler_gated_gelu_ver_0",
         "scaler_gated_gelu_ver_1",
         "scaler_gated_gelu_ver_2",
-        #"scaler_gated_gelu_ver_3",
+        "scaler_gated_gelu_ver_3",
         # "mv_only_gatr_model",
         #"mv_only_gatr_model_ver_0",
         #"mv_only_gatr_model_ver_1",
