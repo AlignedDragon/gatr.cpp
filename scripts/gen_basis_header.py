@@ -29,6 +29,12 @@ OUT_GP_ACC2_INC = REPO / "src/ezgatr/_csrc/gp_unrolled_acc2.inc"
 OUT_GP_ACC4_INC = REPO / "src/ezgatr/_csrc/gp_unrolled_acc4.inc"
 OUT_JOIN_ACC2_INC = REPO / "src/ezgatr/_csrc/join_unrolled_acc2.inc"
 OUT_JOIN_ACC4_INC = REPO / "src/ezgatr/_csrc/join_unrolled_acc4.inc"
+OUT_GP_UNROLL2_INC = REPO / "src/ezgatr/_csrc/gp_loop_unroll2.inc"
+OUT_GP_UNROLL4_INC = REPO / "src/ezgatr/_csrc/gp_loop_unroll4.inc"
+OUT_JOIN_UNROLL2_INC = REPO / "src/ezgatr/_csrc/join_loop_unroll2.inc"
+OUT_JOIN_UNROLL4_INC = REPO / "src/ezgatr/_csrc/join_loop_unroll4.inc"
+OUT_GP_SOA_AVX_INC = REPO / "src/ezgatr/_csrc/gp_soa_avx.inc"
+OUT_JOIN_SOA_AVX_INC = REPO / "src/ezgatr/_csrc/join_soa_avx.inc"
 
 DUAL_PERM = list(range(15, -1, -1))
 DUAL_SIGN = [1, -1, 1, -1, 1, 1, -1, 1, 1, -1, 1, -1, 1, -1, 1, 1]
@@ -268,6 +274,181 @@ def fmt_block_ilp(name_prefix: str, kernel: torch.Tensor, K: int) -> tuple[str, 
     return "\n".join(lines), total_nnz
 
 
+def _blade_triples(kernel: torch.Tensor) -> tuple[list[list[tuple[int, int, int]]], int]:
+    """Return per-blade sorted sparse triples (j, k, sign) and total nnz."""
+    blades: list[list[tuple[int, int, int]]] = []
+    total_nnz = 0
+    for i in range(16):
+        triples: list[tuple[int, int, int]] = []
+        for j in range(16):
+            for k in range(16):
+                v = int(kernel[i, j, k].item())
+                if v != 0:
+                    triples.append((j, k, v))
+        triples.sort()
+        blades.append(triples)
+        total_nnz += len(triples)
+    return blades, total_nnz
+
+
+def fmt_loop_unroll(name_prefix: str, kernel: torch.Tensor, K: int,
+                    is_join: bool) -> tuple[str, int]:
+    """Emit a kernel that unrolls the multivector loop by K lanes.
+
+    Each iteration processes K consecutive multivectors. Per (output blade,
+    lane) the sum-of-products is split into 2 accumulators (round-robin over
+    terms) so the serial FP-add chain is broken — i.e. "unroll the loop, then
+    accumulate". This exposes up to 2*K independent FMA chains to the
+    out-of-order engine while keeping only ~2*K live accumulators (one output
+    blade is finished before the next begins), so register pressure stays low.
+
+    The `N % K` tail reuses the scalar `<prefix>_blade_NN<T>` inlines.
+    """
+    blades, total_nnz = _blade_triples(kernel)
+
+    L: list[str] = []
+    L.append("template <typename T" + (", bool HasRef" if is_join else "") + ">")
+    sig = (f"static inline void {name_prefix}_loop_unroll{K}("
+           "const T* __restrict__ X, const T* __restrict__ Y, ")
+    if is_join:
+        sig += "const T* __restrict__ R, "
+    sig += "T* __restrict__ O, int64_t N) {"
+    L.append(sig)
+    L.append("    int64_t n = 0;")
+    L.append(f"    for (; n + {K} <= N; n += {K}) {{")
+    for lane in range(K):
+        L.append(f"        const T* x{lane} = X + 16 * (n + {lane});")
+        L.append(f"        const T* y{lane} = Y + 16 * (n + {lane});")
+        L.append(f"        T* o{lane} = O + 16 * (n + {lane});")
+
+    for i, triples in enumerate(blades):
+        L.append(f"        {{  // blade {i:02d}")
+        if not triples:
+            for lane in range(K):
+                L.append(f"            o{lane}[{i}] = T(0);")
+            L.append("        }")
+            continue
+        nslots = min(2, len(triples))
+        for lane in range(K):
+            slot_terms: list[list[str]] = [[] for _ in range(nslots)]
+            for t_idx, (j, k, s) in enumerate(triples):
+                slot = t_idx % nslots
+                term = f"x{lane}[{j}]*y{lane}[{k}]"
+                if not slot_terms[slot]:
+                    slot_terms[slot].append(term if s > 0 else f"-{term}")
+                else:
+                    slot_terms[slot].append((" + " if s > 0 else " - ") + term)
+            names = []
+            for sl in range(nslots):
+                nm = f"a{lane}_{sl}"
+                names.append(nm)
+                L.append(f"            T {nm} = {''.join(slot_terms[sl])};")
+            L.append(f"            o{lane}[{i}] = {' + '.join(names)};")
+        L.append("        }")
+
+    if is_join:
+        L.append("        if constexpr (HasRef) {")
+        for lane in range(K):
+            L.append(f"            const T s{lane} = R[16 * (n + {lane}) + 14];")
+        for lane in range(K):
+            L.append(f"            for (int i = 0; i < 16; ++i) o{lane}[i] *= s{lane};")
+        L.append("        }")
+    L.append("    }")
+
+    L.append("    for (; n < N; ++n) {")
+    L.append("        const T* x = X + 16 * n;")
+    L.append("        const T* y = Y + 16 * n;")
+    L.append("        T* o = O + 16 * n;")
+    for i in range(16):
+        L.append(f"        o[{i}] = {name_prefix}_blade_{i:02d}<T>(x, y);")
+    if is_join:
+        L.append("        if constexpr (HasRef) {")
+        L.append("            const T s = R[16 * n + 14];")
+        L.append("            for (int i = 0; i < 16; ++i) o[i] *= s;")
+        L.append("        }")
+    L.append("    }")
+    L.append("}")
+    return "\n".join(L), total_nnz
+
+
+def fmt_soa_avx(name_prefix: str, kernel: torch.Tensor) -> tuple[str, int]:
+    """Emit a float-specialized AVX2 SoA block kernel.
+
+    Operates on transposed Struct-of-Arrays tiles: xb[j] / yb[k] each hold the
+    8 lanes (8 consecutive multivectors) of component j / k. Each output blade
+    is a sequence of packed FMAs over the 8 lanes (2 accumulators to break the
+    add chain) — no gather, no reduction. The caller transposes AoS->SoA, calls
+    this, then transposes back.
+    """
+    blades, total_nnz = _blade_triples(kernel)
+
+    L: list[str] = []
+    L.append(f"static inline void {name_prefix}_soa_block_f32(")
+    L.append("        const float xb[16][8], const float yb[16][8], float ob[16][8]) {")
+    for i, triples in enumerate(blades):
+        if not triples:
+            L.append(f"    _mm256_store_ps(ob[{i}], _mm256_setzero_ps());")
+            continue
+        nslots = min(2, len(triples))
+        L.append(f"    {{  // blade {i:02d}")
+        L.append("        __m256 a0 = _mm256_setzero_ps();")
+        if nslots == 2:
+            L.append("        __m256 a1 = _mm256_setzero_ps();")
+        for t_idx, (j, k, s) in enumerate(triples):
+            slot = t_idx % nslots
+            fn = "_mm256_fmadd_ps" if s > 0 else "_mm256_fnmadd_ps"
+            L.append(
+                f"        a{slot} = {fn}("
+                f"_mm256_load_ps(xb[{j}]), _mm256_load_ps(yb[{k}]), a{slot});"
+            )
+        if nslots == 2:
+            L.append(f"        _mm256_store_ps(ob[{i}], _mm256_add_ps(a0, a1));")
+        else:
+            L.append(f"        _mm256_store_ps(ob[{i}], a0);")
+        L.append("    }")
+    L.append("}")
+    return "\n".join(L), total_nnz
+
+
+def write_loop_unroll(out_path: Path, name_prefix: str, kernel: torch.Tensor,
+                      K: int, is_join: bool, sources_note: str) -> int:
+    body, nnz = fmt_loop_unroll(name_prefix, kernel, K, is_join)
+    text = (
+        "// AUTO-GENERATED by scripts/gen_basis_header.py — do not edit.\n"
+        f"// {sources_note}\n"
+        f"// Multivector loop unrolled by K={K} lanes; 2 accumulators per "
+        "(blade, lane).\n"
+        f"// Total non-zero terms across all 16 output blades: {nnz}.\n"
+        "// Designed to be #include'd inside the ezgatr::opt namespace,\n"
+        f"// after {name_prefix}_unrolled.inc (uses the scalar blade inlines for the tail).\n\n"
+        f"{body}\n"
+    )
+    out_path.write_text(text)
+    print(f"wrote {out_path.relative_to(REPO)} "
+          f"({out_path.stat().st_size} bytes, K={K}, nnz={nnz})")
+    return nnz
+
+
+def write_soa_avx(out_path: Path, name_prefix: str, kernel: torch.Tensor,
+                  sources_note: str) -> int:
+    body, nnz = fmt_soa_avx(name_prefix, kernel)
+    text = (
+        "// AUTO-GENERATED by scripts/gen_basis_header.py — do not edit.\n"
+        f"// {sources_note}\n"
+        "// AVX2 (float) SoA block: packed 8-lane FMAs over a transposed tile,\n"
+        "// 2 accumulators per blade. Requires <immintrin.h>, AVX2 + FMA.\n"
+        f"// Total non-zero terms across all 16 output blades: {nnz}.\n"
+        "// Designed to be #include'd inside the ezgatr::opt namespace.\n\n"
+        "#if defined(__AVX2__) && defined(__FMA__)\n"
+        f"{body}\n"
+        "#endif  // __AVX2__ && __FMA__\n"
+    )
+    out_path.write_text(text)
+    print(f"wrote {out_path.relative_to(REPO)} "
+          f"({out_path.stat().st_size} bytes, nnz={nnz})")
+    return nnz
+
+
 def write_unrolled(out_path: Path, name_prefix: str, kernel: torch.Tensor,
                    sources_note: str) -> int:
     body, nnz = fmt_unrolled(name_prefix, kernel)
@@ -368,6 +549,9 @@ namespace ezgatr {{ namespace opt {{
     write_block_ilp(OUT_GP_ILP4_INC, "gp", gp, K=4, sources_note=gp_note)
     write_unrolled_acc(OUT_GP_ACC2_INC, "gp", gp, K=2, sources_note=gp_note)
     write_unrolled_acc(OUT_GP_ACC4_INC, "gp", gp, K=4, sources_note=gp_note)
+    write_loop_unroll(OUT_GP_UNROLL2_INC, "gp", gp, K=2, is_join=False, sources_note=gp_note)
+    write_loop_unroll(OUT_GP_UNROLL4_INC, "gp", gp, K=4, is_join=False, sources_note=gp_note)
+    write_soa_avx(OUT_GP_SOA_AVX_INC, "gp", gp, sources_note=gp_note)
 
     join = compute_join_kernel(op)
     write_unrolled(
@@ -385,6 +569,9 @@ namespace ezgatr {{ namespace opt {{
     write_block_ilp(OUT_JOIN_ILP4_INC, "join", join, K=4, sources_note=join_note)
     write_unrolled_acc(OUT_JOIN_ACC2_INC, "join", join, K=2, sources_note=join_note)
     write_unrolled_acc(OUT_JOIN_ACC4_INC, "join", join, K=4, sources_note=join_note)
+    write_loop_unroll(OUT_JOIN_UNROLL2_INC, "join", join, K=2, is_join=True, sources_note=join_note)
+    write_loop_unroll(OUT_JOIN_UNROLL4_INC, "join", join, K=4, is_join=True, sources_note=join_note)
+    write_soa_avx(OUT_JOIN_SOA_AVX_INC, "join", join, sources_note=join_note)
 
 
 if __name__ == "__main__":

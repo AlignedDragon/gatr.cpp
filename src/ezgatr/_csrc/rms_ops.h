@@ -34,6 +34,9 @@ torch::Tensor equi_rms_norm_ver_3(const torch::Tensor& x,
                             const c10::optional<torch::Tensor>& weight,
                             const c10::optional<double>& eps_opt);
 
+torch::Tensor scaler_gated_gelu_ver_3(const torch::Tensor& x,
+                                const std::string& approximate);
+
 
 
 

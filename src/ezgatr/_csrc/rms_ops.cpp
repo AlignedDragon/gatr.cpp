@@ -9,7 +9,12 @@
 
 
 
+#if defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h>
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 #include <cmath>
 #include <algorithm>
 #include <type_traits>
@@ -202,7 +207,10 @@ static void gelu_gate_kernel_avx2(const float* __restrict__ X,
 }
 #endif  // __AVX2__ && __FMA__
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> main
 
 
 void check_multivector(const torch::Tensor& t, const char* name) {
@@ -1141,7 +1149,6 @@ torch::Tensor scaler_gated_gelu_ver_3(
     // float64 / "none" / non-AVX2: numerically identical scalar path.
     return scaler_gated_gelu_ver_2(x, approximate);
 }
-
 
 
 

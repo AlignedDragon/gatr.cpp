@@ -221,10 +221,10 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("x"),
             py::arg("approximate") = "tanh",
             "Scalar gated GELU version 2.");
-      // m.def("scaler_gated_gelu_ver_3", &ezgatr::opt::scaler_gated_gelu_ver_2,
-      //       py::arg("x"),
-      //       py::arg("approximate") = "tanh",
-      //       "Scalar gated GELU version 3 fallback alias.");
+      m.def("scaler_gated_gelu_ver_3", &ezgatr::opt::scaler_gated_gelu_ver_3,
+            py::arg("x"),
+            py::arg("approximate") = "tanh",
+            "Scalar gated GELU version 3 (AVX2-vectorized tanh, float32 fast path).");
 
       m.def("equi_geometric_attention_mv_only",
             &ezgatr::opt::equi_geometric_attention_mv_only,
@@ -282,4 +282,37 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("x"), py::arg("weight"),
             py::arg("bias") = py::none(), py::arg("normalize_basis") = true,
             "Pin(3,0,1)-equivariant linear map version 3 alias (AVX2/FMA SIMD).");
+
+      m.def("geometric_product_v2_5", &ezgatr::opt::geometric_product_v2_5,
+            py::arg("x"), py::arg("y"),
+            "Geometric product: multivector loop unrolled by K=2 (2 accumulators/blade/lane).");
+
+      m.def("geometric_product_v2_6", &ezgatr::opt::geometric_product_v2_6,
+            py::arg("x"), py::arg("y"),
+            "Geometric product: multivector loop unrolled by K=4 (2 accumulators/blade/lane).");
+
+      m.def("geometric_product_v2_7", &ezgatr::opt::geometric_product_v2_7,
+            py::arg("x"), py::arg("y"),
+            "Geometric product: cache-blocked (tiled) multivector loop.");
+
+      m.def("geometric_product_v3", &ezgatr::opt::geometric_product_v3,
+            py::arg("x"), py::arg("y"),
+            "Geometric product: AVX2 SoA vectorization across multivectors (fp32).");
+
+      m.def("equi_join_v2_5", &ezgatr::opt::equi_join_v2_5,
+            py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+            "Equivariant join: multivector loop unrolled by K=2 (2 accumulators/blade/lane).");
+
+      m.def("equi_join_v2_6", &ezgatr::opt::equi_join_v2_6,
+            py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+            "Equivariant join: multivector loop unrolled by K=4 (2 accumulators/blade/lane).");
+
+      m.def("equi_join_v2_7", &ezgatr::opt::equi_join_v2_7,
+            py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+            "Equivariant join: cache-blocked (tiled) multivector loop.");
+
+      m.def("equi_join_v3", &ezgatr::opt::equi_join_v3,
+            py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
+            "Equivariant join: AVX2 SoA vectorization across multivectors (fp32).");
+
 }

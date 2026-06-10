@@ -1,3 +1,25 @@
+## Advanced Systems Lab - Team #26
+
+CPU-inference optimized variant of EzGATr (Easy Geometric Algebra Transformer).
+
+Our optimizations target:
+```bibtex
+GenuineIntel, 11th Gen Core i7-1165G7, Tiger Lake
+```
+
+Team members:
+
+- Anastasija Tortevska
+- Glenn Schönbächler
+- Kristijan Zafirovski
+- Mukhammadali Sayfiddinov
+
+Slides: https://docs.google.com/presentation/d/1znu0kcxWRBG2q-T0RSiTfL3pvKltQKpec6rvvNRY7oQ/edit?usp=sharing
+
+---
+
+Below is the original README for the project.
+
 <html>
     <h1 align="center">
       <img src="https://raw.githubusercontent.com/Guest400123064/ezgatr/refs/heads/main/docs/images/ezgatr_logo.png" width="256"/>
@@ -17,12 +39,6 @@
 [![Python 3.10](https://img.shields.io/badge/python-%203.9%20|%203.10%20|%203.11-blue.svg)](https://www.python.org/downloads/release/python-3100/)
 [![DOI](https://zenodo.org/badge/836505200.svg)](https://doi.org/10.5281/zenodo.13920438)
 
-
-## ASL_EzGATr
-We are implementing CPU-inference optimized variant of EzGATr. Our optimizations target:
-```bibtex
-GenuineIntel, 11th Gen Core i7-1165G7, Tiger Lake
-```
 
 ## What is EzGATr?
 **EzGATr** (Easy Geometric Algebra Transformer) intends to be a simple-to-use and lightweight Python library for building 3D [Geometric Algebra Transformers (GATr)](https://arxiv.org/abs/2305.18415). It is a collection of operators, modules, utilities, etc. build on top of [PyTorch](https://pytorch.org/). In addition, EzGATr also seeks to bridge the gap between the mathematical formulations and corresponding implementations through extensive documentation and explanations to facilitate learning and potential future optimizations.
