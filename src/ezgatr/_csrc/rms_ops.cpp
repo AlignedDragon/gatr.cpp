@@ -115,6 +115,94 @@ static void scalar_gated_gelu_kernel(
     }
 }
 
+#if defined(__AVX2__) && defined(__FMA__)
+// Vectorized expf (Cephes minimax, ~1 ulp for float32). Standard range reduction
+// e^x = 2^k * e^r with k = round(x*log2(e)) and r = x - k*ln2.
+static inline __m256 exp256_ps(__m256 x) {
+    const __m256 hi = _mm256_set1_ps(88.3762626647949f);
+    const __m256 lo = _mm256_set1_ps(-88.3762626647949f);
+    const __m256 LOG2EF = _mm256_set1_ps(1.44269504088896341f);
+    const __m256 C1 = _mm256_set1_ps(0.693359375f);      // ln2 split, hi part
+    const __m256 C2 = _mm256_set1_ps(-2.12194440e-4f);   // ln2 split, lo part
+    const __m256 one = _mm256_set1_ps(1.f);
+    const __m256 half = _mm256_set1_ps(0.5f);
+
+    x = _mm256_min_ps(_mm256_max_ps(x, lo), hi);
+    __m256 fx = _mm256_floor_ps(_mm256_fmadd_ps(x, LOG2EF, half));
+    // r = x - fx*ln2  (two-step to preserve precision)
+    x = _mm256_sub_ps(x, _mm256_mul_ps(fx, C1));
+    x = _mm256_sub_ps(x, _mm256_mul_ps(fx, C2));
+
+    const __m256 z = _mm256_mul_ps(x, x);
+    __m256 y = _mm256_set1_ps(1.9875691500E-4f);
+    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.3981999507E-3f));
+    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(8.3334519073E-3f));
+    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(4.1665795894E-2f));
+    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.6666665459E-1f));
+    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(5.0000001201E-1f));
+    y = _mm256_fmadd_ps(y, z, x);
+    y = _mm256_add_ps(y, one);
+
+    // 2^fx via direct exponent-field construction.
+    __m256i emm0 = _mm256_cvttps_epi32(fx);
+    emm0 = _mm256_slli_epi32(_mm256_add_epi32(emm0, _mm256_set1_epi32(0x7f)), 23);
+    return _mm256_mul_ps(y, _mm256_castsi256_ps(emm0));
+}
+
+// tanh(x) = 1 - 2/(e^{2x}+1). Accurate to ~1e-6 in float32 over the gelu range.
+static inline __m256 tanh256_ps(__m256 x) {
+    const __m256 one = _mm256_set1_ps(1.f);
+    const __m256 two = _mm256_set1_ps(2.f);
+    __m256 e = exp256_ps(_mm256_mul_ps(x, two));
+    return _mm256_sub_ps(one, _mm256_div_ps(two, _mm256_add_ps(e, one)));
+}
+
+// AVX2 scaler-gated GELU (tanh approx, float32). Computes 8 gates per iteration
+// with a vectorized tanh, then broadcasts each gate across its 16-lane
+// multivector. The expensive transcendental is amortized 8-wide instead of the
+// per-multivector scalar std::tanh call in the v0-v2 kernel.
+static void gelu_gate_kernel_avx2(const float* __restrict__ X,
+                                  float* __restrict__ O, int64_t N) {
+    const __m256 half   = _mm256_set1_ps(0.5f);
+    const __m256 one    = _mm256_set1_ps(1.f);
+    const __m256 kAlpha = _mm256_set1_ps(0.7978845608028654f);
+    const __m256 kBeta  = _mm256_set1_ps(0.044715f);
+    // Scalar blade of 8 consecutive multivectors: float offsets 0,16,...,112.
+    const __m256i sidx = _mm256_setr_epi32(0, 16, 32, 48, 64, 80, 96, 112);
+
+    int64_t n = 0;
+    for (; n + 8 <= N; n += 8) {
+        const float* base = X + (n << 4);
+        const __m256 s  = _mm256_i32gather_ps(base, sidx, 4);
+        const __m256 s2 = _mm256_mul_ps(s, s);
+        // arg = alpha * s * (1 + beta*s^2)
+        const __m256 arg = _mm256_mul_ps(_mm256_mul_ps(kAlpha, s),
+                                         _mm256_fmadd_ps(kBeta, s2, one));
+        const __m256 gate = _mm256_mul_ps(_mm256_mul_ps(half, s),
+                                          _mm256_add_ps(one, tanh256_ps(arg)));
+        alignas(32) float g[8];
+        _mm256_store_ps(g, gate);
+        for (int j = 0; j < 8; ++j) {
+            const float* xi = base + (j << 4);
+            float* oi = O + ((n + j) << 4);
+            const __m256 gj = _mm256_set1_ps(g[j]);
+            _mm256_storeu_ps(oi,     _mm256_mul_ps(_mm256_loadu_ps(xi),     gj));
+            _mm256_storeu_ps(oi + 8, _mm256_mul_ps(_mm256_loadu_ps(xi + 8), gj));
+        }
+    }
+    // Scalar tail (< 8 multivectors).
+    for (; n < N; ++n) {
+        const float* xi = X + (n << 4);
+        float* oi = O + (n << 4);
+        const float sc = xi[0];
+        const float gate = 0.5f * sc *
+            (1.f + std::tanh(0.7978845608028654f * (sc + 0.044715f * sc * sc * sc)));
+        for (int i = 0; i < 16; ++i) oi[i] = xi[i] * gate;
+    }
+}
+#endif  // __AVX2__ && __FMA__
+
+
 
 
 void check_multivector(const torch::Tensor& t, const char* name) {
@@ -309,7 +397,6 @@ void rms_norm_kernel(
 
 
 
-//normal intrins intel
 template <typename scalar_t, bool HasWeight>
 void rms_norm_kernel_intrins(
     const scalar_t* __restrict__ X,
@@ -322,299 +409,1329 @@ void rms_norm_kernel_intrins(
     const scalar_t eps_t = static_cast<scalar_t>(eps);
 
     if constexpr (std::is_same_v<scalar_t, float>) {
+        // Active blades: 0,2,3,4 (lo 8) and 8,9,10,14 (hi 8).
+        // Load all 16 floats per row with two vmovups, apply mask to zero
+        // inactive lanes, then fmadd — avoids the expensive _mm256_set_ps
+        // scatter-gather (8 scalar extractions per vector) and works for
+        // any M including M=4 where the old 8-row loop never fired.
+        const __m256 mask_lo = _mm256_setr_ps(1.f,0.f,1.f,1.f,1.f,0.f,0.f,0.f);
+        const __m256 mask_hi = _mm256_setr_ps(1.f,1.f,1.f,0.f,0.f,0.f,1.f,0.f);
 
         for (int64_t g = 0; g < groups; ++g) {
+            const float* group_in  = X + g * (M << 4);
+            float*       group_out = O + g * (M << 4);
 
-            const scalar_t* group_in  = X + g * (M << 4);
-            scalar_t* group_out       = O + g * (M << 4);
-
-
-            __m256 acc  = _mm256_setzero_ps();
-
+            // Pass 1: masked reduction with 4 independent accumulators to
+            // hide the 4-cycle FMA latency on Tiger Lake.
+            __m256 acc0 = _mm256_setzero_ps();
+            __m256 acc1 = _mm256_setzero_ps();
+            __m256 acc2 = _mm256_setzero_ps();
+            __m256 acc3 = _mm256_setzero_ps();
             int64_t m = 0;
-
-            for (; m + 7 < M; m += 8) {
-
-                const scalar_t* x0 = group_in + (m << 4);
-                const scalar_t* x1 = x0 + 16;
-                const scalar_t* x2 = x1 + 16;
-                const scalar_t* x3 = x2 + 16;
-                const scalar_t* x4 = x3 + 16;
-                const scalar_t* x5 = x4 + 16;
-                const scalar_t* x6 = x5 + 16;
-                const scalar_t* x7 = x6 + 16;
-
-                // load selected scalars (gather-light, no real gather)
-                __m256 v0 = _mm256_set_ps(
-                    x7[0], x6[0], x5[0], x4[0],
-                    x3[0], x2[0], x1[0], x0[0]);
-
-                __m256 v2 = _mm256_set_ps(
-                    x7[2], x6[2], x5[2], x4[2],
-                    x3[2], x2[2], x1[2], x0[2]);
-
-                __m256 v3 = _mm256_set_ps(
-                    x7[3], x6[3], x5[3], x4[3],
-                    x3[3], x2[3], x1[3], x0[3]);
-
-                __m256 v4 = _mm256_set_ps(
-                    x7[4], x6[4], x5[4], x4[4],
-                    x3[4], x2[4], x1[4], x0[4]);
-
-                __m256 v8 = _mm256_set_ps(
-                    x7[8], x6[8], x5[8], x4[8],
-                    x3[8], x2[8], x1[8], x0[8]);
-
-                __m256 v9 = _mm256_set_ps(
-                    x7[9], x6[9], x5[9], x4[9],
-                    x3[9], x2[9], x1[9], x0[9]);
-
-                __m256 v10 = _mm256_set_ps(
-                    x7[10], x6[10], x5[10], x4[10],
-                    x3[10], x2[10], x1[10], x0[10]);
-
-                __m256 v14 = _mm256_set_ps(
-                    x7[14], x6[14], x5[14], x4[14],
-                    x3[14], x2[14], x1[14], x0[14]);
-
-                // accumulate squares
-                acc  = _mm256_fmadd_ps(v0,  v0,  acc);
-                acc  = _mm256_fmadd_ps(v2,  v2,  acc);
-                acc  = _mm256_fmadd_ps(v3,  v3,  acc);
-                acc  = _mm256_fmadd_ps(v4,  v4,  acc);
-                acc  = _mm256_fmadd_ps(v8,  v8,  acc);
-                acc  = _mm256_fmadd_ps(v9,  v9,  acc);
-                acc = _mm256_fmadd_ps(v10, v10, acc);
-                acc = _mm256_fmadd_ps(v14, v14, acc);
+            for (; m + 3 < M; m += 4) {
+                const float* x0 = group_in + (m    ) * 16;
+                const float* x1 = group_in + (m + 1) * 16;
+                const float* x2 = group_in + (m + 2) * 16;
+                const float* x3 = group_in + (m + 3) * 16;
+                __m256 lo0 = _mm256_loadu_ps(x0), hi0 = _mm256_loadu_ps(x0 + 8);
+                __m256 lo1 = _mm256_loadu_ps(x1), hi1 = _mm256_loadu_ps(x1 + 8);
+                __m256 lo2 = _mm256_loadu_ps(x2), hi2 = _mm256_loadu_ps(x2 + 8);
+                __m256 lo3 = _mm256_loadu_ps(x3), hi3 = _mm256_loadu_ps(x3 + 8);
+                acc0 = _mm256_fmadd_ps(_mm256_mul_ps(mask_lo, lo0), lo0, acc0);
+                acc0 = _mm256_fmadd_ps(_mm256_mul_ps(mask_hi, hi0), hi0, acc0);
+                acc1 = _mm256_fmadd_ps(_mm256_mul_ps(mask_lo, lo1), lo1, acc1);
+                acc1 = _mm256_fmadd_ps(_mm256_mul_ps(mask_hi, hi1), hi1, acc1);
+                acc2 = _mm256_fmadd_ps(_mm256_mul_ps(mask_lo, lo2), lo2, acc2);
+                acc2 = _mm256_fmadd_ps(_mm256_mul_ps(mask_hi, hi2), hi2, acc2);
+                acc3 = _mm256_fmadd_ps(_mm256_mul_ps(mask_lo, lo3), lo3, acc3);
+                acc3 = _mm256_fmadd_ps(_mm256_mul_ps(mask_hi, hi3), hi3, acc3);
             }
-            
-            __m128 lo = _mm256_castps256_ps128(acc);
-            __m128 hi = _mm256_extractf128_ps(acc, 1);
-
-            __m128 sum = _mm_add_ps(lo, hi);
-            sum = _mm_hadd_ps(sum, sum);
-            sum = _mm_hadd_ps(sum, sum);
-
-            scalar_t accs = _mm_cvtss_f32(sum);
-
+            acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1),
+                                 _mm256_add_ps(acc2, acc3));
             for (; m < M; ++m) {
-                const scalar_t* x = group_in + (m << 4);
-
-                accs +=
-                    x[0]*x[0] +
-                    x[2]*x[2] +
-                    x[3]*x[3] +
-                    x[4]*x[4] +
-                    x[8]*x[8] +
-                    x[9]*x[9] +
-                    x[10]*x[10] +
-                    x[14]*x[14];
+                const float* x = group_in + (m << 4);
+                __m256 lo = _mm256_loadu_ps(x), hi = _mm256_loadu_ps(x + 8);
+                acc0 = _mm256_fmadd_ps(_mm256_mul_ps(mask_lo, lo), lo, acc0);
+                acc0 = _mm256_fmadd_ps(_mm256_mul_ps(mask_hi, hi), hi, acc0);
             }
+            __m128 lo128 = _mm256_castps256_ps128(acc0);
+            __m128 hi128 = _mm256_extractf128_ps(acc0, 1);
+            __m128 sum128 = _mm_add_ps(lo128, hi128);
+            sum128 = _mm_hadd_ps(sum128, sum128);
+            sum128 = _mm_hadd_ps(sum128, sum128);
+            float accs = _mm_cvtss_f32(sum128);
 
+            accs /= static_cast<float>(M);
+            accs = std::max(accs, eps_t);
+            // rsqrt + one Newton-Raphson step gives ~23-bit accuracy,
+            // saving ~8 cycles vs sqrtss+divss per group.
+            const float half = 0.5f * accs;
+            __m128 vr = _mm_rsqrt_ss(_mm_set_ss(accs));
+            // r = r * (1.5 - 0.5*accs*r*r)
+            vr = _mm_mul_ss(vr,
+                 _mm_sub_ss(_mm_set_ss(1.5f),
+                 _mm_mul_ss(_mm_set_ss(half),
+                 _mm_mul_ss(vr, vr))));
+            float scale = _mm_cvtss_f32(vr);
 
-
-            accs /= static_cast<scalar_t>(M);
-
-            scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
-            //scalar_t scale = std::rsqrt(acc + eps_t);
-            //scalar_t scale = scalar_t(1) / std::sqrt(acc + eps_t);
-
-            // ---- write + optional weight ----
-            // for (int64_t m = 0; m < M; ++m) {
-
-            //     const scalar_t* x = group_in + (m << 4);
-            //     scalar_t* o       = group_out + (m << 4);
-
-            //     scalar_t scalew = scale;
-
-            //     if constexpr (HasWeight) {
-            //         scalew *= W[m];
-            //     }
-
-            //     o[0]  = x[0]  * scalew;
-            //     o[1]  = x[1]  * scalew;
-            //     o[2]  = x[2]  * scalew;
-            //     o[3]  = x[3]  * scalew;
-            //     o[4]  = x[4]  * scalew;
-            //     o[5]  = x[5]  * scalew;
-            //     o[6]  = x[6]  * scalew;
-            //     o[7]  = x[7]  * scalew;
-            //     o[8]  = x[8]  * scalew;
-            //     o[9]  = x[9]  * scalew;
-            //     o[10] = x[10] * scalew;
-            //     o[11] = x[11] * scalew;
-            //     o[12] = x[12] * scalew;
-            //     o[13] = x[13] * scalew;
-            //     o[14] = x[14] * scalew;
-            //     o[15] = x[15] * scalew;
-            // }
-
+            // Pass 2: scale write-back with optional per-channel weight.
             for (int64_t m = 0; m < M; ++m) {
                 const float* x = group_in + (m << 4);
-                float* o       = group_out + (m << 4);
-
-                float scalew = scale;
-
-                if constexpr (HasWeight) {
-                    scalew *= W[m];
-                }
-
-                __m256 vscale = _mm256_set1_ps(scalew);
-
-                __m256 v0 = _mm256_loadu_ps(x + 0);
-                __m256 v1 = _mm256_loadu_ps(x + 8);
-
-                v0 = _mm256_mul_ps(v0, vscale);
-                v1 = _mm256_mul_ps(v1, vscale);
-
-                _mm256_storeu_ps(o + 0, v0);
-                _mm256_storeu_ps(o + 8, v1);
+                float*       o = group_out + (m << 4);
+                float scalew   = scale;
+                if constexpr (HasWeight) scalew *= W[m];
+                __m256 vs = _mm256_set1_ps(scalew);
+                _mm256_storeu_ps(o,     _mm256_mul_ps(_mm256_loadu_ps(x),     vs));
+                _mm256_storeu_ps(o + 8, _mm256_mul_ps(_mm256_loadu_ps(x + 8), vs));
             }
-
-
         }
-    }else if constexpr (std::is_same_v<scalar_t, double>) {
+    } else if constexpr (std::is_same_v<scalar_t, double>) {
+        // Same mask-based approach for double. Active blades: 0,2,3,4 in lo
+        // quad and 8,9,10,14 (relative positions 0,1,2,6) in hi quad.
+        const __m256d mask_lo = _mm256_setr_pd(1.,0.,1.,1.);  // blades 0,2,3,4 → positions 0,1,2,3 cover 0,1,2,3: active at 0,2,3 with blade 4 split
+        // Note: each __m256d holds 4 doubles, so 16-element MV needs 4 vectors.
+        // We use 4 independent mask vectors covering positions 0-3, 4-7, 8-11, 12-15.
+        const __m256d msk0 = _mm256_setr_pd(1.,0.,1.,1.);   // blades 0,2,3
+        const __m256d msk1 = _mm256_setr_pd(1.,0.,0.,0.);   // blade  4
+        const __m256d msk2 = _mm256_setr_pd(1.,1.,1.,0.);   // blades 8,9,10
+        const __m256d msk3 = _mm256_setr_pd(0.,0.,1.,0.);   // blade  14
+
         for (int64_t g = 0; g < groups; ++g) {
+            const double* group_in  = X + g * (M << 4);
+            double*       group_out = O + g * (M << 4);
 
-            const scalar_t* group_in  = X + g * (M << 4);
-            scalar_t* group_out       = O + g * (M << 4);
-
-            __m256d acc = _mm256_setzero_pd();
-
+            __m256d acc0 = _mm256_setzero_pd();
+            __m256d acc1 = _mm256_setzero_pd();
             int64_t m = 0;
-
-            // AVX2 double: 4 lanes → process 4 "blocks"
-            for (; m + 3 < M; m += 4) {
-
-                const scalar_t* x0 = group_in + (m << 4);
-                const scalar_t* x1 = x0 + 16;
-                const scalar_t* x2 = x1 + 16;
-                const scalar_t* x3 = x2 + 16;
-
-                // ---- load selected indices (double version) ----
-
-                __m256d v0 = _mm256_set_pd(
-                    x3[0], x2[0], x1[0], x0[0]);
-
-                __m256d v2 = _mm256_set_pd(
-                    x3[2], x2[2], x1[2], x0[2]);
-
-                __m256d v3 = _mm256_set_pd(
-                    x3[3], x2[3], x1[3], x0[3]);
-
-                __m256d v4 = _mm256_set_pd(
-                    x3[4], x2[4], x1[4], x0[4]);
-
-                __m256d v8 = _mm256_set_pd(
-                    x3[8], x2[8], x1[8], x0[8]);
-
-                __m256d v9 = _mm256_set_pd(
-                    x3[9], x2[9], x1[9], x0[9]);
-
-                __m256d v10 = _mm256_set_pd(
-                    x3[10], x2[10], x1[10], x0[10]);
-
-                __m256d v14 = _mm256_set_pd(
-                    x3[14], x2[14], x1[14], x0[14]);
-
-                // ---- accumulate squares ----
-                acc = _mm256_fmadd_pd(v0,  v0,  acc);
-                acc = _mm256_fmadd_pd(v2,  v2,  acc);
-                acc = _mm256_fmadd_pd(v3,  v3,  acc);
-                acc = _mm256_fmadd_pd(v4,  v4,  acc);
-                acc = _mm256_fmadd_pd(v8,  v8,  acc);
-                acc = _mm256_fmadd_pd(v9,  v9,  acc);
-                acc = _mm256_fmadd_pd(v10, v10, acc);
-                acc = _mm256_fmadd_pd(v14, v14, acc);
+            for (; m + 1 < M; m += 2) {
+                const double* x0 = group_in + (m    ) * 16;
+                const double* x1 = group_in + (m + 1) * 16;
+                __m256d a0 = _mm256_loadu_pd(x0),    b0 = _mm256_loadu_pd(x0 + 4);
+                __m256d c0 = _mm256_loadu_pd(x0 + 8),d0 = _mm256_loadu_pd(x0 + 12);
+                __m256d a1 = _mm256_loadu_pd(x1),    b1 = _mm256_loadu_pd(x1 + 4);
+                __m256d c1 = _mm256_loadu_pd(x1 + 8),d1 = _mm256_loadu_pd(x1 + 12);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk0, a0), a0, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk1, b0), b0, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk2, c0), c0, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk3, d0), d0, acc0);
+                acc1 = _mm256_fmadd_pd(_mm256_mul_pd(msk0, a1), a1, acc1);
+                acc1 = _mm256_fmadd_pd(_mm256_mul_pd(msk1, b1), b1, acc1);
+                acc1 = _mm256_fmadd_pd(_mm256_mul_pd(msk2, c1), c1, acc1);
+                acc1 = _mm256_fmadd_pd(_mm256_mul_pd(msk3, d1), d1, acc1);
             }
-
-            // ---- horizontal sum (double) ----
-            __m128d lo = _mm256_castpd256_pd128(acc);
-            __m128d hi = _mm256_extractf128_pd(acc, 1);
-
-            __m128d sum = _mm_add_pd(lo, hi);
-
-            // reduce 2 doubles → scalar
-            scalar_t accs =
-                _mm_cvtsd_f64(sum) +
-                _mm_cvtsd_f64(_mm_unpackhi_pd(sum, sum));
-
-            // ---- scalar tail ----
+            acc0 = _mm256_add_pd(acc0, acc1);
             for (; m < M; ++m) {
-                const scalar_t* x = group_in + (m << 4);
-
-                accs +=
-                    x[0]*x[0] +
-                    x[2]*x[2] +
-                    x[3]*x[3] +
-                    x[4]*x[4] +
-                    x[8]*x[8] +
-                    x[9]*x[9] +
-                    x[10]*x[10] +
-                    x[14]*x[14];
+                const double* x = group_in + (m << 4);
+                __m256d a = _mm256_loadu_pd(x),    b = _mm256_loadu_pd(x + 4);
+                __m256d c = _mm256_loadu_pd(x + 8),d = _mm256_loadu_pd(x + 12);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk0, a), a, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk1, b), b, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk2, c), c, acc0);
+                acc0 = _mm256_fmadd_pd(_mm256_mul_pd(msk3, d), d, acc0);
             }
+            __m128d lo128 = _mm256_castpd256_pd128(acc0);
+            __m128d hi128 = _mm256_extractf128_pd(acc0, 1);
+            __m128d sum128 = _mm_add_pd(lo128, hi128);
+            double accs = _mm_cvtsd_f64(sum128) +
+                          _mm_cvtsd_f64(_mm_unpackhi_pd(sum128, sum128));
 
-            accs /= static_cast<scalar_t>(M);
-
-            scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
-
-            // ---- write back ----
-            // for (int64_t m = 0; m < M; ++m) {
-
-            //     const scalar_t* x = group_in + (m << 4);
-            //     scalar_t* o       = group_out + (m << 4);
-
-            //     scalar_t scalew = scale;
-
-            //     if constexpr (HasWeight) {
-            //         scalew *= W[m];
-            //     }
-
-            //     o[0]  = x[0]  * scalew;
-            //     o[1]  = x[1]  * scalew;
-            //     o[2]  = x[2]  * scalew;
-            //     o[3]  = x[3]  * scalew;
-            //     o[4]  = x[4]  * scalew;
-            //     o[5]  = x[5]  * scalew;
-            //     o[6]  = x[6]  * scalew;
-            //     o[7]  = x[7]  * scalew;
-            //     o[8]  = x[8]  * scalew;
-            //     o[9]  = x[9]  * scalew;
-            //     o[10] = x[10] * scalew;
-            //     o[11] = x[11] * scalew;
-            //     o[12] = x[12] * scalew;
-            //     o[13] = x[13] * scalew;
-            //     o[14] = x[14] * scalew;
-            //     o[15] = x[15] * scalew;
-            // }
+            accs /= static_cast<double>(M);
+            double scale = 1.0 / std::sqrt(std::max(accs, (double)eps_t));
 
             for (int64_t i = 0; i < M; ++i) {
-
-                const double* x = group_x + (i << 4);
-                double* o       = group_o + (i << 4);
-
-                double scalew = scale;
-
-                if constexpr (HasWeight) {
-                    scalew *= W[i];
-                }
-
-                __m256d vscale = _mm256_set1_pd(scalew);
-
-                __m256d v0 = _mm256_loadu_pd(x + 0);
-                __m256d v1 = _mm256_loadu_pd(x + 4);
-
-                v0 = _mm256_mul_pd(v0, vscale);
-                v1 = _mm256_mul_pd(v1, vscale);
-
-                _mm256_storeu_pd(o + 0, v0);
-                _mm256_storeu_pd(o + 4, v1);
+                const double* x = group_in + (i << 4);
+                double*       o = group_out + (i << 4);
+                double scalew   = scale;
+                if constexpr (HasWeight) scalew *= W[i];
+                __m256d vs = _mm256_set1_pd(scalew);
+                // All 16 elements must be written (bug fix: old code only wrote 8).
+                _mm256_storeu_pd(o,      _mm256_mul_pd(_mm256_loadu_pd(x),      vs));
+                _mm256_storeu_pd(o + 4,  _mm256_mul_pd(_mm256_loadu_pd(x + 4),  vs));
+                _mm256_storeu_pd(o + 8,  _mm256_mul_pd(_mm256_loadu_pd(x + 8),  vs));
+                _mm256_storeu_pd(o + 12, _mm256_mul_pd(_mm256_loadu_pd(x + 12), vs));
             }
         }
-
     }
-   
 }
+
+
+
+
+
+
+
+
+
+
+}  // namespace
+
+
+ torch::Tensor inner_product_ver_0(const torch::Tensor& x,
+                             const torch::Tensor& y){
+     check_multivector(x, "inner_product x");
+     check_multivector(y, "inner_product y");
+     TORCH_CHECK(x.scalar_type() == y.scalar_type(),
+                 "inner_product: x and y must share dtype");
+     TORCH_CHECK(x.device() == y.device(), 
+                 "inner_product: x and y must share device");
+     auto selector = load_inner_selector(x.device());
+     auto xsel = torch::index_select(x,-1,selector);
+     auto ysel = torch::index_select(y,-1,selector);
+     return torch::einsum("...i, ...i -> ...",{xsel,ysel}).unsqueeze(-1);
+ }
+
+
+
+
+torch::Tensor inner_product_ver_1(const torch::Tensor& x,
+                            const torch::Tensor& y){
+    check_multivector(x, "inner_product x");
+    check_multivector(y, "inner_product y");
+
+    TORCH_CHECK(x.scalar_type() == y.scalar_type(),
+                "inner_product: x and y must share dtype");
+
+    TORCH_CHECK(x.device() == y.device(),
+                "inner_product: x and y must share device");
+
+    auto out_sizes = x.sizes().vec();
+    out_sizes.back() = 1;
+
+    auto xc = x.contiguous();
+    auto yc = y.contiguous();
+    auto out = torch::empty(out_sizes, x.options());
+    //auto out = torch::empty_like(xc);
+    int64_t N = xc.numel() / 16;
+    //int64_t N = x.size(-2);
+    AT_DISPATCH_FLOATING_TYPES(
+        xc.scalar_type(),
+        "inner_product_kernel",
+        [&] {
+
+            const scalar_t* __restrict__ X =
+                xc.data_ptr<scalar_t>();
+
+            const scalar_t* __restrict__ Y =
+                yc.data_ptr<scalar_t>();
+
+            scalar_t* __restrict__ O =
+                out.data_ptr<scalar_t>();
+
+            for (int64_t n = 0; n < N; ++n) {
+
+                const scalar_t* x = X + (n << 4);
+                const scalar_t* y = Y + (n << 4);
+                  
+                O[n] =
+                    x[0]  * y[0]  +
+                    x[2]  * y[2]  +
+                    x[3]  * y[3]  +
+                    x[4]  * y[4]  +
+                    x[8]  * y[8]  +
+                    x[9]  * y[9]  +
+                    x[10] * y[10] +
+                    x[14] * y[14];
+            }
+        });
+
+    return out;
+}
+
+
+torch::Tensor inner_product_ver_2(const torch::Tensor& x,
+                            const torch::Tensor& y){
+    check_multivector(x, "inner_product x");
+    check_multivector(y, "inner_product y");
+
+    TORCH_CHECK(x.scalar_type() == y.scalar_type(),
+                "inner_product: x and y must share dtype");
+
+    TORCH_CHECK(x.device() == y.device(),
+                "inner_product: x and y must share device");
+
+    auto out_sizes = x.sizes().vec();
+    out_sizes.back() = 1;
+
+    auto xc = x.contiguous();
+    auto yc = y.contiguous();
+    auto out = torch::empty(out_sizes, x.options());
+    //auto out = torch::empty_like(xc);
+    int64_t N = xc.numel() / 16;
+    //int64_t N = x.size(-2);
+    AT_DISPATCH_FLOATING_TYPES(
+        xc.scalar_type(),
+        "inner_product_kernel",
+        [&] {
+
+            const scalar_t* __restrict__ X =
+                xc.data_ptr<scalar_t>();
+
+            const scalar_t* __restrict__ Y =
+                yc.data_ptr<scalar_t>();
+
+            scalar_t* __restrict__ O =
+                out.data_ptr<scalar_t>();
+
+            for (int64_t n = 0; n < N; ++n) {
+
+                const scalar_t* x = X + (n << 4);
+                const scalar_t* y = Y + (n << 4);
+                // const scalar_t o1 = x[0]  * y[0];
+                // const scalar_t o2 = x[2]  * y[2];  
+                // const scalar_t o3 = x[3]  * y[3];
+                // const scalar_t o4 = x[4]  * y[4]; 
+
+                // const scalar_t o8 = x[8]  * y[8];
+                // const scalar_t o9 = x[9]  * y[9]; 
+                // const scalar_t o10 = x[10]  * y[10];
+                // const scalar_t o14 = x[14]  * y[14]; 
+
+                // O[n] = o1 + o2 + o3 + o4 + o8 + o9 + o10 + o14;    
+
+                O[n] =
+                    x[0]  * y[0]  +
+                    x[2]  * y[2]  +
+                    x[3]  * y[3]  +
+                    x[4]  * y[4]  +
+                    x[8]  * y[8]  +
+                    x[9]  * y[9]  +
+                    x[10] * y[10] +
+                    x[14] * y[14];
+            }
+        });
+
+    return out;
+}
+
+
+// ---------------------------------------------------------------------------
+// ver_0 - NO OPTIMIZATION.
+// c++ implemnetation of the base version
+// ---------------------------------------------------------------------------
+torch::Tensor equi_rms_norm_ver_0(const torch::Tensor& x,
+                            const c10::optional<torch::Tensor>& weight,
+                            const c10::optional<double>& eps_opt){
+    check_multivector(x, "equi_rms_norm x");
+    double eps = eps_opt.has_value()
+        ? *eps_opt
+        : 1e-7;
+
+    auto ip = inner_product_ver_0(x,x);
+    auto normip = ip.mean(/*dim=*/-2, /*keepdim=*/true);
+    auto result = x/torch::sqrt(torch::clamp(normip,eps));
+    if (weight.has_value()){
+        result = result * weight->view({-1,1});
+    }
+    return result;
+}
+
+
+// ---------------------------------------------------------------------------
+// ver_1 - Optimized C++ implementation.
+// Performance improvements are mainly achieved through the optimized
+// inner_product kernel using direct raw pointer access, contiguous memory
+// layout, fixed 16-element block processing, pointer arithmetic, manual
+// loop unrolling, hardcoded selectors and __restrict__ alias optimization. These changes
+// reduce PyTorch overhead, improve cache locality, enable better SIMD
+// vectorization, and minimize temporary memory operations.
+// ---------------------------------------------------------------------------
+torch::Tensor equi_rms_norm_ver_1(const torch::Tensor& x,
+                            const c10::optional<torch::Tensor>& weight,
+                            const c10::optional<double>& eps_opt){
+    check_multivector(x, "equi_rms_norm x");
+    double eps = eps_opt.has_value()
+        ? *eps_opt
+        : 1e-7;
+
+    auto ip = inner_product_ver_1(x,x);
+    auto normip = ip.mean(/*dim=*/-2, /*keepdim=*/true);
+    auto result = x/torch::sqrt(torch::clamp(normip,eps));
+    if (weight.has_value()){
+        result = result * weight->view({-1,1});
+    }
+    return result;
+}
+
+
+
+// ---------------------------------------------------------------------------
+// ver_2 - Fully fused C++ implementation.
+//
+// Compared to ver_1, the RMS normalization pipeline is completely fused
+// into a single kernel. Instead of separate passes for inner product,
+// mean reduction, clamp, sqrt, normalization, and optional weight scaling,
+// all computations are performed in one streaming loop.
+//
+// This removes intermediate tensors and eliminates multiple full memory
+// traversals over the same data. The result is reduced memory bandwidth
+// usage, fewer kernel launches, and improved cache efficiency.
+//
+// Additional optimizations include compile-time
+// specialization via templates, multiple independent accumulators for
+// better instruction-level parallelism
+// ---------------------------------------------------------------------------
+torch::Tensor equi_rms_norm_ver_2(
+    const torch::Tensor& x,
+    const c10::optional<torch::Tensor>& weight,
+    const c10::optional<double>& eps_opt
+) {
+    check_multivector(x, "equi_rms_norm x");
+
+    double eps = eps_opt.has_value() ? *eps_opt : 1e-7;
+
+    auto xc = x.is_contiguous() ? x : x.contiguous();
+    auto out = torch::empty_like(xc);
+
+    int64_t M = x.size(-2);
+
+    int64_t groups = 1;
+    for (int64_t i = 0; i < x.dim() - 2; ++i)
+        groups *= x.size(i);
+
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel", [&] {
+        const scalar_t* X = xc.data_ptr<scalar_t>();
+        scalar_t* O       = out.data_ptr<scalar_t>();
+
+        if (weight.has_value()) {
+            auto wc = weight->contiguous();
+            const scalar_t* W = wc.data_ptr<scalar_t>();
+
+            rms_norm_kernel<scalar_t, true>(
+                X, O, W, groups, M, eps
+            );
+        } else {
+            rms_norm_kernel<scalar_t, false>(
+                X, O, nullptr, groups, M, eps
+            );
+        }
+    });
+
+    return out;
+}
+
+
+// ---------------------------------------------------------------------------
+// ver_3 - 
+//Tested two simd version. one were we use the mamory layout from version 2 
+//and use gather intrinsics. also tested a packed version, where we change the
+//memory layout such that we can load the vectors directly. 
+// ---------------------------------------------------------------------------
+torch::Tensor equi_rms_norm_ver_3(
+    const torch::Tensor& x,
+    const c10::optional<torch::Tensor>& weight,
+    const c10::optional<double>& eps_opt
+) {
+    check_multivector(x, "equi_rms_norm x");
+
+    double eps = eps_opt.has_value() ? *eps_opt : 1e-7;
+
+    auto xc = x.is_contiguous() ? x : x.contiguous();
+    auto out = torch::empty_like(xc);
+
+    int64_t M = x.size(-2);
+
+    int64_t groups = 1;
+    for (int64_t i = 0; i < x.dim() - 2; ++i)
+        groups *= x.size(i);
+
+
+    bool use_intrins =
+        (xc.scalar_type() == torch::kFloat32 ||
+         xc.scalar_type() == torch::kFloat64);
+
+    if (!use_intrins) {
+        //FALLBACK PATH
+        AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel", [&] {
+            if (weight.has_value()) {
+                rms_norm_kernel<scalar_t, true>(
+                    xc.data_ptr<scalar_t>(),
+                    out.data_ptr<scalar_t>(),
+                    weight->data_ptr<scalar_t>(),
+                    groups, M, eps
+                );
+            } else {
+                rms_norm_kernel<scalar_t, false>(
+                    xc.data_ptr<scalar_t>(),
+                    out.data_ptr<scalar_t>(),
+                    nullptr,
+                    groups, M, eps
+                );
+            }
+        });
+        return out;
+    }
+
+    //FAST PATH (intrinsics)
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel_intrins", [&] {
+        if (weight.has_value()) {
+            rms_norm_kernel_intrins<scalar_t, true>(
+                xc.data_ptr<scalar_t>(),
+                out.data_ptr<scalar_t>(),
+                weight->data_ptr<scalar_t>(),
+                groups, M, eps
+            );
+        } else {
+            rms_norm_kernel_intrins<scalar_t, false>(
+                xc.data_ptr<scalar_t>(),
+                out.data_ptr<scalar_t>(),
+                nullptr,
+                groups, M, eps
+            );
+        }
+    });
+
+    return out;
+}
+
+
+
+
+
+
+// ---------------------------------------------------------------------------
+// Packed rmsnormver3
+// ---------------------------------------------------------------------------
+// torch::Tensor equi_rms_norm_ver_3(
+//     const torch::Tensor& x,
+//     const c10::optional<torch::Tensor>& weight,
+//     const c10::optional<double>& eps_opt
+// ) {
+//     check_multivector(x, "equi_rms_norm x");
+
+//     double eps = eps_opt.has_value() ? *eps_opt : 1e-7;
+
+//     auto xc = x.is_contiguous() ? x : x.contiguous();
+//     auto out = torch::empty_like(xc);
+
+//     int64_t M = x.size(-2);
+//     int64_t groups = 1;
+//     for (int64_t i = 0; i < x.dim() - 2; ++i)
+//         groups *= x.size(i);
+
+//     // pack [groups][M][16] -> [groups][8][M]
+//     auto x_sel = torch::empty({groups, 8, M}, xc.options());
+
+//     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "pack_groups_16_to_8_soa", [&] {
+//         pack_groups_16_to_8_soa<scalar_t>(
+//             xc.data_ptr<scalar_t>(),
+//             x_sel.data_ptr<scalar_t>(),
+//             groups, M
+//         );
+//     });
+
+//     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel_packed", [&] {
+//         if (weight.has_value()) {
+//             rms_norm_kernel_packed<scalar_t, true>(
+//                 xc.data_ptr<scalar_t>(),
+//                 x_sel.data_ptr<scalar_t>(),
+//                 out.data_ptr<scalar_t>(),
+//                 weight->contiguous().data_ptr<scalar_t>(),
+//                 groups, M, eps
+//             );
+//         } else {
+//             rms_norm_kernel_packed<scalar_t, false>(
+//                 xc.data_ptr<scalar_t>(),
+//                 x_sel.data_ptr<scalar_t>(),
+//                 out.data_ptr<scalar_t>(),
+//                 nullptr,
+//                 groups, M, eps
+//             );
+//         }
+//     });
+
+//     return out;
+// }
+
+
+
+torch::Tensor scaler_gated_gelu_ver_0(const torch::Tensor& x,
+                                const std::string& approximate){
+    check_multivector(x, "scalar_gated_gelu: x");
+    TORCH_CHECK(
+        approximate == "none" || approximate == "tanh",
+        "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
+        approximate
+    );
+
+    auto reduction = x.narrow(-1, 0, 1);
+    auto gates = torch::nn::functional::gelu(
+        reduction,
+        torch::nn::functional::GELUFuncOptions().approximate(approximate)
+    );
+    return x * gates;
+}
+
+
+
+// torch::Tensor scaler_gated_gelu_ver_1(const torch::Tensor& x,
+//                                 const std::string& approximate){
+//     check_multivector(x, "scalar_gated_gelu: x");
+//     TORCH_CHECK(
+//         approximate == "none" || approximate == "tanh",
+//         "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
+//         approximate
+//     );
+
+//     if(approximate == "tanh"){
+//         auto xc = x.contiguous();
+//         auto out = torch::empty_like(xc);
+//         auto outc = out.contiguous();
+//         int64_t N = xc.numel() / 16;
+//         //int64_t N = x.size(-2);
+//         AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
+//             scalar_gated_gelu_kernel<scalar_t>(
+//                 xc.data_ptr<scalar_t>(),
+//                 outc.data_ptr<scalar_t>(),
+//                 N
+//             );
+//         });
+//         return outc;
+
+//     }else{
+//         auto reduction = x.narrow(-1, 0, 1);
+//         auto gates = torch::nn::functional::gelu(
+//             reduction,
+//             torch::nn::functional::GELUFuncOptions().approximate(approximate)
+//         );
+//         return x * gates;
+//     }
+
+    
+// }
+
+
+
+// torch::Tensor scaler_gated_gelu_ver_2(
+//     const torch::Tensor& x,
+//     const std::string& approximate
+// ){
+//     check_multivector(x, "scalar_gated_gelu: x");
+//     TORCH_CHECK(
+//         approximate == "none" || approximate == "tanh",
+//         "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
+//         approximate
+//     );
+
+//     if(approximate == "tanh"){
+//         auto xc = x.contiguous();
+//         auto out = torch::empty_like(xc);
+//         auto outc = out.contiguous();
+//         int64_t N = xc.numel() / 16;
+//         //int64_t N = x.size(-2);
+
+//         AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
+//             scalar_gated_gelu_kernel<scalar_t>(
+//                 xc.data_ptr<scalar_t>(),
+//                 outc.data_ptr<scalar_t>(),
+//                 N
+//             );
+//         });
+//         return outc;
+
+//     }else{
+//         auto reduction = x.narrow(-1, 0, 1);
+//         auto gates = torch::nn::functional::gelu(
+//             reduction,
+//             torch::nn::functional::GELUFuncOptions().approximate(approximate)
+//         );
+//         return x * gates;
+//     }
+// }
+
+
+torch::Tensor scaler_gated_gelu_ver_1(const torch::Tensor& x,
+                                const std::string& approximate){
+    check_multivector(x, "scalar_gated_gelu: x");
+    TORCH_CHECK(
+        approximate == "none" || approximate == "tanh",
+        "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
+        approximate
+    );
+
+    if(approximate == "tanh"){
+        auto xc = x.contiguous();
+        auto out = torch::empty_like(xc);
+        auto outc = out.contiguous();
+        int64_t N = xc.numel() / 16;
+        //int64_t N = x.size(-2);
+        AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
+            scalar_gated_gelu_kernel<scalar_t>(
+                xc.data_ptr<scalar_t>(),
+                outc.data_ptr<scalar_t>(),
+                N
+            );
+        });
+        return outc;
+
+    }else{
+        auto reduction = x.narrow(-1, 0, 1);
+        auto gates = torch::nn::functional::gelu(
+            reduction,
+            torch::nn::functional::GELUFuncOptions().approximate(approximate)
+        );
+        return x * gates;
+    }
+
+    
+}
+
+
+
+torch::Tensor scaler_gated_gelu_ver_2(
+    const torch::Tensor& x,
+    const std::string& approximate
+){
+    check_multivector(x, "scalar_gated_gelu: x");
+    TORCH_CHECK(
+        approximate == "none" || approximate == "tanh",
+        "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
+        approximate
+    );
+
+    if(approximate == "tanh"){
+        auto xc = x.contiguous();
+        auto out = torch::empty_like(xc);
+        auto outc = out.contiguous();
+        int64_t N = xc.numel() / 16;
+        //int64_t N = x.size(-2);
+
+        AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
+            scalar_gated_gelu_kernel<scalar_t>(
+                xc.data_ptr<scalar_t>(),
+                outc.data_ptr<scalar_t>(),
+                N
+            );
+        });
+        return outc;
+
+    }else{
+        auto reduction = x.narrow(-1, 0, 1);
+        auto gates = torch::nn::functional::gelu(
+            reduction,
+            torch::nn::functional::GELUFuncOptions().approximate(approximate)
+        );
+        return x * gates;
+    }
+}
+
+
+
+// ver_3 — AVX2-vectorized scaler-gated GELU (float32 + "tanh" fast path).
+// Falls back to ver_2 for float64, the "none"/erf variant, or non-AVX2 builds.
+torch::Tensor scaler_gated_gelu_ver_3(
+    const torch::Tensor& x,
+    const std::string& approximate
+){
+    check_multivector(x, "scalar_gated_gelu: x");
+    TORCH_CHECK(
+        approximate == "none" || approximate == "tanh",
+        "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
+        approximate
+    );
+
+#if defined(__AVX2__) && defined(__FMA__)
+    if (approximate == "tanh" && x.scalar_type() == torch::kFloat) {
+        auto xc = x.contiguous();
+        auto out = torch::empty_like(xc);
+        const int64_t N = xc.numel() / 16;
+        gelu_gate_kernel_avx2(xc.data_ptr<float>(), out.data_ptr<float>(), N);
+        return out;
+    }
+#endif
+    // float64 / "none" / non-AVX2: numerically identical scalar path.
+    return scaler_gated_gelu_ver_2(x, approximate);
+}
+
+
+
+
+
+}}  // namespace ezgatr::opt
+
+
+
+//DUMP of older versions
+
+// template <typename scalar_t, bool HasWeight>
+// void rms_norm_kernel_intrins(
+//     const scalar_t* __restrict__ X,
+//     scalar_t* __restrict__ O,
+//     const scalar_t* __restrict__ W,
+//     int64_t groups,
+//     int64_t M,
+//     double eps
+// ) {
+//     const scalar_t eps_t = static_cast<scalar_t>(eps);
+
+//     if constexpr (std::is_same_v<scalar_t, float>) {
+
+//         for (int64_t g = 0; g < groups; ++g) {
+
+//             const scalar_t* group_in = X + g * (M << 4);
+//             scalar_t*       group_out = O + g * (M << 4);
+
+//             // 4 independent accumulator chains → ILP
+//             __m256 acc0 = _mm256_setzero_ps();
+//             __m256 acc1 = _mm256_setzero_ps();
+//             __m256 acc2 = _mm256_setzero_ps();
+//             __m256 acc3 = _mm256_setzero_ps();
+
+//             int64_t m = 0;
+
+//             for (; m + 7 < M; m += 8) {
+
+//                 const scalar_t* x0 = group_in + (m << 4);
+//                 const scalar_t* x1 = x0 + 16;
+//                 const scalar_t* x2 = x1 + 16;
+//                 const scalar_t* x3 = x2 + 16;
+//                 const scalar_t* x4 = x3 + 16;
+//                 const scalar_t* x5 = x4 + 16;
+//                 const scalar_t* x6 = x5 + 16;
+//                 const scalar_t* x7 = x6 + 16;
+
+//                 __m256 v0 = _mm256_set_ps(
+//                     x7[0], x6[0], x5[0], x4[0],
+//                     x3[0], x2[0], x1[0], x0[0]);
+
+//                 __m256 v2 = _mm256_set_ps(
+//                     x7[2], x6[2], x5[2], x4[2],
+//                     x3[2], x2[2], x1[2], x0[2]);
+
+//                 __m256 v3 = _mm256_set_ps(
+//                     x7[3], x6[3], x5[3], x4[3],
+//                     x3[3], x2[3], x1[3], x0[3]);
+
+//                 __m256 v4 = _mm256_set_ps(
+//                     x7[4], x6[4], x5[4], x4[4],
+//                     x3[4], x2[4], x1[4], x0[4]);
+
+//                 __m256 v8 = _mm256_set_ps(
+//                     x7[8], x6[8], x5[8], x4[8],
+//                     x3[8], x2[8], x1[8], x0[8]);
+
+//                 __m256 v9 = _mm256_set_ps(
+//                     x7[9], x6[9], x5[9], x4[9],
+//                     x3[9], x2[9], x1[9], x0[9]);
+
+//                 __m256 v10 = _mm256_set_ps(
+//                     x7[10], x6[10], x5[10], x4[10],
+//                     x3[10], x2[10], x1[10], x0[10]);
+
+//                 __m256 v14 = _mm256_set_ps(
+//                     x7[14], x6[14], x5[14], x4[14],
+//                     x3[14], x2[14], x1[14], x0[14]);
+
+//                 // Distribute FMAs across 4 chains — no RAW dependency between them
+//                 acc0 = _mm256_fmadd_ps(v0,  v0,  acc0);
+//                 acc1 = _mm256_fmadd_ps(v2,  v2,  acc1);
+//                 acc2 = _mm256_fmadd_ps(v3,  v3,  acc2);
+//                 acc3 = _mm256_fmadd_ps(v4,  v4,  acc3);
+
+//                 acc0 = _mm256_fmadd_ps(v8,  v8,  acc0);
+//                 acc1 = _mm256_fmadd_ps(v9,  v9,  acc1);
+//                 acc2 = _mm256_fmadd_ps(v10, v10, acc2);
+//                 acc3 = _mm256_fmadd_ps(v14, v14, acc3);
+//             }
+
+//             // Merge the 4 chains
+//             __m256 acc = _mm256_add_ps(
+//                 _mm256_add_ps(acc0, acc1),
+//                 _mm256_add_ps(acc2, acc3));
+
+//             __m128 lo  = _mm256_castps256_ps128(acc);
+//             __m128 hi  = _mm256_extractf128_ps(acc, 1);
+//             __m128 sum = _mm_add_ps(lo, hi);
+//             sum = _mm_hadd_ps(sum, sum);
+//             sum = _mm_hadd_ps(sum, sum);
+
+//             scalar_t accs = _mm_cvtss_f32(sum);
+
+//             for (; m < M; ++m) {
+//                 const scalar_t* x = group_in + (m << 4);
+//                 accs +=
+//                     x[0]*x[0]  + x[2]*x[2]  +
+//                     x[3]*x[3]  + x[4]*x[4]  +
+//                     x[8]*x[8]  + x[9]*x[9]  +
+//                     x[10]*x[10] + x[14]*x[14];
+//             }
+
+//             accs /= static_cast<scalar_t>(M);
+//             scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
+
+//             for (int64_t i = 0; i < M; ++i) {
+//                 const float* x = group_in  + (i << 4);
+//                 float*       o = group_out + (i << 4);
+
+//                 float scalew = scale;
+//                 if constexpr (HasWeight) scalew *= W[i];
+
+//                 __m256 vscale = _mm256_set1_ps(scalew);
+//                 _mm256_storeu_ps(o + 0, _mm256_mul_ps(_mm256_loadu_ps(x + 0), vscale));
+//                 _mm256_storeu_ps(o + 8, _mm256_mul_ps(_mm256_loadu_ps(x + 8), vscale));
+//             }
+//         }
+
+//     } else if constexpr (std::is_same_v<scalar_t, double>) {
+
+//         for (int64_t g = 0; g < groups; ++g) {
+
+//             const scalar_t* group_in  = X + g * (M << 4);
+//             scalar_t*       group_out = O + g * (M << 4);
+
+//             __m256d acc0 = _mm256_setzero_pd();
+//             __m256d acc1 = _mm256_setzero_pd();
+//             __m256d acc2 = _mm256_setzero_pd();
+//             __m256d acc3 = _mm256_setzero_pd();
+
+//             int64_t m = 0;
+
+//             // Double: 4 lanes → unroll by 16 to keep 4 accumulators busy
+//             for (; m + 15 < M; m += 16) {
+
+//                 // acc0: blocks 0–3
+//                 const scalar_t* x0  = group_in + (m      << 4);
+//                 const scalar_t* x1  = x0  + 16;
+//                 const scalar_t* x2  = x1  + 16;
+//                 const scalar_t* x3  = x2  + 16;
+//                 // acc1: blocks 4–7
+//                 const scalar_t* x4  = x3  + 16;
+//                 const scalar_t* x5  = x4  + 16;
+//                 const scalar_t* x6  = x5  + 16;
+//                 const scalar_t* x7  = x6  + 16;
+//                 // acc2: blocks 8–11
+//                 const scalar_t* x8  = x7  + 16;
+//                 const scalar_t* x9  = x8  + 16;
+//                 const scalar_t* x10 = x9  + 16;
+//                 const scalar_t* x11 = x10 + 16;
+//                 // acc3: blocks 12–15
+//                 const scalar_t* x12 = x11 + 16;
+//                 const scalar_t* x13 = x12 + 16;
+//                 const scalar_t* x14 = x13 + 16;
+//                 const scalar_t* x15 = x14 + 16;
+
+//                 // --- acc0: rows 0–3 ---
+//                 #define ACCPD4(acc, xa, xb, xc, xd, idx) do { \
+//                     __m256d _v = _mm256_set_pd((xd)[idx], (xc)[idx], (xb)[idx], (xa)[idx]); \
+//                     acc = _mm256_fmadd_pd(_v, _v, acc); \
+//                 } while(0)
+
+//                 ACCPD4(acc0, x0, x1, x2, x3,  0);
+//                 ACCPD4(acc0, x0, x1, x2, x3,  2);
+//                 ACCPD4(acc0, x0, x1, x2, x3,  3);
+//                 ACCPD4(acc0, x0, x1, x2, x3,  4);
+//                 ACCPD4(acc0, x0, x1, x2, x3,  8);
+//                 ACCPD4(acc0, x0, x1, x2, x3,  9);
+//                 ACCPD4(acc0, x0, x1, x2, x3, 10);
+//                 ACCPD4(acc0, x0, x1, x2, x3, 14);
+
+//                 // --- acc1: rows 4–7 ---
+//                 ACCPD4(acc1, x4, x5, x6, x7,  0);
+//                 ACCPD4(acc1, x4, x5, x6, x7,  2);
+//                 ACCPD4(acc1, x4, x5, x6, x7,  3);
+//                 ACCPD4(acc1, x4, x5, x6, x7,  4);
+//                 ACCPD4(acc1, x4, x5, x6, x7,  8);
+//                 ACCPD4(acc1, x4, x5, x6, x7,  9);
+//                 ACCPD4(acc1, x4, x5, x6, x7, 10);
+//                 ACCPD4(acc1, x4, x5, x6, x7, 14);
+
+//                 // --- acc2: rows 8–11 ---
+//                 ACCPD4(acc2, x8, x9, x10, x11,  0);
+//                 ACCPD4(acc2, x8, x9, x10, x11,  2);
+//                 ACCPD4(acc2, x8, x9, x10, x11,  3);
+//                 ACCPD4(acc2, x8, x9, x10, x11,  4);
+//                 ACCPD4(acc2, x8, x9, x10, x11,  8);
+//                 ACCPD4(acc2, x8, x9, x10, x11,  9);
+//                 ACCPD4(acc2, x8, x9, x10, x11, 10);
+//                 ACCPD4(acc2, x8, x9, x10, x11, 14);
+
+//                 // --- acc3: rows 12–15 ---
+//                 ACCPD4(acc3, x12, x13, x14, x15,  0);
+//                 ACCPD4(acc3, x12, x13, x14, x15,  2);
+//                 ACCPD4(acc3, x12, x13, x14, x15,  3);
+//                 ACCPD4(acc3, x12, x13, x14, x15,  4);
+//                 ACCPD4(acc3, x12, x13, x14, x15,  8);
+//                 ACCPD4(acc3, x12, x13, x14, x15,  9);
+//                 ACCPD4(acc3, x12, x13, x14, x15, 10);
+//                 ACCPD4(acc3, x12, x13, x14, x15, 14);
+
+//                 #undef ACCPD4
+//             }
+
+//             // Scalar fallback for any remaining blocks (original stride-4 loop)
+//             for (; m + 3 < M; m += 4) {
+//                 const scalar_t* x0 = group_in + (m << 4);
+//                 const scalar_t* x1 = x0 + 16;
+//                 const scalar_t* x2 = x1 + 16;
+//                 const scalar_t* x3 = x2 + 16;
+
+//                 #define ACCPD4F(acc, idx) do { \
+//                     __m256d _v = _mm256_set_pd(x3[idx], x2[idx], x1[idx], x0[idx]); \
+//                     acc = _mm256_fmadd_pd(_v, _v, acc); \
+//                 } while(0)
+
+//                 ACCPD4F(acc0,  0); ACCPD4F(acc1,  2);
+//                 ACCPD4F(acc2,  3); ACCPD4F(acc3,  4);
+//                 ACCPD4F(acc0,  8); ACCPD4F(acc1,  9);
+//                 ACCPD4F(acc2, 10); ACCPD4F(acc3, 14);
+
+//                 #undef ACCPD4F
+//             }
+
+//             // Merge
+//             __m256d acc = _mm256_add_pd(
+//                 _mm256_add_pd(acc0, acc1),
+//                 _mm256_add_pd(acc2, acc3));
+
+//             __m128d lo  = _mm256_castpd256_pd128(acc);
+//             __m128d hi  = _mm256_extractf128_pd(acc, 1);
+//             __m128d sum = _mm_add_pd(lo, hi);
+
+//             scalar_t accs =
+//                 _mm_cvtsd_f64(sum) +
+//                 _mm_cvtsd_f64(_mm_unpackhi_pd(sum, sum));
+
+//             for (; m < M; ++m) {
+//                 const scalar_t* x = group_in + (m << 4);
+//                 accs +=
+//                     x[0]*x[0]  + x[2]*x[2]  +
+//                     x[3]*x[3]  + x[4]*x[4]  +
+//                     x[8]*x[8]  + x[9]*x[9]  +
+//                     x[10]*x[10] + x[14]*x[14];
+//             }
+
+//             accs /= static_cast<scalar_t>(M);
+//             scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
+
+//             for (int64_t i = 0; i < M; ++i) {
+//                 const double* x = group_in  + (i << 4);
+//                 double*       o = group_out + (i << 4);
+
+//                 double scalew = scale;
+//                 if constexpr (HasWeight) scalew *= W[i];
+
+//                 __m256d vscale = _mm256_set1_pd(scalew);
+//                 _mm256_storeu_pd(o + 0, _mm256_mul_pd(_mm256_loadu_pd(x + 0), vscale));
+//                 _mm256_storeu_pd(o + 4, _mm256_mul_pd(_mm256_loadu_pd(x + 4), vscale));
+//                 _mm256_storeu_pd(o + 8, _mm256_mul_pd(_mm256_loadu_pd(x + 8), vscale));
+//                 _mm256_storeu_pd(o + 12, _mm256_mul_pd(_mm256_loadu_pd(x + 12), vscale));
+//             }
+//         }
+//     }
+// }
+
+
+
+
+
+
+
+
+// //normal intrins intel
+// template <typename scalar_t, bool HasWeight>
+// void rms_norm_kernel_intrins(
+//     const scalar_t* __restrict__ X,
+//     scalar_t* __restrict__ O,
+//     const scalar_t* __restrict__ W,
+//     int64_t groups,
+//     int64_t M,
+//     double eps
+// ) {
+//     const scalar_t eps_t = static_cast<scalar_t>(eps);
+
+//     if constexpr (std::is_same_v<scalar_t, float>) {
+
+//         for (int64_t g = 0; g < groups; ++g) {
+
+//             const scalar_t* group_in  = X + g * (M << 4);
+//             scalar_t* group_out       = O + g * (M << 4);
+
+
+//             __m256 acc  = _mm256_setzero_ps();
+
+//             int64_t m = 0;
+
+//             for (; m + 7 < M; m += 8) {
+
+//                 const scalar_t* x0 = group_in + (m << 4);
+//                 const scalar_t* x1 = x0 + 16;
+//                 const scalar_t* x2 = x1 + 16;
+//                 const scalar_t* x3 = x2 + 16;
+//                 const scalar_t* x4 = x3 + 16;
+//                 const scalar_t* x5 = x4 + 16;
+//                 const scalar_t* x6 = x5 + 16;
+//                 const scalar_t* x7 = x6 + 16;
+
+//                 // load selected scalars (gather-light, no real gather)
+//                 __m256 v0 = _mm256_set_ps(
+//                     x7[0], x6[0], x5[0], x4[0],
+//                     x3[0], x2[0], x1[0], x0[0]);
+
+//                 __m256 v2 = _mm256_set_ps(
+//                     x7[2], x6[2], x5[2], x4[2],
+//                     x3[2], x2[2], x1[2], x0[2]);
+
+//                 __m256 v3 = _mm256_set_ps(
+//                     x7[3], x6[3], x5[3], x4[3],
+//                     x3[3], x2[3], x1[3], x0[3]);
+
+//                 __m256 v4 = _mm256_set_ps(
+//                     x7[4], x6[4], x5[4], x4[4],
+//                     x3[4], x2[4], x1[4], x0[4]);
+
+//                 __m256 v8 = _mm256_set_ps(
+//                     x7[8], x6[8], x5[8], x4[8],
+//                     x3[8], x2[8], x1[8], x0[8]);
+
+//                 __m256 v9 = _mm256_set_ps(
+//                     x7[9], x6[9], x5[9], x4[9],
+//                     x3[9], x2[9], x1[9], x0[9]);
+
+//                 __m256 v10 = _mm256_set_ps(
+//                     x7[10], x6[10], x5[10], x4[10],
+//                     x3[10], x2[10], x1[10], x0[10]);
+
+//                 __m256 v14 = _mm256_set_ps(
+//                     x7[14], x6[14], x5[14], x4[14],
+//                     x3[14], x2[14], x1[14], x0[14]);
+
+//                 // accumulate squares
+//                 acc  = _mm256_fmadd_ps(v0,  v0,  acc);
+//                 acc  = _mm256_fmadd_ps(v2,  v2,  acc);
+//                 acc  = _mm256_fmadd_ps(v3,  v3,  acc);
+//                 acc  = _mm256_fmadd_ps(v4,  v4,  acc);
+//                 acc  = _mm256_fmadd_ps(v8,  v8,  acc);
+//                 acc  = _mm256_fmadd_ps(v9,  v9,  acc);
+//                 acc = _mm256_fmadd_ps(v10, v10, acc);
+//                 acc = _mm256_fmadd_ps(v14, v14, acc);
+//             }
+            
+//             __m128 lo = _mm256_castps256_ps128(acc);
+//             __m128 hi = _mm256_extractf128_ps(acc, 1);
+
+//             __m128 sum = _mm_add_ps(lo, hi);
+//             sum = _mm_hadd_ps(sum, sum);
+//             sum = _mm_hadd_ps(sum, sum);
+
+//             scalar_t accs = _mm_cvtss_f32(sum);
+
+//             for (; m < M; ++m) {
+//                 const scalar_t* x = group_in + (m << 4);
+
+//                 accs +=
+//                     x[0]*x[0] +
+//                     x[2]*x[2] +
+//                     x[3]*x[3] +
+//                     x[4]*x[4] +
+//                     x[8]*x[8] +
+//                     x[9]*x[9] +
+//                     x[10]*x[10] +
+//                     x[14]*x[14];
+//             }
+
+
+
+//             accs /= static_cast<scalar_t>(M);
+
+//             scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
+//             //scalar_t scale = std::rsqrt(acc + eps_t);
+//             //scalar_t scale = scalar_t(1) / std::sqrt(acc + eps_t);
+
+//             // ---- write + optional weight ----
+//             // for (int64_t m = 0; m < M; ++m) {
+
+//             //     const scalar_t* x = group_in + (m << 4);
+//             //     scalar_t* o       = group_out + (m << 4);
+
+//             //     scalar_t scalew = scale;
+
+//             //     if constexpr (HasWeight) {
+//             //         scalew *= W[m];
+//             //     }
+
+//             //     o[0]  = x[0]  * scalew;
+//             //     o[1]  = x[1]  * scalew;
+//             //     o[2]  = x[2]  * scalew;
+//             //     o[3]  = x[3]  * scalew;
+//             //     o[4]  = x[4]  * scalew;
+//             //     o[5]  = x[5]  * scalew;
+//             //     o[6]  = x[6]  * scalew;
+//             //     o[7]  = x[7]  * scalew;
+//             //     o[8]  = x[8]  * scalew;
+//             //     o[9]  = x[9]  * scalew;
+//             //     o[10] = x[10] * scalew;
+//             //     o[11] = x[11] * scalew;
+//             //     o[12] = x[12] * scalew;
+//             //     o[13] = x[13] * scalew;
+//             //     o[14] = x[14] * scalew;
+//             //     o[15] = x[15] * scalew;
+//             // }
+
+//             for (int64_t m = 0; m < M; ++m) {
+//                 const float* x = group_in + (m << 4);
+//                 float* o       = group_out + (m << 4);
+
+//                 float scalew = scale;
+
+//                 if constexpr (HasWeight) {
+//                     scalew *= W[m];
+//                 }
+
+//                 __m256 vscale = _mm256_set1_ps(scalew);
+
+//                 __m256 v0 = _mm256_loadu_ps(x + 0);
+//                 __m256 v1 = _mm256_loadu_ps(x + 8);
+
+//                 v0 = _mm256_mul_ps(v0, vscale);
+//                 v1 = _mm256_mul_ps(v1, vscale);
+
+//                 _mm256_storeu_ps(o + 0, v0);
+//                 _mm256_storeu_ps(o + 8, v1);
+//             }
+
+
+//         }
+//     }else if constexpr (std::is_same_v<scalar_t, double>) {
+//         for (int64_t g = 0; g < groups; ++g) {
+
+//             const scalar_t* group_in  = X + g * (M << 4);
+//             scalar_t* group_out       = O + g * (M << 4);
+
+//             __m256d acc = _mm256_setzero_pd();
+
+//             int64_t m = 0;
+
+//             // AVX2 double: 4 lanes → process 4 "blocks"
+//             for (; m + 3 < M; m += 4) {
+
+//                 const scalar_t* x0 = group_in + (m << 4);
+//                 const scalar_t* x1 = x0 + 16;
+//                 const scalar_t* x2 = x1 + 16;
+//                 const scalar_t* x3 = x2 + 16;
+
+//                 // ---- load selected indices (double version) ----
+
+//                 __m256d v0 = _mm256_set_pd(
+//                     x3[0], x2[0], x1[0], x0[0]);
+
+//                 __m256d v2 = _mm256_set_pd(
+//                     x3[2], x2[2], x1[2], x0[2]);
+
+//                 __m256d v3 = _mm256_set_pd(
+//                     x3[3], x2[3], x1[3], x0[3]);
+
+//                 __m256d v4 = _mm256_set_pd(
+//                     x3[4], x2[4], x1[4], x0[4]);
+
+//                 __m256d v8 = _mm256_set_pd(
+//                     x3[8], x2[8], x1[8], x0[8]);
+
+//                 __m256d v9 = _mm256_set_pd(
+//                     x3[9], x2[9], x1[9], x0[9]);
+
+//                 __m256d v10 = _mm256_set_pd(
+//                     x3[10], x2[10], x1[10], x0[10]);
+
+//                 __m256d v14 = _mm256_set_pd(
+//                     x3[14], x2[14], x1[14], x0[14]);
+
+//                 // ---- accumulate squares ----
+//                 acc = _mm256_fmadd_pd(v0,  v0,  acc);
+//                 acc = _mm256_fmadd_pd(v2,  v2,  acc);
+//                 acc = _mm256_fmadd_pd(v3,  v3,  acc);
+//                 acc = _mm256_fmadd_pd(v4,  v4,  acc);
+//                 acc = _mm256_fmadd_pd(v8,  v8,  acc);
+//                 acc = _mm256_fmadd_pd(v9,  v9,  acc);
+//                 acc = _mm256_fmadd_pd(v10, v10, acc);
+//                 acc = _mm256_fmadd_pd(v14, v14, acc);
+//             }
+
+//             // ---- horizontal sum (double) ----
+//             __m128d lo = _mm256_castpd256_pd128(acc);
+//             __m128d hi = _mm256_extractf128_pd(acc, 1);
+
+//             __m128d sum = _mm_add_pd(lo, hi);
+
+//             // reduce 2 doubles → scalar
+//             scalar_t accs =
+//                 _mm_cvtsd_f64(sum) +
+//                 _mm_cvtsd_f64(_mm_unpackhi_pd(sum, sum));
+
+//             // ---- scalar tail ----
+//             for (; m < M; ++m) {
+//                 const scalar_t* x = group_in + (m << 4);
+
+//                 accs +=
+//                     x[0]*x[0] +
+//                     x[2]*x[2] +
+//                     x[3]*x[3] +
+//                     x[4]*x[4] +
+//                     x[8]*x[8] +
+//                     x[9]*x[9] +
+//                     x[10]*x[10] +
+//                     x[14]*x[14];
+//             }
+
+//             accs /= static_cast<scalar_t>(M);
+
+//             scalar_t scale = scalar_t(1) / std::sqrt(std::max(accs, eps_t));
+
+//             // ---- write back ----
+//             // for (int64_t m = 0; m < M; ++m) {
+
+//             //     const scalar_t* x = group_in + (m << 4);
+//             //     scalar_t* o       = group_out + (m << 4);
+
+//             //     scalar_t scalew = scale;
+
+//             //     if constexpr (HasWeight) {
+//             //         scalew *= W[m];
+//             //     }
+
+//             //     o[0]  = x[0]  * scalew;
+//             //     o[1]  = x[1]  * scalew;
+//             //     o[2]  = x[2]  * scalew;
+//             //     o[3]  = x[3]  * scalew;
+//             //     o[4]  = x[4]  * scalew;
+//             //     o[5]  = x[5]  * scalew;
+//             //     o[6]  = x[6]  * scalew;
+//             //     o[7]  = x[7]  * scalew;
+//             //     o[8]  = x[8]  * scalew;
+//             //     o[9]  = x[9]  * scalew;
+//             //     o[10] = x[10] * scalew;
+//             //     o[11] = x[11] * scalew;
+//             //     o[12] = x[12] * scalew;
+//             //     o[13] = x[13] * scalew;
+//             //     o[14] = x[14] * scalew;
+//             //     o[15] = x[15] * scalew;
+//             // }
+
+//             for (int64_t i = 0; i < M; ++i) {
+
+//                 const double* x = group_x + (i << 4);
+//                 double* o       = group_o + (i << 4);
+
+//                 double scalew = scale;
+
+//                 if constexpr (HasWeight) {
+//                     scalew *= W[i];
+//                 }
+
+//                 __m256d vscale = _mm256_set1_pd(scalew);
+
+//                 __m256d v0 = _mm256_loadu_pd(x + 0);
+//                 __m256d v1 = _mm256_loadu_pd(x + 4);
+
+//                 v0 = _mm256_mul_pd(v0, vscale);
+//                 v1 = _mm256_mul_pd(v1, vscale);
+
+//                 _mm256_storeu_pd(o + 0, v0);
+//                 _mm256_storeu_pd(o + 4, v1);
+//             }
+//         }
+
+//     }
+   
+// }
 
 
 
@@ -1138,615 +2255,3 @@ void rms_norm_kernel_intrins(
 //         }
 //     }
 // }
-
-
-
-
-
-
-}  // namespace
-
-
- torch::Tensor inner_product_ver_0(const torch::Tensor& x,
-                             const torch::Tensor& y){
-     check_multivector(x, "inner_product x");
-     check_multivector(y, "inner_product y");
-     TORCH_CHECK(x.scalar_type() == y.scalar_type(),
-                 "inner_product: x and y must share dtype");
-     TORCH_CHECK(x.device() == y.device(), 
-                 "inner_product: x and y must share device");
-     auto selector = load_inner_selector(x.device());
-     auto xsel = torch::index_select(x,-1,selector);
-     auto ysel = torch::index_select(y,-1,selector);
-     return torch::einsum("...i, ...i -> ...",{xsel,ysel}).unsqueeze(-1);
- }
-
-
-
-
-torch::Tensor inner_product_ver_1(const torch::Tensor& x,
-                            const torch::Tensor& y){
-    check_multivector(x, "inner_product x");
-    check_multivector(y, "inner_product y");
-
-    TORCH_CHECK(x.scalar_type() == y.scalar_type(),
-                "inner_product: x and y must share dtype");
-
-    TORCH_CHECK(x.device() == y.device(),
-                "inner_product: x and y must share device");
-
-    auto out_sizes = x.sizes().vec();
-    out_sizes.back() = 1;
-
-    auto xc = x.contiguous();
-    auto yc = y.contiguous();
-    auto out = torch::empty(out_sizes, x.options());
-    //auto out = torch::empty_like(xc);
-    int64_t N = xc.numel() / 16;
-    //int64_t N = x.size(-2);
-    AT_DISPATCH_FLOATING_TYPES(
-        xc.scalar_type(),
-        "inner_product_kernel",
-        [&] {
-
-            const scalar_t* __restrict__ X =
-                xc.data_ptr<scalar_t>();
-
-            const scalar_t* __restrict__ Y =
-                yc.data_ptr<scalar_t>();
-
-            scalar_t* __restrict__ O =
-                out.data_ptr<scalar_t>();
-
-            for (int64_t n = 0; n < N; ++n) {
-
-                const scalar_t* x = X + (n << 4);
-                const scalar_t* y = Y + (n << 4);
-                  
-                O[n] =
-                    x[0]  * y[0]  +
-                    x[2]  * y[2]  +
-                    x[3]  * y[3]  +
-                    x[4]  * y[4]  +
-                    x[8]  * y[8]  +
-                    x[9]  * y[9]  +
-                    x[10] * y[10] +
-                    x[14] * y[14];
-            }
-        });
-
-    return out;
-}
-
-
-torch::Tensor inner_product_ver_2(const torch::Tensor& x,
-                            const torch::Tensor& y){
-    check_multivector(x, "inner_product x");
-    check_multivector(y, "inner_product y");
-
-    TORCH_CHECK(x.scalar_type() == y.scalar_type(),
-                "inner_product: x and y must share dtype");
-
-    TORCH_CHECK(x.device() == y.device(),
-                "inner_product: x and y must share device");
-
-    auto out_sizes = x.sizes().vec();
-    out_sizes.back() = 1;
-
-    auto xc = x.contiguous();
-    auto yc = y.contiguous();
-    auto out = torch::empty(out_sizes, x.options());
-    //auto out = torch::empty_like(xc);
-    int64_t N = xc.numel() / 16;
-    //int64_t N = x.size(-2);
-    AT_DISPATCH_FLOATING_TYPES(
-        xc.scalar_type(),
-        "inner_product_kernel",
-        [&] {
-
-            const scalar_t* __restrict__ X =
-                xc.data_ptr<scalar_t>();
-
-            const scalar_t* __restrict__ Y =
-                yc.data_ptr<scalar_t>();
-
-            scalar_t* __restrict__ O =
-                out.data_ptr<scalar_t>();
-
-            for (int64_t n = 0; n < N; ++n) {
-
-                const scalar_t* x = X + (n << 4);
-                const scalar_t* y = Y + (n << 4);
-                // const scalar_t o1 = x[0]  * y[0];
-                // const scalar_t o2 = x[2]  * y[2];  
-                // const scalar_t o3 = x[3]  * y[3];
-                // const scalar_t o4 = x[4]  * y[4]; 
-
-                // const scalar_t o8 = x[8]  * y[8];
-                // const scalar_t o9 = x[9]  * y[9]; 
-                // const scalar_t o10 = x[10]  * y[10];
-                // const scalar_t o14 = x[14]  * y[14]; 
-
-                // O[n] = o1 + o2 + o3 + o4 + o8 + o9 + o10 + o14;    
-
-                O[n] =
-                    x[0]  * y[0]  +
-                    x[2]  * y[2]  +
-                    x[3]  * y[3]  +
-                    x[4]  * y[4]  +
-                    x[8]  * y[8]  +
-                    x[9]  * y[9]  +
-                    x[10] * y[10] +
-                    x[14] * y[14];
-            }
-        });
-
-    return out;
-}
-
-
-// ---------------------------------------------------------------------------
-// ver_0 - NO OPTIMIZATION.
-// c++ implemnetation of the base version
-// ---------------------------------------------------------------------------
-torch::Tensor equi_rms_norm_ver_0(const torch::Tensor& x,
-                            const c10::optional<torch::Tensor>& weight,
-                            const c10::optional<double>& eps_opt){
-    check_multivector(x, "equi_rms_norm x");
-    double eps = eps_opt.has_value()
-        ? *eps_opt
-        : 1e-7;
-
-    auto ip = inner_product_ver_0(x,x);
-    auto normip = ip.mean(/*dim=*/-2, /*keepdim=*/true);
-    auto result = x/torch::sqrt(torch::clamp(normip,eps));
-    if (weight.has_value()){
-        result = result * weight->view({-1,1});
-    }
-    return result;
-}
-
-
-// ---------------------------------------------------------------------------
-// ver_1 - Optimized C++ implementation.
-// Performance improvements are mainly achieved through the optimized
-// inner_product kernel using direct raw pointer access, contiguous memory
-// layout, fixed 16-element block processing, pointer arithmetic, manual
-// loop unrolling, hardcoded selectors and __restrict__ alias optimization. These changes
-// reduce PyTorch overhead, improve cache locality, enable better SIMD
-// vectorization, and minimize temporary memory operations.
-// ---------------------------------------------------------------------------
-torch::Tensor equi_rms_norm_ver_1(const torch::Tensor& x,
-                            const c10::optional<torch::Tensor>& weight,
-                            const c10::optional<double>& eps_opt){
-    check_multivector(x, "equi_rms_norm x");
-    double eps = eps_opt.has_value()
-        ? *eps_opt
-        : 1e-7;
-
-    auto ip = inner_product_ver_1(x,x);
-    auto normip = ip.mean(/*dim=*/-2, /*keepdim=*/true);
-    auto result = x/torch::sqrt(torch::clamp(normip,eps));
-    if (weight.has_value()){
-        result = result * weight->view({-1,1});
-    }
-    return result;
-}
-
-
-
-// ---------------------------------------------------------------------------
-// ver_2 - Fully fused C++ implementation.
-//
-// Compared to ver_1, the RMS normalization pipeline is completely fused
-// into a single kernel. Instead of separate passes for inner product,
-// mean reduction, clamp, sqrt, normalization, and optional weight scaling,
-// all computations are performed in one streaming loop.
-//
-// This removes intermediate tensors and eliminates multiple full memory
-// traversals over the same data. The result is reduced memory bandwidth
-// usage, fewer kernel launches, and improved cache efficiency.
-//
-// Additional optimizations include compile-time
-// specialization via templates, multiple independent accumulators for
-// better instruction-level parallelism
-// ---------------------------------------------------------------------------
-torch::Tensor equi_rms_norm_ver_2(
-    const torch::Tensor& x,
-    const c10::optional<torch::Tensor>& weight,
-    const c10::optional<double>& eps_opt
-) {
-    check_multivector(x, "equi_rms_norm x");
-
-    double eps = eps_opt.has_value() ? *eps_opt : 1e-7;
-
-    auto xc = x.is_contiguous() ? x : x.contiguous();
-    auto out = torch::empty_like(xc);
-
-    int64_t M = x.size(-2);
-
-    int64_t groups = 1;
-    for (int64_t i = 0; i < x.dim() - 2; ++i)
-        groups *= x.size(i);
-
-    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel", [&] {
-        const scalar_t* X = xc.data_ptr<scalar_t>();
-        scalar_t* O       = out.data_ptr<scalar_t>();
-
-        if (weight.has_value()) {
-            auto wc = weight->contiguous();
-            const scalar_t* W = wc.data_ptr<scalar_t>();
-
-            rms_norm_kernel<scalar_t, true>(
-                X, O, W, groups, M, eps
-            );
-        } else {
-            rms_norm_kernel<scalar_t, false>(
-                X, O, nullptr, groups, M, eps
-            );
-        }
-    });
-
-    return out;
-}
-
-
-// ---------------------------------------------------------------------------
-// ver_3 - 
-//Tested two simd version. one were we use the mamory layout from version 2 
-//and use gather intrinsics. also tested a packed version, where we change the
-//memory layout such that we can load the vectors directly. 
-// ---------------------------------------------------------------------------
-torch::Tensor equi_rms_norm_ver_3(
-    const torch::Tensor& x,
-    const c10::optional<torch::Tensor>& weight,
-    const c10::optional<double>& eps_opt
-) {
-    check_multivector(x, "equi_rms_norm x");
-
-    double eps = eps_opt.has_value() ? *eps_opt : 1e-7;
-
-    auto xc = x.is_contiguous() ? x : x.contiguous();
-    auto out = torch::empty_like(xc);
-
-    int64_t M = x.size(-2);
-
-    int64_t groups = 1;
-    for (int64_t i = 0; i < x.dim() - 2; ++i)
-        groups *= x.size(i);
-
-
-    bool use_intrins =
-        (xc.scalar_type() == torch::kFloat32 ||
-         xc.scalar_type() == torch::kFloat64);
-
-    if (!use_intrins) {
-        //FALLBACK PATH
-        AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel", [&] {
-            if (weight.has_value()) {
-                rms_norm_kernel<scalar_t, true>(
-                    xc.data_ptr<scalar_t>(),
-                    out.data_ptr<scalar_t>(),
-                    weight->data_ptr<scalar_t>(),
-                    groups, M, eps
-                );
-            } else {
-                rms_norm_kernel<scalar_t, false>(
-                    xc.data_ptr<scalar_t>(),
-                    out.data_ptr<scalar_t>(),
-                    nullptr,
-                    groups, M, eps
-                );
-            }
-        });
-        return out;
-    }
-
-    //FAST PATH (intrinsics)
-    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel_intrins", [&] {
-        if (weight.has_value()) {
-            rms_norm_kernel_intrins<scalar_t, true>(
-                xc.data_ptr<scalar_t>(),
-                out.data_ptr<scalar_t>(),
-                weight->data_ptr<scalar_t>(),
-                groups, M, eps
-            );
-        } else {
-            rms_norm_kernel_intrins<scalar_t, false>(
-                xc.data_ptr<scalar_t>(),
-                out.data_ptr<scalar_t>(),
-                nullptr,
-                groups, M, eps
-            );
-        }
-    });
-
-    return out;
-}
-
-
-
-
-
-
-// ---------------------------------------------------------------------------
-// Packed rmsnormver3
-// ---------------------------------------------------------------------------
-// torch::Tensor equi_rms_norm_ver_3(
-//     const torch::Tensor& x,
-//     const c10::optional<torch::Tensor>& weight,
-//     const c10::optional<double>& eps_opt
-// ) {
-//     check_multivector(x, "equi_rms_norm x");
-
-//     double eps = eps_opt.has_value() ? *eps_opt : 1e-7;
-
-//     auto xc = x.is_contiguous() ? x : x.contiguous();
-//     auto out = torch::empty_like(xc);
-
-//     int64_t M = x.size(-2);
-//     int64_t groups = 1;
-//     for (int64_t i = 0; i < x.dim() - 2; ++i)
-//         groups *= x.size(i);
-
-//     // pack [groups][M][16] -> [groups][8][M]
-//     auto x_sel = torch::empty({groups, 8, M}, xc.options());
-
-//     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "pack_groups_16_to_8_soa", [&] {
-//         pack_groups_16_to_8_soa<scalar_t>(
-//             xc.data_ptr<scalar_t>(),
-//             x_sel.data_ptr<scalar_t>(),
-//             groups, M
-//         );
-//     });
-
-//     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel_packed", [&] {
-//         if (weight.has_value()) {
-//             rms_norm_kernel_packed<scalar_t, true>(
-//                 xc.data_ptr<scalar_t>(),
-//                 x_sel.data_ptr<scalar_t>(),
-//                 out.data_ptr<scalar_t>(),
-//                 weight->contiguous().data_ptr<scalar_t>(),
-//                 groups, M, eps
-//             );
-//         } else {
-//             rms_norm_kernel_packed<scalar_t, false>(
-//                 xc.data_ptr<scalar_t>(),
-//                 x_sel.data_ptr<scalar_t>(),
-//                 out.data_ptr<scalar_t>(),
-//                 nullptr,
-//                 groups, M, eps
-//             );
-//         }
-//     });
-
-//     return out;
-// }
-
-
-
-torch::Tensor scaler_gated_gelu_ver_0(const torch::Tensor& x,
-                                const std::string& approximate){
-    check_multivector(x, "scalar_gated_gelu: x");
-    TORCH_CHECK(
-        approximate == "none" || approximate == "tanh",
-        "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
-        approximate
-    );
-
-    auto reduction = x.narrow(-1, 0, 1);
-    auto gates = torch::nn::functional::gelu(
-        reduction,
-        torch::nn::functional::GELUFuncOptions().approximate(approximate)
-    );
-    return x * gates;
-}
-
-
-
-// torch::Tensor scaler_gated_gelu_ver_1(const torch::Tensor& x,
-//                                 const std::string& approximate){
-//     check_multivector(x, "scalar_gated_gelu: x");
-//     TORCH_CHECK(
-//         approximate == "none" || approximate == "tanh",
-//         "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
-//         approximate
-//     );
-
-//     if(approximate == "tanh"){
-//         auto xc = x.contiguous();
-//         auto out = torch::empty_like(xc);
-//         auto outc = out.contiguous();
-//         int64_t N = xc.numel() / 16;
-//         //int64_t N = x.size(-2);
-//         AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
-//             scalar_gated_gelu_kernel<scalar_t>(
-//                 xc.data_ptr<scalar_t>(),
-//                 outc.data_ptr<scalar_t>(),
-//                 N
-//             );
-//         });
-//         return outc;
-
-//     }else{
-//         auto reduction = x.narrow(-1, 0, 1);
-//         auto gates = torch::nn::functional::gelu(
-//             reduction,
-//             torch::nn::functional::GELUFuncOptions().approximate(approximate)
-//         );
-//         return x * gates;
-//     }
-
-    
-// }
-
-
-
-// torch::Tensor scaler_gated_gelu_ver_2(
-//     const torch::Tensor& x,
-//     const std::string& approximate
-// ){
-//     check_multivector(x, "scalar_gated_gelu: x");
-//     TORCH_CHECK(
-//         approximate == "none" || approximate == "tanh",
-//         "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
-//         approximate
-//     );
-
-//     if(approximate == "tanh"){
-//         auto xc = x.contiguous();
-//         auto out = torch::empty_like(xc);
-//         auto outc = out.contiguous();
-//         int64_t N = xc.numel() / 16;
-//         //int64_t N = x.size(-2);
-
-//         AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
-//             scalar_gated_gelu_kernel<scalar_t>(
-//                 xc.data_ptr<scalar_t>(),
-//                 outc.data_ptr<scalar_t>(),
-//                 N
-//             );
-//         });
-//         return outc;
-
-//     }else{
-//         auto reduction = x.narrow(-1, 0, 1);
-//         auto gates = torch::nn::functional::gelu(
-//             reduction,
-//             torch::nn::functional::GELUFuncOptions().approximate(approximate)
-//         );
-//         return x * gates;
-//     }
-// }
-
-
-torch::Tensor scaler_gated_gelu_ver_1(const torch::Tensor& x,
-                                const std::string& approximate){
-    check_multivector(x, "scalar_gated_gelu: x");
-    TORCH_CHECK(
-        approximate == "none" || approximate == "tanh",
-        "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
-        approximate
-    );
-
-    auto xc = x.is_contiguous() ? x : x.contiguous();
-    auto out = torch::empty_like(xc);
-    int64_t N = xc.numel() / 16;
-
-    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scaler_gated_gelu_ver_0", [&] {
-        const scalar_t* X = xc.data_ptr<scalar_t>();
-        scalar_t*       O = out.data_ptr<scalar_t>();
-
-        constexpr scalar_t kSqrtHalf = static_cast<scalar_t>(0.7071067811865476);
-
-        for (int64_t n = 0; n < N; ++n) {
-            const scalar_t* xi = X + (n << 4);
-            scalar_t*       oi = O + (n << 4);
-
-            // exact GeLU: 0.5 * x * (1 + erf(x / sqrt(2)))
-            scalar_t gate = static_cast<scalar_t>(0.5) * xi[0] *
-                            (static_cast<scalar_t>(1.0) + std::erf(xi[0] * kSqrtHalf));
-
-            oi[0]  = xi[0]  * gate;
-            oi[1]  = xi[1]  * gate;
-            oi[2]  = xi[2]  * gate;
-            oi[3]  = xi[3]  * gate;
-            oi[4]  = xi[4]  * gate;
-            oi[5]  = xi[5]  * gate;
-            oi[6]  = xi[6]  * gate;
-            oi[7]  = xi[7]  * gate;
-            oi[8]  = xi[8]  * gate;
-            oi[9]  = xi[9]  * gate;
-            oi[10] = xi[10] * gate;
-            oi[11] = xi[11] * gate;
-            oi[12] = xi[12] * gate;
-            oi[13] = xi[13] * gate;
-            oi[14] = xi[14] * gate;
-            oi[15] = xi[15] * gate;
-        }
-    });
-
-    return out;
-}
-
-
-
-torch::Tensor scaler_gated_gelu_ver_2(const torch::Tensor& x,
-                                const std::string& approximate){
-    check_multivector(x, "scalar_gated_gelu: x");
-    TORCH_CHECK(
-        approximate == "none" || approximate == "tanh",
-        "scalar_gated_gelu: approximate must be 'none' or 'tanh' string",
-        approximate
-    );
-
-    auto xc = x.is_contiguous() ? x : x.contiguous();
-    auto out = torch::empty_like(xc);
-    int64_t N = xc.numel() / 16;
-
-    if (xc.scalar_type() == torch::kFloat32) {
-
-        const float* X = xc.data_ptr<float>();
-        float*       O = out.data_ptr<float>();
-
-        constexpr float kSqrtHalf = 0.7071067811865476f;
-
-        for (int64_t n = 0; n < N; ++n) {
-            const float* xi = X + (n << 4);
-            float*       oi = O + (n << 4);
-
-            float gate = 0.5f * xi[0] * (1.0f + std::erff(xi[0] * kSqrtHalf));
-
-#ifdef __AVX2__
-            __m256 vg = _mm256_set1_ps(gate);
-            _mm256_storeu_ps(oi + 0, _mm256_mul_ps(_mm256_loadu_ps(xi + 0), vg));
-            _mm256_storeu_ps(oi + 8, _mm256_mul_ps(_mm256_loadu_ps(xi + 8), vg));
-#else
-            float32x4_t vg = vdupq_n_f32(gate);
-            vst1q_f32(oi + 0,  vmulq_f32(vld1q_f32(xi + 0),  vg));
-            vst1q_f32(oi + 4,  vmulq_f32(vld1q_f32(xi + 4),  vg));
-            vst1q_f32(oi + 8,  vmulq_f32(vld1q_f32(xi + 8),  vg));
-            vst1q_f32(oi + 12, vmulq_f32(vld1q_f32(xi + 12), vg));
-#endif
-        }
-
-    } else {
-        // double fallback — scalar stores
-        const double* X = xc.data_ptr<double>();
-        double*       O = out.data_ptr<double>();
-
-        constexpr double kSqrtHalf = 0.7071067811865476;
-
-        for (int64_t n = 0; n < N; ++n) {
-            const double* xi = X + (n << 4);
-            double*       oi = O + (n << 4);
-
-            double gate = 0.5 * xi[0] * (1.0 + std::erf(xi[0] * kSqrtHalf));
-
-#ifdef __AVX2__
-            __m256d vg = _mm256_set1_pd(gate);
-            _mm256_storeu_pd(oi + 0,  _mm256_mul_pd(_mm256_loadu_pd(xi + 0),  vg));
-            _mm256_storeu_pd(oi + 4,  _mm256_mul_pd(_mm256_loadu_pd(xi + 4),  vg));
-            _mm256_storeu_pd(oi + 8,  _mm256_mul_pd(_mm256_loadu_pd(xi + 8),  vg));
-            _mm256_storeu_pd(oi + 12, _mm256_mul_pd(_mm256_loadu_pd(xi + 12), vg));
-#else
-            float64x2_t vg = vdupq_n_f64(gate);
-            vst1q_f64(oi + 0,  vmulq_f64(vld1q_f64(xi + 0),  vg));
-            vst1q_f64(oi + 2,  vmulq_f64(vld1q_f64(xi + 2),  vg));
-            vst1q_f64(oi + 4,  vmulq_f64(vld1q_f64(xi + 4),  vg));
-            vst1q_f64(oi + 6,  vmulq_f64(vld1q_f64(xi + 6),  vg));
-            vst1q_f64(oi + 8,  vmulq_f64(vld1q_f64(xi + 8),  vg));
-            vst1q_f64(oi + 10, vmulq_f64(vld1q_f64(xi + 10), vg));
-            vst1q_f64(oi + 12, vmulq_f64(vld1q_f64(xi + 12), vg));
-            vst1q_f64(oi + 14, vmulq_f64(vld1q_f64(xi + 14), vg));
-#endif
-        }
-    }
-
-    return out;
-}
-
-
-
-
-}}  // namespace ezgatr::opt
