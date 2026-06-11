@@ -28,22 +28,22 @@ namespace ezgatr { namespace opt {
 
 namespace {
 
-#include "gp_unrolled.inc"
-#include "join_unrolled.inc"
-#include "gp_block_ilp2.inc"
-#include "gp_block_ilp4.inc"
-#include "join_block_ilp2.inc"
-#include "join_block_ilp4.inc"
-#include "gp_unrolled_acc2.inc"
-#include "gp_unrolled_acc4.inc"
-#include "join_unrolled_acc2.inc"
-#include "join_unrolled_acc4.inc"
-#include "gp_loop_unroll2.inc"
-#include "gp_loop_unroll4.inc"
-#include "join_loop_unroll2.inc"
-#include "join_loop_unroll4.inc"
-#include "gp_soa_avx.inc"
-#include "join_soa_avx.inc"
+#include "kernels/gp_unrolled.inc"
+#include "kernels/join_unrolled.inc"
+#include "kernels/gp_block_ilp2.inc"
+#include "kernels/gp_block_ilp4.inc"
+#include "kernels/join_block_ilp2.inc"
+#include "kernels/join_block_ilp4.inc"
+#include "kernels/gp_unrolled_acc2.inc"
+#include "kernels/gp_unrolled_acc4.inc"
+#include "kernels/join_unrolled_acc2.inc"
+#include "kernels/join_unrolled_acc4.inc"
+#include "kernels/gp_loop_unroll2.inc"
+#include "kernels/gp_loop_unroll4.inc"
+#include "kernels/join_loop_unroll2.inc"
+#include "kernels/join_loop_unroll4.inc"
+#include "kernels/gp_soa_avx.inc"
+#include "kernels/join_soa_avx.inc"
 
 using BasisTable = int8_t[16][16][16];
 

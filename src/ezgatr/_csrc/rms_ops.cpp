@@ -207,11 +207,6 @@ static void gelu_gate_kernel_avx2(const float* __restrict__ X,
 }
 #endif  // __AVX2__ && __FMA__
 
-<<<<<<< HEAD
-
-=======
->>>>>>> main
-
 
 void check_multivector(const torch::Tensor& t, const char* name) {
     TORCH_CHECK(t.dim() >= 1, name, ": expected at least 1 dim, got ", t.dim());

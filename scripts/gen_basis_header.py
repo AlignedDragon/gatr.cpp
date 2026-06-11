@@ -6,8 +6,8 @@ depend on this script being available at compile time.
 
 Generates:
   - src/ezgatr/_csrc/basis_data.h     (dense GP_BASIS / OP_BASIS / DUAL_*)
-  - src/ezgatr/_csrc/gp_unrolled.inc  (16 templated inlines: gp_blade_NN<T>)
-  - src/ezgatr/_csrc/join_unrolled.inc (16 templated inlines: join_blade_NN<T>)
+  - src/ezgatr/_csrc/kernels/gp_unrolled.inc  (16 templated inlines: gp_blade_NN<T>)
+  - src/ezgatr/_csrc/kernels/join_unrolled.inc (16 templated inlines: join_blade_NN<T>)
 """
 from __future__ import annotations
 
@@ -19,22 +19,22 @@ import torch
 REPO = Path(__file__).resolve().parents[1]
 BASIS_DIR = REPO / "src/ezgatr/nn/functional/basis"
 OUT = REPO / "src/ezgatr/_csrc/basis_data.h"
-OUT_GP_INC = REPO / "src/ezgatr/_csrc/gp_unrolled.inc"
-OUT_JOIN_INC = REPO / "src/ezgatr/_csrc/join_unrolled.inc"
-OUT_GP_ILP2_INC = REPO / "src/ezgatr/_csrc/gp_block_ilp2.inc"
-OUT_GP_ILP4_INC = REPO / "src/ezgatr/_csrc/gp_block_ilp4.inc"
-OUT_JOIN_ILP2_INC = REPO / "src/ezgatr/_csrc/join_block_ilp2.inc"
-OUT_JOIN_ILP4_INC = REPO / "src/ezgatr/_csrc/join_block_ilp4.inc"
-OUT_GP_ACC2_INC = REPO / "src/ezgatr/_csrc/gp_unrolled_acc2.inc"
-OUT_GP_ACC4_INC = REPO / "src/ezgatr/_csrc/gp_unrolled_acc4.inc"
-OUT_JOIN_ACC2_INC = REPO / "src/ezgatr/_csrc/join_unrolled_acc2.inc"
-OUT_JOIN_ACC4_INC = REPO / "src/ezgatr/_csrc/join_unrolled_acc4.inc"
-OUT_GP_UNROLL2_INC = REPO / "src/ezgatr/_csrc/gp_loop_unroll2.inc"
-OUT_GP_UNROLL4_INC = REPO / "src/ezgatr/_csrc/gp_loop_unroll4.inc"
-OUT_JOIN_UNROLL2_INC = REPO / "src/ezgatr/_csrc/join_loop_unroll2.inc"
-OUT_JOIN_UNROLL4_INC = REPO / "src/ezgatr/_csrc/join_loop_unroll4.inc"
-OUT_GP_SOA_AVX_INC = REPO / "src/ezgatr/_csrc/gp_soa_avx.inc"
-OUT_JOIN_SOA_AVX_INC = REPO / "src/ezgatr/_csrc/join_soa_avx.inc"
+OUT_GP_INC = REPO / "src/ezgatr/_csrc/kernels/gp_unrolled.inc"
+OUT_JOIN_INC = REPO / "src/ezgatr/_csrc/kernels/join_unrolled.inc"
+OUT_GP_ILP2_INC = REPO / "src/ezgatr/_csrc/kernels/gp_block_ilp2.inc"
+OUT_GP_ILP4_INC = REPO / "src/ezgatr/_csrc/kernels/gp_block_ilp4.inc"
+OUT_JOIN_ILP2_INC = REPO / "src/ezgatr/_csrc/kernels/join_block_ilp2.inc"
+OUT_JOIN_ILP4_INC = REPO / "src/ezgatr/_csrc/kernels/join_block_ilp4.inc"
+OUT_GP_ACC2_INC = REPO / "src/ezgatr/_csrc/kernels/gp_unrolled_acc2.inc"
+OUT_GP_ACC4_INC = REPO / "src/ezgatr/_csrc/kernels/gp_unrolled_acc4.inc"
+OUT_JOIN_ACC2_INC = REPO / "src/ezgatr/_csrc/kernels/join_unrolled_acc2.inc"
+OUT_JOIN_ACC4_INC = REPO / "src/ezgatr/_csrc/kernels/join_unrolled_acc4.inc"
+OUT_GP_UNROLL2_INC = REPO / "src/ezgatr/_csrc/kernels/gp_loop_unroll2.inc"
+OUT_GP_UNROLL4_INC = REPO / "src/ezgatr/_csrc/kernels/gp_loop_unroll4.inc"
+OUT_JOIN_UNROLL2_INC = REPO / "src/ezgatr/_csrc/kernels/join_loop_unroll2.inc"
+OUT_JOIN_UNROLL4_INC = REPO / "src/ezgatr/_csrc/kernels/join_loop_unroll4.inc"
+OUT_GP_SOA_AVX_INC = REPO / "src/ezgatr/_csrc/kernels/gp_soa_avx.inc"
+OUT_JOIN_SOA_AVX_INC = REPO / "src/ezgatr/_csrc/kernels/join_soa_avx.inc"
 
 DUAL_PERM = list(range(15, -1, -1))
 DUAL_SIGN = [1, -1, 1, -1, 1, 1, -1, 1, 1, -1, 1, -1, 1, -1, 1, 1]
