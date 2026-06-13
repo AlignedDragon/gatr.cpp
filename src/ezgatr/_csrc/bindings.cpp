@@ -1,10 +1,21 @@
 #include <torch/extension.h>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include "attention_ops.h"
 #include "pga_ops.h"
 #include "rms_ops.h"
 
 PYBIND11_MODULE(_opt_ops, m) {
       m.doc() = "ezgatr.opt — C++ implementations of PGA primitives";
+
+#if defined(__GLIBC__)
+      // glibc mmap()s allocations above 128 KB and munmap()s them on free, so
+      // every forward pass re-faults each page of every large activation.
+      // Raising the thresholds keeps freed blocks in the heap for reuse.
+      mallopt(M_MMAP_THRESHOLD, 512 * 1024 * 1024);
+      mallopt(M_TRIM_THRESHOLD, 512 * 1024 * 1024);
+#endif
 
       m.def("geometric_product", &ezgatr::opt::geometric_product,
             py::arg("x"), py::arg("y"),
@@ -314,5 +325,10 @@ PYBIND11_MODULE(_opt_ops, m) {
       m.def("equi_join_v3", &ezgatr::opt::equi_join_v3,
             py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
             "Equivariant join: AVX2 SoA vectorization across multivectors (fp32).");
+
+      m.def("geometric_bilinear_v3_1", &ezgatr::opt::geometric_bilinear_v3_1,
+            py::arg("p"), py::arg("reference") = py::none(),
+            "Fused geometric bilinear (v3_1): p=(...,4*inter,16) -> "
+            "cat([gp(lg,rg), join(lj,rj,ref)]) in one kernel, no torch.cat (fp32).");
 
 }

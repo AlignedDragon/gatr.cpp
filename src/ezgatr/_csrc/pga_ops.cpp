@@ -146,7 +146,7 @@ static void join_kernel_v0(const T* __restrict__ X,
         const T* x = X + 16 * n;
         const T* y = Y + 16 * n;
         T*       o = O + 16 * n;
-        const T s = HasRef ? R[16 * n + 14] : T(1);
+        const T s = HasRef ? R[n] : T(1);
         for (int i = 0; i < 16; ++i) {
             T acc = T(0);
             for (int j = 0; j < 16; ++j) {
@@ -177,7 +177,7 @@ static void join_kernel_v1(const T* __restrict__ X,
             o[e[m].i] += T(e[m].sign) * x[e[m].j] * y[e[m].k];
         }
         if constexpr (HasRef) {
-            const T s = R[16 * n + 14];
+            const T s = R[n];
             for (int i = 0; i < 16; ++i) o[i] *= s;
         }
     }
@@ -222,7 +222,7 @@ static void join_kernel_v2(const T* __restrict__ X,
         const T* y = Y + 16 * n;
         T*       o = O + 16 * n;
         if constexpr (HasRef) {
-            const T s = R[16 * n + 14];
+            const T s = R[n];
             o[0]  = s * join_blade_00<T>(x, y);
             o[1]  = s * join_blade_01<T>(x, y);
             o[2]  = s * join_blade_02<T>(x, y);
@@ -328,7 +328,7 @@ static void join_kernel_v2_1(const T* __restrict__ X,
         const T* y = Y + 16 * n;
         T*       o = O + 16 * n;
         if constexpr (HasRef) {
-            const T s = R[16 * n + 14];
+            const T s = R[n];
             o[0]  = s * join_blade_00_acc2<T>(x, y);
             o[1]  = s * join_blade_01_acc2<T>(x, y);
             o[2]  = s * join_blade_02_acc2<T>(x, y);
@@ -378,7 +378,7 @@ static void join_kernel_v2_2(const T* __restrict__ X,
         const T* y = Y + 16 * n;
         T*       o = O + 16 * n;
         if constexpr (HasRef) {
-            const T s = R[16 * n + 14];
+            const T s = R[n];
             o[0]  = s * join_blade_00_acc4<T>(x, y);
             o[1]  = s * join_blade_01_acc4<T>(x, y);
             o[2]  = s * join_blade_02_acc4<T>(x, y);
@@ -447,7 +447,7 @@ static void join_kernel_v2_3(const T* __restrict__ X,
         T* o = O + 16 * n;
         join_block_ilp2<T>(X + 16 * n, Y + 16 * n, o);
         if constexpr (HasRef) {
-            const T s = R[16 * n + 14];
+            const T s = R[n];
             for (int i = 0; i < 16; ++i) o[i] *= s;
         } else {
             (void)R;
@@ -465,7 +465,7 @@ static void join_kernel_v2_4(const T* __restrict__ X,
         T* o = O + 16 * n;
         join_block_ilp4<T>(X + 16 * n, Y + 16 * n, o);
         if constexpr (HasRef) {
-            const T s = R[16 * n + 14];
+            const T s = R[n];
             for (int i = 0; i < 16; ++i) o[i] *= s;
         } else {
             (void)R;
@@ -548,7 +548,7 @@ static void join_kernel_v2_7(const T* __restrict__ X, const T* __restrict__ Y,
             T* o = O + 16 * n;
             join_block_ilp2<T>(X + 16 * n, Y + 16 * n, o);
             if constexpr (HasRef) {
-                const T s = R[16 * n + 14];
+                const T s = R[n];
                 for (int i = 0; i < 16; ++i) o[i] *= s;
             } else {
                 (void)R;
@@ -715,10 +715,10 @@ static void join_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
             soa_transpose_in_f32(Y, n, yb);
             join_soa_block_f32(xb, yb, ob);
             if constexpr (HasRef) {
-                const float s[8] = {R[16 * (n + 0) + 14], R[16 * (n + 1) + 14],
-                                    R[16 * (n + 2) + 14], R[16 * (n + 3) + 14],
-                                    R[16 * (n + 4) + 14], R[16 * (n + 5) + 14],
-                                    R[16 * (n + 6) + 14], R[16 * (n + 7) + 14]};
+                const float s[8] = {R[n + 0], R[n + 1],
+                                    R[n + 2], R[n + 3],
+                                    R[n + 4], R[n + 5],
+                                    R[n + 6], R[n + 7]};
                 soa_transpose_out_f32<true>(ob, n, O, s);
             } else {
                 soa_transpose_out_f32<false>(ob, n, O, nullptr);
@@ -728,7 +728,7 @@ static void join_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
             T* o = O + 16 * n;
             join_block_ilp2<float>(X + 16 * n, Y + 16 * n, o);
             if constexpr (HasRef) {
-                const float s = R[16 * n + 14];
+                const float s = R[n];
                 for (int i = 0; i < 16; ++i) o[i] *= s;
             }
         }
@@ -914,9 +914,10 @@ torch::Tensor equi_join(const torch::Tensor& x,
     auto out = torch::empty_like(xc);
     int64_t N = xc.numel() / 16;
 
-    torch::Tensor refc;
+    // Blade-14 scalars only (see run_join_variant).
+    torch::Tensor ref14;
     if (reference.has_value()) {
-        refc = reference->expand_as(xc).contiguous();
+        ref14 = reference->expand_as(xc).select(-1, 14).contiguous();
     }
 
     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "equi_join_cpu", [&]{
@@ -924,7 +925,7 @@ torch::Tensor equi_join(const torch::Tensor& x,
             join_kernel_v2<scalar_t, true>(
                 xc.data_ptr<scalar_t>(),
                 yc.data_ptr<scalar_t>(),
-                refc.data_ptr<scalar_t>(),
+                ref14.data_ptr<scalar_t>(),
                 out.data_ptr<scalar_t>(),
                 N);
         } else {
@@ -994,13 +995,17 @@ torch::Tensor run_join_variant(const torch::Tensor& x, const torch::Tensor& y,
     auto out = torch::empty_like(xc);
     int64_t N = xc.numel() / 16;
 
-    torch::Tensor refc;
+    // The kernels only consume blade 14 of the reference; extracting those
+    // scalars from the broadcast view copies N floats instead of materializing
+    // the full N x 16 expansion (16x less traffic; for the model's [B,1,1,16]
+    // reference the read side is just B distinct values).
+    torch::Tensor ref14;
     if (reference.has_value()) {
-        refc = reference->expand_as(xc).contiguous();
+        ref14 = reference->expand_as(xc).select(-1, 14).contiguous();
     }
 
     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "join_variant_cpu", [&]{
-        const scalar_t* R = reference.has_value() ? refc.data_ptr<scalar_t>() : nullptr;
+        const scalar_t* R = reference.has_value() ? ref14.data_ptr<scalar_t>() : nullptr;
         kernel(xc.data_ptr<scalar_t>(),
                yc.data_ptr<scalar_t>(),
                R,
@@ -1453,25 +1458,311 @@ torch::Tensor equi_linear_v2(const torch::Tensor& x,
 // ---------------------------------------------------------------------------
 // ver_3 - EXPLICIT AVX2/FMA SIMD VECTORIZATION (float32 only).
 //
-// Each 16-element multivector maps to two __m256 registers (lo=blades 0..7,
-// hi=blades 8..15). Per (o,i) channel pair the 24 nonzero couplings reduce
-// to four load+FMA pairs:
-//   Diagonal (16 terms): packed weight vector wdiag_lo/hi multiplied lane-wise
-//     into accumulator via two FMAs covering lo and hi halves.
-//   Off-diagonal (8 e_0-couplings): source blades gathered to destination
-//     positions with _mm256_permutevar8x32_ps, then multiplied by sparse
-//     weight vector woff_lo/hi (zero lanes multiply away). Two more FMAs.
-//   Weight packing (from ver_2): wdiag/woff depend only on (o,i) so they are
-//     packed once per forward pass into a thread-local buffer, leaving the
-//     hot (batch, out_ch) loop as pure loads+FMAs on register accumulators.
-//   4-channel blocking: x loads and both permutes are shared across 4 output
-//     channels per (b,i), amortising the 2-permute cost. Diagonal FMAs are
-//     issued before off-diagonal so the 3-cycle permute latency overlaps with
-//     FMA work. Register budget: 8 accumulators + 4 x/perm = 12 of 16 YMM.
-//     Tail: a 2-channel pair + optional 1-channel handles any out_ch.
+// Each 16-element multivector splits into a lo half (blades 0..7) and a hi
+// half (blades 8..15), one __m256 each, and the two halves are processed in
+// separate passes. Per (o,i) channel pair and half, the couplings reduce to
+// two load+FMA pairs: a packed diagonal weight vector on x, and a sparse
+// off-diagonal weight vector on a permutation of x (zero lanes multiply
+// away). Splitting the halves frees enough registers for a 4-output-channel
+// x 2-batch micro-kernel per half: 8 accumulators + x0/x1 + their permutes
+// = 12 of 16 YMM, nothing spills, each x load feeds 8 FMAs and each weight
+// load feeds 2 FMAs (16 FMAs : 10 loads per inner iteration; the previous
+// fused-halves kernel needed 20 registers and the compiler re-loaded x and
+// shared weights from memory, ~26 load uops per 16 FMAs).
+//
+// Weights are packed once per distinct weight tensor into a process-wide
+// cache keyed by data pointer + version counter: inference reuses the same
+// weights every forward, so the pack runs once, not per call.
+//
+// Bias is folded into the lane-0 accumulator init of the lo half, and
+// outputs too large to be cache-resident are written with non-temporal
+// stores, skipping the read-for-ownership of the fresh destination pages.
 //
 // Falls back to scalar ver_2 for float64 or non-AVX2 builds.
 // ---------------------------------------------------------------------------
+#if EZGATR_HAVE_AVX2
+namespace {
+
+// Packed split-half weights for one weight tensor. Layout per (o,i) pair and
+// half: [diag(8) | off(8)], lo halves in row 0, hi halves in row 1.
+struct ElPacked {
+    torch::Tensor src;     // strong ref pins the storage so the key stays valid
+    uint32_t version;
+    bool normalized;
+    torch::Tensor packed;  // float32 [2][n_oi*16]
+};
+
+std::mutex g_el_pack_mu;
+std::map<const void*, ElPacked> g_el_pack_cache;
+
+void el_pack_split_f32(const float* __restrict__ wsrc, int64_t n_oi,
+                       bool normalize, float* __restrict__ WL,
+                       float* __restrict__ WH) {
+    float inv[9];
+    for (int k = 0; k < 9; ++k)
+        inv[k] = normalize ? float(EQUI_LINEAR_INV_NORMS[k]) : 1.0f;
+    for (int64_t p = 0; p < n_oi; ++p) {
+        const float* __restrict__ ws = wsrc + p * 9;
+        const float w0=ws[0]*inv[0], w1=ws[1]*inv[1], w2=ws[2]*inv[2];
+        const float w3=ws[3]*inv[3], w4=ws[4]*inv[4], w5=ws[5]*inv[5];
+        const float w6=ws[6]*inv[6], w7=ws[7]*inv[7], w8=ws[8]*inv[8];
+        float* __restrict__ dl = WL + p * 16;
+        float* __restrict__ dh = WH + p * 16;
+        // lo diag {w0, w1,w1,w1,w1, w2,w2,w2}; lo off blade1<-w5, blades5,6,7<-w6
+        dl[0]=w0; dl[1]=w1; dl[2]=w1;  dl[3]=w1;  dl[4]=w1;  dl[5]=w2;  dl[6]=w2;  dl[7]=w2;
+        dl[8]=0;  dl[9]=w5; dl[10]=0;  dl[11]=0;  dl[12]=0;  dl[13]=w6; dl[14]=w6; dl[15]=w6;
+        // hi diag {w2,w2,w2, w3,w3,w3,w3, w4}; hi off blades11,12,13<-w7, blade15<-w8
+        dh[0]=w2; dh[1]=w2; dh[2]=w2;  dh[3]=w3;  dh[4]=w3;  dh[5]=w3;  dh[6]=w3;  dh[7]=w4;
+        dh[8]=0;  dh[9]=0;  dh[10]=0;  dh[11]=w7; dh[12]=w7; dh[13]=w7; dh[14]=0;  dh[15]=w8;
+    }
+}
+
+torch::Tensor el_get_packed_f32(const torch::Tensor& weight,
+                                const torch::Tensor& wf,
+                                int64_t n_oi, bool normalize) {
+    // wf is a fresh temp when weight is non-contiguous; only cache stable ptrs.
+    const bool cacheable = weight.is_contiguous();
+    const void* key = wf.data_ptr();
+    // Inference tensors (torch.inference_mode) carry no version counter — by
+    // design they are treated as immutable, so a fixed version is safe. The
+    // strong `src` ref in the cache entry pins the storage, so a data_ptr hit
+    // can never be a recycled allocation.
+    auto* impl = wf.unsafeGetTensorImpl();
+    const uint32_t version =
+        impl->is_inference() ? 0 : impl->version_counter().current_version();
+
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(g_el_pack_mu);
+        auto it = g_el_pack_cache.find(key);
+        if (it != g_el_pack_cache.end() &&
+            it->second.version == version &&
+            it->second.normalized == normalize &&
+            it->second.packed.size(1) == n_oi * 16) {
+            return it->second.packed;
+        }
+    }
+
+    auto packed = torch::empty({2, n_oi * 16}, wf.options());
+    el_pack_split_f32(wf.data_ptr<float>(), n_oi, normalize,
+                      packed.data_ptr<float>(),
+                      packed.data_ptr<float>() + n_oi * 16);
+
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(g_el_pack_mu);
+        if (g_el_pack_cache.size() > 64) g_el_pack_cache.clear();
+        g_el_pack_cache[key] = ElPacked{wf, version, normalize, packed};
+    }
+    return packed;
+}
+
+template <bool NT>
+static inline void el_store(float* p, __m256 v) {
+    if constexpr (NT) _mm256_stream_ps(p, v);
+    else              _mm256_storeu_ps(p, v);
+}
+
+// One half (xoff=0: lo, xoff=8: hi) of 4 output channels x 2 batch rows.
+// bias4 carries the lane-0 bias for the lo half, nullptr otherwise.
+// NOTE (2026-06-13): a 3ch x 2batch variant with separate diag/off
+// accumulators (12 single-FMA chains, breaking the 2x5-cycle dependency per
+// accumulator) measures +13% with plain stores, but LOSES under the
+// non-temporal stores used for large outputs (WC-buffer behavior favors the
+// 4-line group pattern) and under the 1-channel tails at out_ch=32. This
+// 4x2 form is the verified optimum for the production store configuration.
+template <bool NT>
+static inline void el_half_4x2(
+    const float* __restrict__ xb0, const float* __restrict__ xb1,
+    const float* __restrict__ w0, const float* __restrict__ w1,
+    const float* __restrict__ w2, const float* __restrict__ w3,
+    float* __restrict__ ob0, float* __restrict__ ob1,
+    int64_t in_ch, __m256i idx, int64_t xoff, const float* bias4)
+{
+    const __m256 z = _mm256_setzero_ps();
+    __m256 a0b0=z, a1b0=z, a2b0=z, a3b0=z;
+    __m256 a0b1=z, a1b1=z, a2b1=z, a3b1=z;
+    if (bias4) {
+        a0b0 = _mm256_blend_ps(z, _mm256_set1_ps(bias4[0]), 1); a0b1 = a0b0;
+        a1b0 = _mm256_blend_ps(z, _mm256_set1_ps(bias4[1]), 1); a1b1 = a1b0;
+        a2b0 = _mm256_blend_ps(z, _mm256_set1_ps(bias4[2]), 1); a2b1 = a2b0;
+        a3b0 = _mm256_blend_ps(z, _mm256_set1_ps(bias4[3]), 1); a3b1 = a3b0;
+    }
+    for (int64_t i = 0; i < in_ch; ++i) {
+        const __m256 x0  = _mm256_loadu_ps(xb0 + i * 16 + xoff);
+        const __m256 x1  = _mm256_loadu_ps(xb1 + i * 16 + xoff);
+        const __m256 xp0 = _mm256_permutevar8x32_ps(x0, idx);
+        const __m256 xp1 = _mm256_permutevar8x32_ps(x1, idx);
+        { const __m256 wd = _mm256_loadu_ps(w0 + i*16);
+          a0b0 = _mm256_fmadd_ps(wd, x0, a0b0); a0b1 = _mm256_fmadd_ps(wd, x1, a0b1); }
+        { const __m256 wd = _mm256_loadu_ps(w1 + i*16);
+          a1b0 = _mm256_fmadd_ps(wd, x0, a1b0); a1b1 = _mm256_fmadd_ps(wd, x1, a1b1); }
+        { const __m256 wd = _mm256_loadu_ps(w2 + i*16);
+          a2b0 = _mm256_fmadd_ps(wd, x0, a2b0); a2b1 = _mm256_fmadd_ps(wd, x1, a2b1); }
+        { const __m256 wd = _mm256_loadu_ps(w3 + i*16);
+          a3b0 = _mm256_fmadd_ps(wd, x0, a3b0); a3b1 = _mm256_fmadd_ps(wd, x1, a3b1); }
+        { const __m256 wo = _mm256_loadu_ps(w0 + i*16 + 8);
+          a0b0 = _mm256_fmadd_ps(wo, xp0, a0b0); a0b1 = _mm256_fmadd_ps(wo, xp1, a0b1); }
+        { const __m256 wo = _mm256_loadu_ps(w1 + i*16 + 8);
+          a1b0 = _mm256_fmadd_ps(wo, xp0, a1b0); a1b1 = _mm256_fmadd_ps(wo, xp1, a1b1); }
+        { const __m256 wo = _mm256_loadu_ps(w2 + i*16 + 8);
+          a2b0 = _mm256_fmadd_ps(wo, xp0, a2b0); a2b1 = _mm256_fmadd_ps(wo, xp1, a2b1); }
+        { const __m256 wo = _mm256_loadu_ps(w3 + i*16 + 8);
+          a3b0 = _mm256_fmadd_ps(wo, xp0, a3b0); a3b1 = _mm256_fmadd_ps(wo, xp1, a3b1); }
+    }
+    el_store<NT>(ob0 + 0*16 + xoff, a0b0); el_store<NT>(ob0 + 1*16 + xoff, a1b0);
+    el_store<NT>(ob0 + 2*16 + xoff, a2b0); el_store<NT>(ob0 + 3*16 + xoff, a3b0);
+    el_store<NT>(ob1 + 0*16 + xoff, a0b1); el_store<NT>(ob1 + 1*16 + xoff, a1b1);
+    el_store<NT>(ob1 + 2*16 + xoff, a2b1); el_store<NT>(ob1 + 3*16 + xoff, a3b1);
+}
+
+// One half of a single output channel x 2 batch rows (channel tail).
+template <bool NT>
+static inline void el_half_1x2(
+    const float* __restrict__ xb0, const float* __restrict__ xb1,
+    const float* __restrict__ w0,
+    float* __restrict__ ob0, float* __restrict__ ob1,
+    int64_t in_ch, __m256i idx, int64_t xoff, const float* bias1)
+{
+    const __m256 z = _mm256_setzero_ps();
+    __m256 ab0 = z, ab1 = z;
+    if (bias1) {
+        ab0 = _mm256_blend_ps(z, _mm256_set1_ps(*bias1), 1); ab1 = ab0;
+    }
+    for (int64_t i = 0; i < in_ch; ++i) {
+        const __m256 x0  = _mm256_loadu_ps(xb0 + i * 16 + xoff);
+        const __m256 x1  = _mm256_loadu_ps(xb1 + i * 16 + xoff);
+        const __m256 wd  = _mm256_loadu_ps(w0 + i*16);
+        const __m256 wo  = _mm256_loadu_ps(w0 + i*16 + 8);
+        ab0 = _mm256_fmadd_ps(wd, x0, ab0);
+        ab1 = _mm256_fmadd_ps(wd, x1, ab1);
+        ab0 = _mm256_fmadd_ps(wo, _mm256_permutevar8x32_ps(x0, idx), ab0);
+        ab1 = _mm256_fmadd_ps(wo, _mm256_permutevar8x32_ps(x1, idx), ab1);
+    }
+    el_store<NT>(ob0 + xoff, ab0);
+    el_store<NT>(ob1 + xoff, ab1);
+}
+
+// One half of 4 output channels x 1 batch row (odd-batch tail).
+template <bool NT>
+static inline void el_half_4x1(
+    const float* __restrict__ xb0,
+    const float* __restrict__ w0, const float* __restrict__ w1,
+    const float* __restrict__ w2, const float* __restrict__ w3,
+    float* __restrict__ ob0,
+    int64_t in_ch, __m256i idx, int64_t xoff, const float* bias4)
+{
+    const __m256 z = _mm256_setzero_ps();
+    __m256 a0=z, a1=z, a2=z, a3=z;
+    if (bias4) {
+        a0 = _mm256_blend_ps(z, _mm256_set1_ps(bias4[0]), 1);
+        a1 = _mm256_blend_ps(z, _mm256_set1_ps(bias4[1]), 1);
+        a2 = _mm256_blend_ps(z, _mm256_set1_ps(bias4[2]), 1);
+        a3 = _mm256_blend_ps(z, _mm256_set1_ps(bias4[3]), 1);
+    }
+    for (int64_t i = 0; i < in_ch; ++i) {
+        const __m256 x0  = _mm256_loadu_ps(xb0 + i * 16 + xoff);
+        const __m256 xp0 = _mm256_permutevar8x32_ps(x0, idx);
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(w0 + i*16), x0, a0);
+        a1 = _mm256_fmadd_ps(_mm256_loadu_ps(w1 + i*16), x0, a1);
+        a2 = _mm256_fmadd_ps(_mm256_loadu_ps(w2 + i*16), x0, a2);
+        a3 = _mm256_fmadd_ps(_mm256_loadu_ps(w3 + i*16), x0, a3);
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(w0 + i*16 + 8), xp0, a0);
+        a1 = _mm256_fmadd_ps(_mm256_loadu_ps(w1 + i*16 + 8), xp0, a1);
+        a2 = _mm256_fmadd_ps(_mm256_loadu_ps(w2 + i*16 + 8), xp0, a2);
+        a3 = _mm256_fmadd_ps(_mm256_loadu_ps(w3 + i*16 + 8), xp0, a3);
+    }
+    el_store<NT>(ob0 + 0*16 + xoff, a0); el_store<NT>(ob0 + 1*16 + xoff, a1);
+    el_store<NT>(ob0 + 2*16 + xoff, a2); el_store<NT>(ob0 + 3*16 + xoff, a3);
+}
+
+// One half of a single output channel x 1 batch row.
+template <bool NT>
+static inline void el_half_1x1(
+    const float* __restrict__ xb0, const float* __restrict__ w0,
+    float* __restrict__ ob0,
+    int64_t in_ch, __m256i idx, int64_t xoff, const float* bias1)
+{
+    const __m256 z = _mm256_setzero_ps();
+    __m256 a0 = bias1 ? _mm256_blend_ps(z, _mm256_set1_ps(*bias1), 1) : z;
+    for (int64_t i = 0; i < in_ch; ++i) {
+        const __m256 x0 = _mm256_loadu_ps(xb0 + i * 16 + xoff);
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(w0 + i*16), x0, a0);
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(w0 + i*16 + 8),
+                             _mm256_permutevar8x32_ps(x0, idx), a0);
+    }
+    el_store<NT>(ob0 + xoff, a0);
+}
+
+template <bool NT>
+static void el_v3_kernel_f32(const float* __restrict__ X,
+                             const float* __restrict__ WL,
+                             const float* __restrict__ WH,
+                             const float* __restrict__ bp,
+                             float* __restrict__ O,
+                             int64_t batch, int64_t in_ch, int64_t out_ch)
+{
+    // Off-diagonal gather indices. idx[j] is the source lane for output lane
+    // j; lanes whose packed off-weight is 0 use idx=0 as a don't-care.
+    //   lo: blade1<-x[0], blades5,6,7<-x[2,3,4]
+    const __m256i idx_lo = _mm256_setr_epi32(0, 0, 0, 0, 0, 2, 3, 4);
+    //   hi: blades11,12,13<-x[8,9,10], blade15<-x[14] (lane-relative 0,1,2,6)
+    const __m256i idx_hi = _mm256_setr_epi32(0, 0, 0, 0, 1, 2, 0, 6);
+
+    const int64_t n_quad = out_ch / 4;
+    int64_t b = 0;
+    for (; b + 1 < batch; b += 2) {
+        const float* xb0 = X + b       * in_ch * 16;
+        const float* xb1 = X + (b + 1) * in_ch * 16;
+        float* ob0 = O + b       * out_ch * 16;
+        float* ob1 = O + (b + 1) * out_ch * 16;
+        for (int64_t g = 0; g < n_quad; ++g) {
+            const int64_t o0 = g * 4;
+            el_half_4x2<NT>(xb0, xb1,
+                            WL + (o0 + 0) * in_ch * 16, WL + (o0 + 1) * in_ch * 16,
+                            WL + (o0 + 2) * in_ch * 16, WL + (o0 + 3) * in_ch * 16,
+                            ob0 + o0 * 16, ob1 + o0 * 16,
+                            in_ch, idx_lo, 0, bp ? bp + o0 : nullptr);
+            el_half_4x2<NT>(xb0, xb1,
+                            WH + (o0 + 0) * in_ch * 16, WH + (o0 + 1) * in_ch * 16,
+                            WH + (o0 + 2) * in_ch * 16, WH + (o0 + 3) * in_ch * 16,
+                            ob0 + o0 * 16, ob1 + o0 * 16,
+                            in_ch, idx_hi, 8, nullptr);
+        }
+        for (int64_t o = n_quad * 4; o < out_ch; ++o) {
+            el_half_1x2<NT>(xb0, xb1, WL + o * in_ch * 16,
+                            ob0 + o * 16, ob1 + o * 16,
+                            in_ch, idx_lo, 0, bp ? bp + o : nullptr);
+            el_half_1x2<NT>(xb0, xb1, WH + o * in_ch * 16,
+                            ob0 + o * 16, ob1 + o * 16,
+                            in_ch, idx_hi, 8, nullptr);
+        }
+    }
+    for (; b < batch; ++b) {
+        const float* xb0 = X + b * in_ch * 16;
+        float* ob0 = O + b * out_ch * 16;
+        for (int64_t g = 0; g < n_quad; ++g) {
+            const int64_t o0 = g * 4;
+            el_half_4x1<NT>(xb0,
+                            WL + (o0 + 0) * in_ch * 16, WL + (o0 + 1) * in_ch * 16,
+                            WL + (o0 + 2) * in_ch * 16, WL + (o0 + 3) * in_ch * 16,
+                            ob0 + o0 * 16, in_ch, idx_lo, 0,
+                            bp ? bp + o0 : nullptr);
+            el_half_4x1<NT>(xb0,
+                            WH + (o0 + 0) * in_ch * 16, WH + (o0 + 1) * in_ch * 16,
+                            WH + (o0 + 2) * in_ch * 16, WH + (o0 + 3) * in_ch * 16,
+                            ob0 + o0 * 16, in_ch, idx_hi, 8, nullptr);
+        }
+        for (int64_t o = n_quad * 4; o < out_ch; ++o) {
+            el_half_1x1<NT>(xb0, WL + o * in_ch * 16, ob0 + o * 16,
+                            in_ch, idx_lo, 0, bp ? bp + o : nullptr);
+            el_half_1x1<NT>(xb0, WH + o * in_ch * 16, ob0 + o * 16,
+                            in_ch, idx_hi, 8, nullptr);
+        }
+    }
+    if constexpr (NT) _mm_sfence();
+}
+
+}  // namespace
+#endif  // EZGATR_HAVE_AVX2
 torch::Tensor equi_linear_v3(const torch::Tensor& x,
                              const torch::Tensor& weight,
                              const c10::optional<torch::Tensor>& bias,
@@ -1488,244 +1779,34 @@ torch::Tensor equi_linear_v3(const torch::Tensor& x,
             bp = bias_t.data_ptr<float>();
         }
 
-        float inv[9];
-        for (int k = 0; k < 9; ++k)
-            inv[k] = normalize_basis ? float(EQUI_LINEAR_INV_NORMS[k]) : 1.0f;
-
         const int64_t in_ch  = s.in_ch;
         const int64_t out_ch = s.out_ch;
         const int64_t batch  = s.batch;
         const int64_t n_oi   = out_ch * in_ch;
-        const int64_t n_quad = out_ch / 4;   // full 4-channel groups
-        const int64_t rem    = out_ch % 4;   // 0..3 leftover channels
 
-        // Pack [wdiag_lo(8)|wdiag_hi(8)|woff_lo(8)|woff_hi(8)] = 32 floats per (o,i).
-        static thread_local std::vector<float> tls_wbuf;
-        if (static_cast<int64_t>(tls_wbuf.size()) < n_oi * 32)
-            tls_wbuf.resize(static_cast<size_t>(n_oi) * 32);
-        float* __restrict__ wbuf = tls_wbuf.data();
-
-        const float* __restrict__ wsrc = s.wf.data_ptr<float>();
-        for (int64_t p = 0; p < n_oi; ++p) {
-            const float* __restrict__ ws = wsrc + p * 9;
-            const float w0=ws[0]*inv[0], w1=ws[1]*inv[1], w2=ws[2]*inv[2];
-            const float w3=ws[3]*inv[3], w4=ws[4]*inv[4], w5=ws[5]*inv[5];
-            const float w6=ws[6]*inv[6], w7=ws[7]*inv[7], w8=ws[8]*inv[8];
-            float* __restrict__ d = wbuf + p * 32;
-            // wdiag_lo: {w0, w1,w1,w1,w1, w2,w2,w2}
-            d[0]=w0;  d[1]=w1;  d[2]=w1;  d[3]=w1;  d[4]=w1;  d[5]=w2;  d[6]=w2;  d[7]=w2;
-            // wdiag_hi: {w2,w2,w2, w3,w3,w3,w3, w4}
-            d[8]=w2;  d[9]=w2;  d[10]=w2; d[11]=w3; d[12]=w3; d[13]=w3; d[14]=w3; d[15]=w4;
-            // woff_lo: blade1←w5, blades5,6,7←w6, rest 0
-            d[16]=0;  d[17]=w5; d[18]=0;  d[19]=0;  d[20]=0;  d[21]=w6; d[22]=w6; d[23]=w6;
-            // woff_hi: blades11,12,13←w7, blade15←w8, rest 0
-            d[24]=0;  d[25]=0;  d[26]=0;  d[27]=w7; d[28]=w7; d[29]=w7; d[30]=0;  d[31]=w8;
-        }
-
-        // Off-diagonal gather indices (constant). idx[j] is the source lane for
-        // output lane j; lanes where woff==0 use idx=0 as a don't-care.
-        //   lo: blade1←xi[0], blade5←xi[2], blade6←xi[3], blade7←xi[4]
-        const __m256i idx_off_lo = _mm256_setr_epi32(0, 0, 0, 0, 0, 2, 3, 4);
-        //   hi: blade11←xi[8], blade12←xi[9], blade13←xi[10], blade15←xi[14]
-        const __m256i idx_off_hi = _mm256_setr_epi32(0, 0, 0, 0, 1, 2, 0, 6);
+        auto packed = el_get_packed_f32(weight, s.wf, n_oi, normalize_basis);
+        const float* __restrict__ WL = packed.data_ptr<float>();
+        const float* __restrict__ WH = WL + n_oi * 16;
 
         const float* __restrict__ xp_base = s.xf.data_ptr<float>();
         float*       __restrict__ op_base = out.data_ptr<float>();
 
-// Diagonal FMA pair using already-loaded xlo/xhi.
-#define DIAG(alo, ahi, wp) \
-    alo = _mm256_fmadd_ps(_mm256_loadu_ps((wp)),     xlo, alo); \
-    ahi = _mm256_fmadd_ps(_mm256_loadu_ps((wp) + 8), xhi, ahi);
+        // Non-temporal stores skip the read-for-ownership of the destination,
+        // but only pay off when the output cannot stay cache-resident anyway
+        // (16 MB = one CCX worth of L3 on the target Zen 2 machine).
+        const bool use_nt =
+            batch * out_ch * 16 * static_cast<int64_t>(sizeof(float)) >= (16 << 20) &&
+            reinterpret_cast<uintptr_t>(op_base) % 32 == 0;
 
-// Off-diagonal FMA pair using already-permuted xplo/xphi.
-#define OFFDIAG(alo, ahi, wp) \
-    alo = _mm256_fmadd_ps(_mm256_loadu_ps((wp) + 16), xplo, alo); \
-    ahi = _mm256_fmadd_ps(_mm256_loadu_ps((wp) + 24), xphi, ahi);
-
-        // 2-batch × 2-channel blocking: load each weight vector once and apply to two
-        // consecutive batch elements, cutting weight loads from 18→12 per i-iteration.
-        // Peak register pressure: 15/16 YMM (8 acc + 4 x/xp + 1 weight transient + 2 idx).
-        const int64_t n_half   = out_ch / 2;
-        const int64_t rem_half = out_ch & 1;
-        const __m256 z = _mm256_setzero_ps();
-
-        // x data exceeds L1D on Tiger Lake (48KB) and Zen 2 (32KB) for n>=1 workloads.
-        // Prefetch into L2 (T1) so x moves from L3→L2 before the inner loop needs it.
-        // For n=1/2 where x is already in L2 this is a no-op; for n>=3 (x in L3) it
-        // cuts effective load latency from ~40 cycles (L3) to ~12 cycles (L2).
-        // PF=8: inner body ~128 cycles per batch pair, L3 latency ~40 cycles → 3 pairs needed.
-        const int64_t PF = 8;
-        const int64_t pf_stride = in_ch * 16;  // floats between consecutive batch elements
-
-        int64_t b = 0;
-        for (; b + 1 < batch; b += 2) {
-            const float* __restrict__ xb0 = xp_base + b       * in_ch * 16;
-            const float* __restrict__ xb1 = xp_base + (b + 1) * in_ch * 16;
-            // Prefetch into L2 (T1) — neutral for L1/L2-resident x, beneficial for L3.
-            if (b + PF + 1 < batch) {
-                _mm_prefetch((const char*)(xb0 + PF       * pf_stride), _MM_HINT_T1);
-                _mm_prefetch((const char*)(xb0 + (PF + 1) * pf_stride), _MM_HINT_T1);
-            }
-
-            for (int64_t h = 0; h < n_half; ++h) {
-                const int64_t o0 = h * 2, o1 = o0 + 1;
-                __m256 a_lo0b0=z, a_hi0b0=z, a_lo0b1=z, a_hi0b1=z;
-                __m256 a_lo1b0=z, a_hi1b0=z, a_lo1b1=z, a_hi1b1=z;
-                const float* wv0 = wbuf + o0 * in_ch * 32;
-                const float* wv1 = wbuf + o1 * in_ch * 32;
-
-                for (int64_t i = 0; i < in_ch; ++i) {
-                    const float* __restrict__ xi0 = xb0 + i * 16;
-                    const float* __restrict__ xi1 = xb1 + i * 16;
-                    __m256 xplo0, xplo1, xphi0, xphi1;
-                    // lo half: DIAG (shared weight load for both batches) + permute.
-                    // xlo0/xlo1 go out of scope here so their registers free for xplo*.
-                    {
-                        const __m256 xlo0 = _mm256_loadu_ps(xi0);
-                        const __m256 xlo1 = _mm256_loadu_ps(xi1);
-                        { const __m256 wd = _mm256_loadu_ps(wv0 + i*32);
-                          a_lo0b0 = _mm256_fmadd_ps(wd, xlo0, a_lo0b0);
-                          a_lo0b1 = _mm256_fmadd_ps(wd, xlo1, a_lo0b1); }
-                        { const __m256 wd = _mm256_loadu_ps(wv1 + i*32);
-                          a_lo1b0 = _mm256_fmadd_ps(wd, xlo0, a_lo1b0);
-                          a_lo1b1 = _mm256_fmadd_ps(wd, xlo1, a_lo1b1); }
-                        xplo0 = _mm256_permutevar8x32_ps(xlo0, idx_off_lo);
-                        xplo1 = _mm256_permutevar8x32_ps(xlo1, idx_off_lo);
-                    }
-                    // hi half: DIAG (shared weight load) + permute.
-                    {
-                        const __m256 xhi0 = _mm256_loadu_ps(xi0 + 8);
-                        const __m256 xhi1 = _mm256_loadu_ps(xi1 + 8);
-                        { const __m256 wd = _mm256_loadu_ps(wv0 + i*32 + 8);
-                          a_hi0b0 = _mm256_fmadd_ps(wd, xhi0, a_hi0b0);
-                          a_hi0b1 = _mm256_fmadd_ps(wd, xhi1, a_hi0b1); }
-                        { const __m256 wd = _mm256_loadu_ps(wv1 + i*32 + 8);
-                          a_hi1b0 = _mm256_fmadd_ps(wd, xhi0, a_hi1b0);
-                          a_hi1b1 = _mm256_fmadd_ps(wd, xhi1, a_hi1b1); }
-                        xphi0 = _mm256_permutevar8x32_ps(xhi0, idx_off_hi);
-                        xphi1 = _mm256_permutevar8x32_ps(xhi1, idx_off_hi);
-                    }
-                    // OFFDIAG lo: shared weight, both batches.
-                    { const __m256 wo = _mm256_loadu_ps(wv0 + i*32 + 16);
-                      a_lo0b0 = _mm256_fmadd_ps(wo, xplo0, a_lo0b0);
-                      a_lo0b1 = _mm256_fmadd_ps(wo, xplo1, a_lo0b1); }
-                    { const __m256 wo = _mm256_loadu_ps(wv1 + i*32 + 16);
-                      a_lo1b0 = _mm256_fmadd_ps(wo, xplo0, a_lo1b0);
-                      a_lo1b1 = _mm256_fmadd_ps(wo, xplo1, a_lo1b1); }
-                    // OFFDIAG hi: shared weight, both batches.
-                    { const __m256 wo = _mm256_loadu_ps(wv0 + i*32 + 24);
-                      a_hi0b0 = _mm256_fmadd_ps(wo, xphi0, a_hi0b0);
-                      a_hi0b1 = _mm256_fmadd_ps(wo, xphi1, a_hi0b1); }
-                    { const __m256 wo = _mm256_loadu_ps(wv1 + i*32 + 24);
-                      a_hi1b0 = _mm256_fmadd_ps(wo, xphi0, a_hi1b0);
-                      a_hi1b1 = _mm256_fmadd_ps(wo, xphi1, a_hi1b1); }
-                }
-                float* op0b0 = op_base + (b       * out_ch + o0) * 16;
-                float* op1b0 = op_base + (b       * out_ch + o1) * 16;
-                float* op0b1 = op_base + ((b + 1) * out_ch + o0) * 16;
-                float* op1b1 = op_base + ((b + 1) * out_ch + o1) * 16;
-                _mm256_storeu_ps(op0b0,     a_lo0b0); _mm256_storeu_ps(op0b0 + 8, a_hi0b0);
-                _mm256_storeu_ps(op1b0,     a_lo1b0); _mm256_storeu_ps(op1b0 + 8, a_hi1b0);
-                _mm256_storeu_ps(op0b1,     a_lo0b1); _mm256_storeu_ps(op0b1 + 8, a_hi0b1);
-                _mm256_storeu_ps(op1b1,     a_lo1b1); _mm256_storeu_ps(op1b1 + 8, a_hi1b1);
-                if (bp) { op0b0[0]+=bp[o0]; op1b0[0]+=bp[o1];
-                          op0b1[0]+=bp[o0]; op1b1[0]+=bp[o1]; }
-            }
-            // 1-channel tail for 2 batches (rem_half == 1)
-            if (rem_half) {
-                const int64_t o = out_ch - 1;
-                __m256 a_lob0=z, a_hib0=z, a_lob1=z, a_hib1=z;
-                const float* wv = wbuf + o * in_ch * 32;
-                for (int64_t i = 0; i < in_ch; ++i) {
-                    const float* xi0 = xb0 + i*16, *xi1 = xb1 + i*16;
-                    const __m256 xlo0=_mm256_loadu_ps(xi0), xlo1=_mm256_loadu_ps(xi1);
-                    const __m256 xhi0=_mm256_loadu_ps(xi0+8), xhi1=_mm256_loadu_ps(xi1+8);
-                    { const __m256 wd=_mm256_loadu_ps(wv+i*32);
-                      a_lob0=_mm256_fmadd_ps(wd,xlo0,a_lob0); a_lob1=_mm256_fmadd_ps(wd,xlo1,a_lob1); }
-                    { const __m256 wd=_mm256_loadu_ps(wv+i*32+8);
-                      a_hib0=_mm256_fmadd_ps(wd,xhi0,a_hib0); a_hib1=_mm256_fmadd_ps(wd,xhi1,a_hib1); }
-                    { const __m256 wo=_mm256_loadu_ps(wv+i*32+16);
-                      a_lob0=_mm256_fmadd_ps(wo,_mm256_permutevar8x32_ps(xlo0,idx_off_lo),a_lob0);
-                      a_lob1=_mm256_fmadd_ps(wo,_mm256_permutevar8x32_ps(xlo1,idx_off_lo),a_lob1); }
-                    { const __m256 wo=_mm256_loadu_ps(wv+i*32+24);
-                      a_hib0=_mm256_fmadd_ps(wo,_mm256_permutevar8x32_ps(xhi0,idx_off_hi),a_hib0);
-                      a_hib1=_mm256_fmadd_ps(wo,_mm256_permutevar8x32_ps(xhi1,idx_off_hi),a_hib1); }
-                }
-                float* opb0 = op_base + (b       * out_ch + o) * 16;
-                float* opb1 = op_base + ((b + 1) * out_ch + o) * 16;
-                _mm256_storeu_ps(opb0, a_lob0); _mm256_storeu_ps(opb0+8, a_hib0);
-                _mm256_storeu_ps(opb1, a_lob1); _mm256_storeu_ps(opb1+8, a_hib1);
-                if (bp) { opb0[0]+=bp[o]; opb1[0]+=bp[o]; }
-            }
+        if (use_nt) {
+            el_v3_kernel_f32<true>(xp_base, WL, WH, bp, op_base,
+                                   batch, in_ch, out_ch);
+        } else {
+            el_v3_kernel_f32<false>(xp_base, WL, WH, bp, op_base,
+                                    batch, in_ch, out_ch);
         }
 
-        // Single-batch tail (last element when batch is odd): fall back to 4-channel blocking.
-        for (; b < batch; ++b) {
-            const float* __restrict__ xb = xp_base + b * in_ch * 16;
-            for (int64_t g = 0; g < n_quad; ++g) {
-                const int64_t o0=g*4, o1=o0+1, o2=o0+2, o3=o0+3;
-                __m256 a_lo0=z, a_hi0=z, a_lo1=z, a_hi1=z;
-                __m256 a_lo2=z, a_hi2=z, a_lo3=z, a_hi3=z;
-                const float* wv0=wbuf+o0*in_ch*32, *wv1=wbuf+o1*in_ch*32;
-                const float* wv2=wbuf+o2*in_ch*32, *wv3=wbuf+o3*in_ch*32;
-                for (int64_t i = 0; i < in_ch; ++i) {
-                    const float* __restrict__ xi = xb + i * 16;
-                    const __m256 xlo  = _mm256_loadu_ps(xi);
-                    const __m256 xhi  = _mm256_loadu_ps(xi + 8);
-                    const __m256 xplo = _mm256_permutevar8x32_ps(xlo, idx_off_lo);
-                    const __m256 xphi = _mm256_permutevar8x32_ps(xhi, idx_off_hi);
-                    DIAG(a_lo0,a_hi0,wv0+i*32) DIAG(a_lo1,a_hi1,wv1+i*32)
-                    DIAG(a_lo2,a_hi2,wv2+i*32) DIAG(a_lo3,a_hi3,wv3+i*32)
-                    OFFDIAG(a_lo0,a_hi0,wv0+i*32) OFFDIAG(a_lo1,a_hi1,wv1+i*32)
-                    OFFDIAG(a_lo2,a_hi2,wv2+i*32) OFFDIAG(a_lo3,a_hi3,wv3+i*32)
-                }
-                float* op0=op_base+(b*out_ch+o0)*16, *op1=op_base+(b*out_ch+o1)*16;
-                float* op2=op_base+(b*out_ch+o2)*16, *op3=op_base+(b*out_ch+o3)*16;
-                _mm256_storeu_ps(op0,   a_lo0); _mm256_storeu_ps(op0+8, a_hi0);
-                _mm256_storeu_ps(op1,   a_lo1); _mm256_storeu_ps(op1+8, a_hi1);
-                _mm256_storeu_ps(op2,   a_lo2); _mm256_storeu_ps(op2+8, a_hi2);
-                _mm256_storeu_ps(op3,   a_lo3); _mm256_storeu_ps(op3+8, a_hi3);
-                if (bp) { op0[0]+=bp[o0]; op1[0]+=bp[o1]; op2[0]+=bp[o2]; op3[0]+=bp[o3]; }
-            }
-            if (rem >= 2) {
-                const int64_t o0=n_quad*4, o1=o0+1;
-                __m256 a_lo0=z, a_hi0=z, a_lo1=z, a_hi1=z;
-                const float* wv0=wbuf+o0*in_ch*32, *wv1=wbuf+o1*in_ch*32;
-                for (int64_t i = 0; i < in_ch; ++i) {
-                    const float* __restrict__ xi = xb + i * 16;
-                    const __m256 xlo  = _mm256_loadu_ps(xi);
-                    const __m256 xhi  = _mm256_loadu_ps(xi + 8);
-                    const __m256 xplo = _mm256_permutevar8x32_ps(xlo, idx_off_lo);
-                    const __m256 xphi = _mm256_permutevar8x32_ps(xhi, idx_off_hi);
-                    DIAG(a_lo0,a_hi0,wv0+i*32) DIAG(a_lo1,a_hi1,wv1+i*32)
-                    OFFDIAG(a_lo0,a_hi0,wv0+i*32) OFFDIAG(a_lo1,a_hi1,wv1+i*32)
-                }
-                float* op0=op_base+(b*out_ch+o0)*16, *op1=op_base+(b*out_ch+o1)*16;
-                _mm256_storeu_ps(op0, a_lo0); _mm256_storeu_ps(op0+8, a_hi0);
-                _mm256_storeu_ps(op1, a_lo1); _mm256_storeu_ps(op1+8, a_hi1);
-                if (bp) { op0[0]+=bp[o0]; op1[0]+=bp[o1]; }
-            }
-            if (rem & 1) {
-                const int64_t o = out_ch - 1;
-                __m256 acc_lo=z, acc_hi=z;
-                const float* wv_o = wbuf + o * in_ch * 32;
-                for (int64_t i = 0; i < in_ch; ++i) {
-                    const float* __restrict__ xi = xb + i * 16;
-                    const __m256 xlo  = _mm256_loadu_ps(xi);
-                    const __m256 xhi  = _mm256_loadu_ps(xi + 8);
-                    const __m256 xplo = _mm256_permutevar8x32_ps(xlo, idx_off_lo);
-                    const __m256 xphi = _mm256_permutevar8x32_ps(xhi, idx_off_hi);
-                    DIAG(acc_lo,acc_hi,wv_o+i*32)
-                    OFFDIAG(acc_lo,acc_hi,wv_o+i*32)
-                }
-                float* __restrict__ op = op_base + (b * out_ch + o) * 16;
-                _mm256_storeu_ps(op, acc_lo); _mm256_storeu_ps(op+8, acc_hi);
-                if (bp) op[0] += bp[o];
-            }
-        }
-#undef DIAG
-#undef OFFDIAG
-
+        // Bias was folded into the accumulator init; finalize without it.
         return equi_linear_finalize(out, c10::nullopt, s.out_shape);
     }
 #endif
@@ -1824,6 +1905,72 @@ torch::Tensor equi_join_v3(const torch::Tensor& x,
             if (has_ref) join_kernel_v3<T, true>(X, Y, R, O, N);
             else         join_kernel_v3<T, false>(X, Y, nullptr, O, N);
         });
+}
+
+// Fused geometric bilinear (v3_1). Takes the proj_bil output p of shape
+// (..., 4*inter, 16) and computes cat([gp(lg,rg), join(lj,rj,ref)], dim=-2) in a
+// single kernel, writing both halves directly into one (..., 2*inter, 16) output.
+// This eliminates the torch.cat that the separate-op path pays (a full read-2x /
+// write-2x pass over the bilinear intermediate) plus the second launch and two
+// temporaries. The per-output-row layout keeps gp's and join's outputs contiguous
+// within a row, so the existing gp_kernel_v3 / join_kernel_v3 are reused verbatim.
+// join_kernel_v3 only consumes blade 14 of the reference as packed [inter] scalars,
+// so we select(-1, 14) instead of materializing the full (inter, 16) view.
+torch::Tensor geometric_bilinear_v3_1(const torch::Tensor& p,
+                                      const c10::optional<torch::Tensor>& reference) {
+    const char* name = "geometric_bilinear_v3_1";
+    check_multivector(p, name);
+    TORCH_CHECK(p.device().is_cpu(), name, ": CPU-only kernel; got device ", p.device());
+    TORCH_CHECK(p.scalar_type() == torch::kFloat, name,
+                ": requires float32 inputs (fp32/AVX2-only kernel).");
+    const int64_t four_inter = p.size(-2);
+    TORCH_CHECK(four_inter % 4 == 0, name,
+                ": channel dim (", four_inter, ") must be divisible by 4");
+    const int64_t inter = four_inter / 4;
+
+    const bool has_ref = reference.has_value();
+    if (has_ref) {
+        check_multivector(*reference, name);
+        TORCH_CHECK(reference->scalar_type() == p.scalar_type(),
+                    name, ": reference must share dtype with p");
+        TORCH_CHECK(reference->device() == p.device(),
+                    name, ": reference must share device with p");
+    }
+
+    auto pc = p.contiguous();
+    const int64_t M = pc.numel() / (four_inter * 16);
+
+    // Output: same shape as p but with channel dim 2*inter.
+    auto out_shape = pc.sizes().vec();
+    out_shape[out_shape.size() - 2] = 2 * inter;
+    auto out = torch::empty(out_shape, pc.options());
+
+    // join_kernel_v3 only reads blade 14 of the reference; extract those scalars
+    // (one per join input row) instead of materializing the full (inter, 16) view.
+    torch::Tensor ref14;
+    if (has_ref) {
+        auto join_shape = pc.sizes().vec();
+        join_shape[join_shape.size() - 2] = inter;
+        ref14 = reference->expand(join_shape).select(-1, 14).contiguous();  // (..., inter)
+    }
+
+    const float* __restrict__ P = pc.data_ptr<float>();
+    float*       __restrict__ O = out.data_ptr<float>();
+    const float* __restrict__ R = has_ref ? ref14.data_ptr<float>() : nullptr;
+
+    for (int64_t m = 0; m < M; ++m) {
+        const float* prow = P + m * 4 * inter * 16;
+        float*       orow = O + m * 2 * inter * 16;
+        gp_kernel_v3<float>(prow, prow + inter * 16, orow, inter);
+        if (has_ref) {
+            join_kernel_v3<float, true>(prow + 2 * inter * 16, prow + 3 * inter * 16,
+                                        R + m * inter, orow + inter * 16, inter);
+        } else {
+            join_kernel_v3<float, false>(prow + 2 * inter * 16, prow + 3 * inter * 16,
+                                         nullptr, orow + inter * 16, inter);
+        }
+    }
+    return out;
 }
 
 }}  // namespace ezgatr::opt

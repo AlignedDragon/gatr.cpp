@@ -37,6 +37,8 @@ from ezgatr.opt import (
     equi_join_v3 as equi_join_ver_3,
     scaler_gated_gelu_ver_3,
     equi_geometric_attention_ver_3,
+
+    geometric_bilinear_v3_1,
 )
 
 
@@ -2268,6 +2270,148 @@ class MVOnlyGATrModelASL_ver_3(nn.Module):
         module : nn.Module
             Module to initialize.
         """
+        if isinstance(module, EquiLinearASL_ver_3):
+            nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
+            module.weight.data /= math.sqrt(self.config.num_layers)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        reference: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        reference = reference or torch.mean(
+            x,
+            dim=tuple(range(1, len(x.shape) - 1)),
+            keepdim=True,
+        )
+        x = reduce(
+            lambda x, block: block(x, reference, attn_mask),
+            self.blocks,
+            self.embedding(x),
+        )
+        return self.head(x)
+
+
+# ---------------------------------------------------------------------------
+# ver_3_1: additive variant of ver_3 that fuses the geometric bilinear
+# (gp + join + cat -> one kernel, no torch.cat) and uses the improved attention
+# kernel (K pre-pack + cheaper exp). Everything else (linears, rms-norm, gelu,
+# embedding, head) reuses the ver_3 modules unchanged.
+# ---------------------------------------------------------------------------
+
+
+class MVOnlyGATrBilinearASL_ver_3_1(nn.Module):
+    r"""Geometric bilinear sub-layer using the fused ``geometric_bilinear_v3_1``
+    kernel. The proj_bil output is fed directly into the fused op, which produces
+    ``cat([gp(lg,rg), join(lj,rj,ref)])`` without a separate ``torch.cat``.
+    """
+
+    config: MVOnlyGATrConfig
+
+    def __init__(self, config: MVOnlyGATrConfig) -> None:
+        super().__init__()
+
+        self.config = config
+
+        self.proj_bil = EquiLinearASL_ver_3(
+            config.size_channels_hidden, config.size_channels_intermediate * 4
+        )
+        self.proj_out = EquiLinearASL_ver_3(
+            config.size_channels_intermediate * 2, config.size_channels_hidden
+        )
+
+    def forward(
+        self, x: torch.Tensor, reference: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        x = geometric_bilinear_v3_1(self.proj_bil(x), reference)
+        return self.proj_out(x)
+
+
+class MVOnlyGATrMLPASL_ver_3_1(nn.Module):
+    r"""Geometric MLP block (ver_3_1): same as ver_3 but with the fused bilinear."""
+
+    config: MVOnlyGATrConfig
+    layer_norm: EquiRMSNormASL_ver_3
+    equi_bil: MVOnlyGATrBilinearASL_ver_3_1
+    proj_out: EquiLinearASL_ver_3
+
+    def __init__(self, config: MVOnlyGATrConfig) -> None:
+        super().__init__()
+
+        self.config = config
+
+        self.layer_norm = EquiRMSNormASL_ver_3(
+            config.size_channels_hidden,
+            eps=config.norm_eps,
+            channelwise_rescale=config.norm_channelwise_rescale,
+        )
+        self.equi_bil = MVOnlyGATrBilinearASL_ver_3_1(config)
+        self.proj_out = EquiLinearASL_ver_3(
+            config.size_channels_hidden, config.size_channels_hidden
+        )
+
+    def forward(
+        self, x: torch.Tensor, reference: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        residual = x
+
+        x = self.layer_norm(x)
+        x = self.equi_bil(x, reference)
+        x = self.proj_out(scaler_gated_gelu_ver_3(x, self.config.gelu_approximate))
+
+        return x + residual
+
+
+class MVOnlyGATrBlockASL_ver_3_1(nn.Module):
+    r"""GATr block (ver_3_1): ver_3_1 MLP (fused bilinear) + ver_3 attention."""
+
+    config: MVOnlyGATrConfig
+    layer_id: int
+    mlp: MVOnlyGATrMLPASL_ver_3_1
+    attn: MVOnlyGATrAttentionASL_ver_3
+
+    def __init__(self, config: MVOnlyGATrConfig, layer_id: int) -> None:
+        super().__init__()
+
+        self.config = config
+        self.layer_id = layer_id
+
+        self.mlp = MVOnlyGATrMLPASL_ver_3_1(config)
+        self.attn = MVOnlyGATrAttentionASL_ver_3(config)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        reference: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.mlp(self.attn(x, attn_mask), reference)
+
+
+class MVOnlyGATrModelASL_ver_3_1(nn.Module):
+    r"""Multi-Vector only GATr model (ver_3_1): ver_3_1 blocks; ver_3 embedding/head."""
+
+    config: MVOnlyGATrConfig
+    embedding: MVOnlyGATrEmbeddingASL_ver_3
+    blocks: nn.ModuleList
+    head: EquiLinearASL_ver_3
+
+    def __init__(self, config: MVOnlyGATrConfig) -> None:
+        super().__init__()
+
+        self.config = config
+
+        self.embedding = MVOnlyGATrEmbeddingASL_ver_3(config)
+        self.blocks = nn.ModuleList(
+            MVOnlyGATrBlockASL_ver_3_1(config, i) for i in range(config.num_layers)
+        )
+        self.head = EquiLinearASL_ver_3(config.size_channels_hidden, config.size_channels_out)
+        self.apply(self._init_params)
+
+    def _init_params(self, module: nn.Module):
         if isinstance(module, EquiLinearASL_ver_3):
             nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")
             module.weight.data /= math.sqrt(self.config.num_layers)

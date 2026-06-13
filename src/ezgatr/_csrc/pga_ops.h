@@ -29,6 +29,8 @@ torch::Tensor equi_join_v2_6(const torch::Tensor& x, const torch::Tensor& y, con
 torch::Tensor equi_join_v2_7(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 torch::Tensor equi_join_v3(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 
+torch::Tensor geometric_bilinear_v3_1(const torch::Tensor& p, const c10::optional<torch::Tensor>& reference);
+
 torch::Tensor load_gp_basis(c10::Device device, c10::ScalarType dtype);
 torch::Tensor load_op_basis(c10::Device device, c10::ScalarType dtype);
 torch::Tensor compute_join_kernel(c10::Device device, c10::ScalarType dtype);

@@ -13,6 +13,7 @@ from ezgatr.opt import (
     equi_join_v2_1, equi_join_v2_2, equi_join_v2_3, equi_join_v2_4,
     equi_join_v2_5, equi_join_v2_6, equi_join_v2_7,
 )
+from ezgatr.opt import geometric_bilinear_v3_1
 from ezgatr.opt import geometric_product as gp_cpp
 from ezgatr.opt import (
     geometric_product_v0, geometric_product_v1, geometric_product_v2, geometric_product_v3,
@@ -68,6 +69,41 @@ def test_dtype_float32():
     torch.testing.assert_close(gp_cpp(x, y), gp_py(x, y), rtol=1e-5, atol=1e-6)
     torch.testing.assert_close(join_cpp(x, y), join_py(x, y), rtol=1e-5, atol=1e-6)
     torch.testing.assert_close(join_cpp(x, y, ref), join_py(x, y, ref), rtol=1e-5, atol=1e-6)
+
+
+batch_shape_bil = st.lists(st.integers(min_value=1, max_value=4), min_size=0, max_size=2)
+
+
+@given(batch_shape_bil, st.integers(min_value=1, max_value=5))
+@settings(deadline=None, max_examples=20)
+def test_geometric_bilinear_v3_1_matches_separate(batch, inter):
+    """Fused bilinear == cat([gp(lg,rg), join(lj,rj,ref)]) (fp32, AVX2 path)."""
+    torch.manual_seed(0)
+    p = torch.randn(*batch, 4 * inter, 16, dtype=torch.float32)
+    ref = torch.randn(*batch, 1, 16, dtype=torch.float32)
+    lg, rg, lj, rj = torch.split(p, inter, dim=-2)
+
+    # with reference
+    out = geometric_bilinear_v3_1(p, ref)
+    exp = torch.cat([gp_py(lg, rg), join_py(lj, rj, ref)], dim=-2)
+    torch.testing.assert_close(out, exp, rtol=1e-5, atol=1e-6)
+
+    # without reference
+    out_nr = geometric_bilinear_v3_1(p, None)
+    exp_nr = torch.cat([gp_py(lg, rg), join_py(lj, rj)], dim=-2)
+    torch.testing.assert_close(out_nr, exp_nr, rtol=1e-5, atol=1e-6)
+
+
+def test_geometric_bilinear_v3_1_matches_separate_cpp_ops():
+    """Fused bilinear is bit-identical to the separate v3 gp/join ops + cat."""
+    torch.manual_seed(0)
+    inter = 6
+    p = torch.randn(5, 4 * inter, 16, dtype=torch.float32)
+    ref = torch.randn(5, 1, 16, dtype=torch.float32)
+    lg, rg, lj, rj = torch.split(p, inter, dim=-2)
+    out = geometric_bilinear_v3_1(p, ref)
+    exp = torch.cat([geometric_product_v3(lg, rg), equi_join_v3(lj, rj, ref)], dim=-2)
+    torch.testing.assert_close(out, exp, rtol=0, atol=0)
 
 
 @given(batch_shape)

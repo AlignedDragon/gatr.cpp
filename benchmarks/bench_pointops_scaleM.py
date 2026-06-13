@@ -29,6 +29,7 @@ from ezgatr.opt import (
     geometric_product_v0, geometric_product_v1, geometric_product_v2, geometric_product_v3,
     equi_join_v0, equi_join_v1, equi_join_v2, equi_join_v3,
     scaler_gated_gelu_ver_0, scaler_gated_gelu_ver_1, scaler_gated_gelu_ver_2, scaler_gated_gelu_ver_3,
+    geometric_bilinear_v3_1,
 )
 
 # Tiger Lake i7-1165G7 cache sizes (per-core), for labelling the working set.
@@ -67,6 +68,19 @@ GELU_VERSIONS = [
     ("v3", scaler_gated_gelu_ver_3),
 ]
 
+
+def _bilinear_sep(p, ref):
+    """Separate-op baseline: split + gp_v3 + join_v3 + torch.cat (what v3 does)."""
+    inter = p.shape[-2] // 4
+    lg, rg, lj, rj = torch.split(p, inter, dim=-2)
+    return torch.cat([geometric_product_v3(lg, rg), equi_join_v3(lj, rj, ref)], dim=-2)
+
+
+BILINEAR_VERSIONS = [
+    ("sep", _bilinear_sep),
+    ("v3_1", geometric_bilinear_v3_1),
+]
+
 # Default M sweep: 1 KB/multivector-block at channels=16, so this spans
 # L1 (48 KB) -> L2 (1.25 MB) -> L3 (12 MB) -> DRAM (256 MB).
 DEFAULT_M = [16, 64, 256, 1024, 4096, 16384, 65536, 262144]
@@ -98,6 +112,10 @@ def join_flops(M, channels):     # equivariant join (sparse), 384 flops/mv
 
 def gelu_flops(M, channels):     # scaler-gated gelu, ~128 flops/mv
     return M * channels * 128
+
+
+def bilinear_flops(M, channels):  # gp (384) + join (384) per inter-channel mv
+    return M * channels * 768
 
 
 def cache_level(footprint_bytes: int) -> str:
@@ -162,6 +180,13 @@ def make_gelu_inputs(M, channels):
     return lambda fn: (lambda: fn(x, "tanh"))
 
 
+def make_bilinear_inputs(M, channels):
+    # channels = inter; the proj_bil output p has 4*inter channels.
+    p = torch.randn(M, 4 * channels, 16)
+    ref = torch.randn(M, 1, 16)
+    return lambda fn: (lambda: fn(p, ref))
+
+
 def run_op(op_name, versions, make_inputs, flops_fn, m_values, channels):
     print(f"\n=== {op_name}  (channels={channels}, 1 thread) ===")
     header = f"{'M':>8} {'footprint':>11} {'lvl':>4}  " + "  ".join(f"{v:>10}" for v, _ in versions) + "   v3/v2  v3/v0"
@@ -207,6 +232,7 @@ OPS = {
     "equi_linear":       (LINEAR_VERSIONS, make_linear_inputs, linear_flops),
     "equi_rms_norm":     (RMS_VERSIONS, make_rms_inputs, rms_flops),
     "scaler_gated_gelu": (GELU_VERSIONS, make_gelu_inputs, gelu_flops),
+    "geometric_bilinear": (BILINEAR_VERSIONS, make_bilinear_inputs, bilinear_flops),
 }
 
 
