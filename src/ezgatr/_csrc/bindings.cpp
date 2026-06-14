@@ -184,6 +184,31 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("is_causal") = false,
             py::arg("scale") = py::none(),
             "Equivariant geometric attention version 3 alias.");
+
+      m.def("equi_geometric_attention_mv_only_ver_3_2",
+            &ezgatr::opt::equi_geometric_attention_mv_only_ver_3_2,
+            py::arg("query"),
+            py::arg("key"),
+            py::arg("value"),
+            py::arg("kinds"),
+            py::arg("weight") = py::none(),
+            py::arg("attn_mask") = py::none(),
+            py::arg("dropout_p") = 0.0,
+            py::arg("is_causal") = false,
+            py::arg("scale") = py::none(),
+            "Equivariant geometric attention v3_2: hoisted K-pack + vectorized row-max + AVX-512 kernels when available.");
+      m.def("equi_geometric_attention_ver_3_2",
+            &ezgatr::opt::equi_geometric_attention_mv_only_ver_3_2,
+            py::arg("query"),
+            py::arg("key"),
+            py::arg("value"),
+            py::arg("kinds"),
+            py::arg("weight") = py::none(),
+            py::arg("attn_mask") = py::none(),
+            py::arg("dropout_p") = 0.0,
+            py::arg("is_causal") = false,
+            py::arg("scale") = py::none(),
+            "Equivariant geometric attention version 3_2 alias.");
       // m.def("inner_product", &ezgatr::opt::inner_product_ver_2,
       //       py::arg("x"), py::arg("y"),
       //       "Inner Product of two multi-vectors of shape (..., 16).");

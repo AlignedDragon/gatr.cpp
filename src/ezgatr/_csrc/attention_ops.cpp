@@ -756,6 +756,32 @@ static inline float hsum256_ps(__m256 v) {
     return _mm_cvtss_f32(_mm_add_ss(lo, sh));
 }
 
+static inline float hmax256_ps(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    lo = _mm_max_ps(lo, hi);
+    __m128 sh = _mm_movehdup_ps(lo);
+    lo = _mm_max_ps(lo, sh);
+    sh = _mm_movehl_ps(lo, lo);
+    return _mm_cvtss_f32(_mm_max_ss(lo, sh));
+}
+
+// Row max over s[0..n) (n <= kFlashBc). Used by the v3_2 online softmax instead
+// of the scalar comparison loop. AVX2 (works on any build with __AVX2__).
+static inline float rowmax_simd(const float* __restrict__ s, int64_t n) {
+    int64_t c = 0;
+    if (n >= 8) {
+        __m256 mx = _mm256_loadu_ps(s);
+        for (c = 8; c + 8 <= n; c += 8) mx = _mm256_max_ps(mx, _mm256_loadu_ps(s + c));
+        float m = hmax256_ps(mx);
+        for (; c < n; ++c) if (s[c] > m) m = s[c];
+        return m;
+    }
+    float m = s[0];
+    for (c = 1; c < n; ++c) if (s[c] > m) m = s[c];
+    return m;
+}
+
 // 8-wide exp, Cephes minimax (~1e-6 rel error). Softmax only feeds x <= 0 and
 // our tolerance is 5e-5, so this is plenty. Avoids scalar std::exp in the loop.
 static inline __m256 exp256_ps(__m256 x) {
@@ -1021,6 +1047,175 @@ static inline void pv_block_simd(float* __restrict__ O, const float* __restrict_
 }
 #endif
 
+#if defined(__AVX512F__)
+// ---------------------------------------------------------------------------
+// v3_2 AVX-512 micro-kernels. Structurally identical to the AVX2 qk/pv blocks
+// above, but 16-wide (ZMM) with AVX-512 masks for the column / dv remainders so
+// there is no scalar tail. Only compiled when the build targets a CPU with
+// AVX-512 (e.g. -march=tigerlake for the README's i7-1165G7); on AVX2-only
+// builds the v3_2 head kernel falls back to qk_block_simd / pv_block_simd.
+//
+// NOTE on the README target (i7-1165G7, Tiger Lake): that part has a *single*
+// 512-bit FMA unit, so peak fp32 FMA throughput equals 2x256-bit. These kernels
+// are FMA-bound, so the expected win there is small (fewer load/broadcast/store
+// uops and loop trips, not more FLOP/cycle). The portable wins (hoisted K-pack,
+// vectorized row-max) live in flash_attn_head_f32_v32 and help on any ISA.
+
+// S = scale * (Qi @ Kp). 4x32 ZMM register block (8 accumulators); masked 16
+// tail for the last (partial) key tile.
+static inline void qk_block_avx512(const float* __restrict__ Qi,
+                                   const float* __restrict__ Kp,
+                                   float* __restrict__ S,
+                                   int64_t br, int64_t bc, int64_t d, float scale,
+                                   int64_t s_ld = kFlashBc) {
+    const __m512 sv = _mm512_set1_ps(scale);
+    int64_t r0 = 0;
+    for (; r0 + 4 <= br; r0 += 4) {
+        const float* q0 = Qi + (r0 + 0) * d;
+        const float* q1 = Qi + (r0 + 1) * d;
+        const float* q2 = Qi + (r0 + 2) * d;
+        const float* q3 = Qi + (r0 + 3) * d;
+        int64_t c0 = 0;
+        for (; c0 + 32 <= bc; c0 += 32) {  // 4x32: each Q broadcast hits 2 ZMM K vectors
+            __m512 a0 = _mm512_setzero_ps(), a1 = _mm512_setzero_ps();
+            __m512 a2 = _mm512_setzero_ps(), a3 = _mm512_setzero_ps();
+            __m512 b0 = _mm512_setzero_ps(), b1 = _mm512_setzero_ps();
+            __m512 b2 = _mm512_setzero_ps(), b3 = _mm512_setzero_ps();
+            for (int64_t k = 0; k < d; ++k) {
+                const __m512 kv0 = _mm512_loadu_ps(Kp + k * kFlashBc + c0);
+                const __m512 kv1 = _mm512_loadu_ps(Kp + k * kFlashBc + c0 + 16);
+                const __m512 w0 = _mm512_set1_ps(q0[k]);
+                const __m512 w1 = _mm512_set1_ps(q1[k]);
+                const __m512 w2 = _mm512_set1_ps(q2[k]);
+                const __m512 w3 = _mm512_set1_ps(q3[k]);
+                a0 = _mm512_fmadd_ps(w0, kv0, a0); b0 = _mm512_fmadd_ps(w0, kv1, b0);
+                a1 = _mm512_fmadd_ps(w1, kv0, a1); b1 = _mm512_fmadd_ps(w1, kv1, b1);
+                a2 = _mm512_fmadd_ps(w2, kv0, a2); b2 = _mm512_fmadd_ps(w2, kv1, b2);
+                a3 = _mm512_fmadd_ps(w3, kv0, a3); b3 = _mm512_fmadd_ps(w3, kv1, b3);
+            }
+            _mm512_storeu_ps(S + (r0 + 0) * s_ld + c0,      _mm512_mul_ps(a0, sv));
+            _mm512_storeu_ps(S + (r0 + 1) * s_ld + c0,      _mm512_mul_ps(a1, sv));
+            _mm512_storeu_ps(S + (r0 + 2) * s_ld + c0,      _mm512_mul_ps(a2, sv));
+            _mm512_storeu_ps(S + (r0 + 3) * s_ld + c0,      _mm512_mul_ps(a3, sv));
+            _mm512_storeu_ps(S + (r0 + 0) * s_ld + c0 + 16, _mm512_mul_ps(b0, sv));
+            _mm512_storeu_ps(S + (r0 + 1) * s_ld + c0 + 16, _mm512_mul_ps(b1, sv));
+            _mm512_storeu_ps(S + (r0 + 2) * s_ld + c0 + 16, _mm512_mul_ps(b2, sv));
+            _mm512_storeu_ps(S + (r0 + 3) * s_ld + c0 + 16, _mm512_mul_ps(b3, sv));
+        }
+        for (; c0 < bc; c0 += 16) {  // 16-wide, masked when fewer than 16 cols remain
+            const int64_t rem = bc - c0;
+            const __mmask16 mk = (rem >= 16) ? (__mmask16)0xFFFF
+                                             : (__mmask16)((1u << rem) - 1u);
+            __m512 a0 = _mm512_setzero_ps(), a1 = _mm512_setzero_ps();
+            __m512 a2 = _mm512_setzero_ps(), a3 = _mm512_setzero_ps();
+            for (int64_t k = 0; k < d; ++k) {
+                const __m512 kv = _mm512_maskz_loadu_ps(mk, Kp + k * kFlashBc + c0);
+                a0 = _mm512_fmadd_ps(_mm512_set1_ps(q0[k]), kv, a0);
+                a1 = _mm512_fmadd_ps(_mm512_set1_ps(q1[k]), kv, a1);
+                a2 = _mm512_fmadd_ps(_mm512_set1_ps(q2[k]), kv, a2);
+                a3 = _mm512_fmadd_ps(_mm512_set1_ps(q3[k]), kv, a3);
+            }
+            _mm512_mask_storeu_ps(S + (r0 + 0) * s_ld + c0, mk, _mm512_mul_ps(a0, sv));
+            _mm512_mask_storeu_ps(S + (r0 + 1) * s_ld + c0, mk, _mm512_mul_ps(a1, sv));
+            _mm512_mask_storeu_ps(S + (r0 + 2) * s_ld + c0, mk, _mm512_mul_ps(a2, sv));
+            _mm512_mask_storeu_ps(S + (r0 + 3) * s_ld + c0, mk, _mm512_mul_ps(a3, sv));
+        }
+    }
+    for (; r0 < br; ++r0) {  // row remainder (MR=1)
+        const float* q0 = Qi + r0 * d;
+        for (int64_t c0 = 0; c0 < bc; c0 += 16) {
+            const int64_t rem = bc - c0;
+            const __mmask16 mk = (rem >= 16) ? (__mmask16)0xFFFF
+                                             : (__mmask16)((1u << rem) - 1u);
+            __m512 a0 = _mm512_setzero_ps();
+            for (int64_t k = 0; k < d; ++k)
+                a0 = _mm512_fmadd_ps(_mm512_set1_ps(q0[k]),
+                                     _mm512_maskz_loadu_ps(mk, Kp + k * kFlashBc + c0), a0);
+            _mm512_mask_storeu_ps(S + r0 * s_ld + c0, mk, _mm512_mul_ps(a0, sv));
+        }
+    }
+}
+
+// O = diag(es) * O + P @ V. 4x16 ZMM register block over dv; masked 16 tail when
+// dv is not a multiple of 16 (dv = 16C in this model, so the tail rarely fires).
+static inline void pv_block_avx512(float* __restrict__ O, const float* __restrict__ P,
+                                   const float* __restrict__ V, const float* __restrict__ es,
+                                   int64_t br, int64_t bc, int64_t dv,
+                                   int64_t p_ld = kFlashBc) {
+    int64_t r0 = 0;
+    for (; r0 + 4 <= br; r0 += 4) {
+        float* o0 = O + (r0 + 0) * dv;
+        float* o1 = O + (r0 + 1) * dv;
+        float* o2 = O + (r0 + 2) * dv;
+        float* o3 = O + (r0 + 3) * dv;
+        const float* p0 = P + (r0 + 0) * p_ld;
+        const float* p1 = P + (r0 + 1) * p_ld;
+        const float* p2 = P + (r0 + 2) * p_ld;
+        const float* p3 = P + (r0 + 3) * p_ld;
+        const __m512 e0 = _mm512_set1_ps(es[r0 + 0]);
+        const __m512 e1 = _mm512_set1_ps(es[r0 + 1]);
+        const __m512 e2 = _mm512_set1_ps(es[r0 + 2]);
+        const __m512 e3 = _mm512_set1_ps(es[r0 + 3]);
+        int64_t v = 0;
+        for (; v + 16 <= dv; v += 16) {
+            __m512 a0 = _mm512_mul_ps(_mm512_loadu_ps(o0 + v), e0);
+            __m512 a1 = _mm512_mul_ps(_mm512_loadu_ps(o1 + v), e1);
+            __m512 a2 = _mm512_mul_ps(_mm512_loadu_ps(o2 + v), e2);
+            __m512 a3 = _mm512_mul_ps(_mm512_loadu_ps(o3 + v), e3);
+            for (int64_t c = 0; c < bc; ++c) {
+                const __m512 vv = _mm512_loadu_ps(V + c * dv + v);
+                a0 = _mm512_fmadd_ps(_mm512_set1_ps(p0[c]), vv, a0);
+                a1 = _mm512_fmadd_ps(_mm512_set1_ps(p1[c]), vv, a1);
+                a2 = _mm512_fmadd_ps(_mm512_set1_ps(p2[c]), vv, a2);
+                a3 = _mm512_fmadd_ps(_mm512_set1_ps(p3[c]), vv, a3);
+            }
+            _mm512_storeu_ps(o0 + v, a0);
+            _mm512_storeu_ps(o1 + v, a1);
+            _mm512_storeu_ps(o2 + v, a2);
+            _mm512_storeu_ps(o3 + v, a3);
+        }
+        if (v < dv) {  // dv remainder
+            const __mmask16 mk = (__mmask16)((1u << (dv - v)) - 1u);
+            __m512 a0 = _mm512_mul_ps(_mm512_maskz_loadu_ps(mk, o0 + v), e0);
+            __m512 a1 = _mm512_mul_ps(_mm512_maskz_loadu_ps(mk, o1 + v), e1);
+            __m512 a2 = _mm512_mul_ps(_mm512_maskz_loadu_ps(mk, o2 + v), e2);
+            __m512 a3 = _mm512_mul_ps(_mm512_maskz_loadu_ps(mk, o3 + v), e3);
+            for (int64_t c = 0; c < bc; ++c) {
+                const __m512 vv = _mm512_maskz_loadu_ps(mk, V + c * dv + v);
+                a0 = _mm512_fmadd_ps(_mm512_set1_ps(p0[c]), vv, a0);
+                a1 = _mm512_fmadd_ps(_mm512_set1_ps(p1[c]), vv, a1);
+                a2 = _mm512_fmadd_ps(_mm512_set1_ps(p2[c]), vv, a2);
+                a3 = _mm512_fmadd_ps(_mm512_set1_ps(p3[c]), vv, a3);
+            }
+            _mm512_mask_storeu_ps(o0 + v, mk, a0);
+            _mm512_mask_storeu_ps(o1 + v, mk, a1);
+            _mm512_mask_storeu_ps(o2 + v, mk, a2);
+            _mm512_mask_storeu_ps(o3 + v, mk, a3);
+        }
+    }
+    for (; r0 < br; ++r0) {  // row remainder (MR=1)
+        float* o0 = O + r0 * dv;
+        const float* p0 = P + r0 * p_ld;
+        const __m512 e0 = _mm512_set1_ps(es[r0]);
+        int64_t v = 0;
+        for (; v + 16 <= dv; v += 16) {
+            __m512 a0 = _mm512_mul_ps(_mm512_loadu_ps(o0 + v), e0);
+            for (int64_t c = 0; c < bc; ++c)
+                a0 = _mm512_fmadd_ps(_mm512_set1_ps(p0[c]), _mm512_loadu_ps(V + c * dv + v), a0);
+            _mm512_storeu_ps(o0 + v, a0);
+        }
+        if (v < dv) {
+            const __mmask16 mk = (__mmask16)((1u << (dv - v)) - 1u);
+            __m512 a0 = _mm512_mul_ps(_mm512_maskz_loadu_ps(mk, o0 + v), e0);
+            for (int64_t c = 0; c < bc; ++c)
+                a0 = _mm512_fmadd_ps(_mm512_set1_ps(p0[c]),
+                                     _mm512_maskz_loadu_ps(mk, V + c * dv + v), a0);
+            _mm512_mask_storeu_ps(o0 + v, mk, a0);
+        }
+    }
+}
+#endif  // __AVX512F__
+
 // out[c] = exp(in[c] - m); returns sum(out). Vectorized exp for v3, std::exp for v2.
 template <bool SIMD>
 static inline float exp_row(const float* __restrict__ in, float* __restrict__ out,
@@ -1111,6 +1306,129 @@ static void flash_attn_head_f32(
 #if defined(__AVX2__)
             if constexpr (SIMD) {
                 pv_block_simd(Oi, P_block, Vj, es, br, bc, dv);
+            } else
+#endif
+            {
+                for (int64_t r = 0; r < br; ++r) {
+                    float* Oi_row = Oi + r * dv;
+                    flash_scale<SIMD>(Oi_row, es[r], dv);
+                    const float* Prow = P_block + r * kFlashBc;
+                    for (int64_t c = 0; c < bc; ++c) {
+                        flash_axpy<SIMD>(Oi_row, Vj + c * dv, Prow[c], dv);
+                    }
+                }
+            }
+        }
+
+        for (int64_t r = 0; r < br; ++r) {
+            flash_scale<SIMD>(Oi + r * dv, 1.0f / li[r], dv);
+        }
+    }
+}
+
+// v3_2 per-head flash attention. Same online-softmax math as flash_attn_head_f32,
+// with three changes over v3:
+//   (1) K is packed (transposed) once per head into Kp [nKT, d, kFlashBc] and
+//       reused across all query blocks (v3 re-packed each tile per query block);
+//   (2) the per-row score max is computed with rowmax_simd instead of a scalar
+//       comparison loop;
+//   (3) the QK^T / P@V micro-kernels use AVX-512 (16-wide, masked tails) when the
+//       build has __AVX512F__, else the AVX2 kernels.
+// (1) and (2) are ISA-independent and apply on any AVX2 build. Kp must be sized
+// nKT * d * kFlashBc floats by the caller (nKT = ceil(T / kFlashBc)).
+template <bool SIMD>
+static void flash_attn_head_f32_v32(
+    const float* __restrict__ Q,
+    const float* __restrict__ K,
+    const float* __restrict__ V,
+    float*       __restrict__ O,
+    int64_t T, int64_t d, int64_t dv, float scale,
+    float* __restrict__ l,
+    float* __restrict__ m,
+    float* __restrict__ Kp)
+{
+    for (int64_t i = 0; i < T; ++i) { l[i] = 0.0f; m[i] = -1e30f; }
+    std::memset(O, 0, static_cast<size_t>(T * dv) * sizeof(float));
+
+    const int64_t nKT = (T + kFlashBc - 1) / kFlashBc;
+
+    // (1) Hoisted K-pack: transpose every key tile once, reuse across query blocks.
+#if defined(__AVX2__)
+    if constexpr (SIMD) {
+        for (int64_t ti = 0; ti < nKT; ++ti) {
+            const int64_t ki = ti * kFlashBc;
+            const int64_t bc = std::min(kFlashBc, T - ki);
+            pack_k_tile(K + ki * d, Kp + ti * (d * kFlashBc), bc, d);
+        }
+    }
+#endif
+
+    alignas(64) float S_block[kFlashBr * kFlashBc];
+    alignas(64) float P_block[kFlashBr * kFlashBc];
+    alignas(64) float es[kFlashBr];
+
+    for (int64_t qi = 0; qi < T; qi += kFlashBr) {
+        const int64_t br = std::min(kFlashBr, T - qi);
+        const float* Qi = Q + qi * d;
+        float*       Oi = O + qi * dv;
+        float*       li = l + qi;
+        float*       mi = m + qi;
+
+        for (int64_t ti = 0; ti < nKT; ++ti) {
+            const int64_t ki = ti * kFlashBc;
+            const int64_t bc = std::min(kFlashBc, T - ki);
+            const float* Vj = V + ki * dv;
+
+            // S = scale * Qi @ Kj^T  (br x bc)
+#if defined(__AVX2__)
+            if constexpr (SIMD) {
+                const float* Kp_tile = Kp + ti * (d * kFlashBc);
+#if defined(__AVX512F__)
+                qk_block_avx512(Qi, Kp_tile, S_block, br, bc, d, scale);
+#else
+                qk_block_simd(Qi, Kp_tile, S_block, br, bc, d, scale);
+#endif
+            } else
+#endif
+            {
+                const float* Kj = K + ki * d;
+                for (int64_t r = 0; r < br; ++r) {
+                    for (int64_t c = 0; c < bc; ++c) {
+                        S_block[r * kFlashBc + c] = flash_dot<SIMD>(Qi + r * d, Kj + c * d, d) * scale;
+                    }
+                }
+            }
+
+            // (2) Online softmax with vectorized row max.
+            for (int64_t r = 0; r < br; ++r) {
+                const float* Srow = S_block + r * kFlashBc;
+                float* Prow = P_block + r * kFlashBc;
+
+                float m_new = mi[r];
+#if defined(__AVX2__)
+                if constexpr (SIMD) {
+                    const float rmax = rowmax_simd(Srow, bc);
+                    if (rmax > m_new) m_new = rmax;
+                } else
+#endif
+                {
+                    for (int64_t c = 0; c < bc; ++c) {
+                        if (Srow[c] > m_new) m_new = Srow[c];
+                    }
+                }
+                es[r] = std::exp(mi[r] - m_new);
+                li[r] = es[r] * li[r] + exp_row<SIMD>(Srow, Prow, bc, m_new);
+                mi[r] = m_new;
+            }
+
+            // O = diag(es) * O + P_block @ Vj
+#if defined(__AVX2__)
+            if constexpr (SIMD) {
+#if defined(__AVX512F__)
+                pv_block_avx512(Oi, P_block, Vj, es, br, bc, dv);
+#else
+                pv_block_simd(Oi, P_block, Vj, es, br, bc, dv);
+#endif
             } else
 #endif
             {
@@ -1405,13 +1723,16 @@ static inline void assemble_ipa_daa_head(
 Tensor compute_fused_ipa_daa_flash_attention(
     const Tensor& query, const Tensor& key, const Tensor& value,
     float ipa_w, float daa_w, double eps,
-    const py::object& scale_obj, bool use_simd) {
+    const py::object& scale_obj, bool use_simd, bool use_v32 = false) {
     const int64_t B = query.size(0);
     const int64_t H = query.size(1);
     const int64_t T = query.size(2);
     const int64_t C = query.size(3);
     const int64_t d = 12 * C;
     const int64_t dv = 16 * C;
+    // v3_2 packs all key tiles once per head, so its pack buffer holds nKT tiles
+    // rather than one.
+    const int64_t nKT = (T + kFlashBc - 1) / kFlashBc;
 
     const float scale = scale_obj.is_none()
         ? 1.0f / std::sqrt(static_cast<float>(d))
@@ -1428,7 +1749,8 @@ Tensor compute_fused_ipa_daa_flash_attention(
         std::vector<float> Qh(static_cast<size_t>(T * d));
         std::vector<float> Kh(static_cast<size_t>(T * d));
         std::vector<float> l_buf(T), m_buf(T);
-        std::vector<float> kp_buf(use_simd ? static_cast<size_t>(d * kFlashBc) : 0);
+        std::vector<float> kp_buf(use_simd
+            ? static_cast<size_t>((use_v32 ? nKT : 1) * d * kFlashBc) : 0);
         std::vector<float> sf_buf(kUseDirectSDPA ? static_cast<size_t>(T * T) : 0);
         std::vector<float> ones_buf(kUseDirectSDPA ? static_cast<size_t>(kFlashBr) : 0, 1.0f);
         for (int64_t bh = begin; bh < end; ++bh) {
@@ -1444,6 +1766,13 @@ Tensor compute_fused_ipa_daa_flash_attention(
                 else
                     direct_attn_head_f32<false>(Qh.data(), Kh.data(), v, o, T, d, dv, scale,
                                                 nullptr, sf_buf.data(), nullptr);
+            } else if (use_v32) {
+                if (use_simd)
+                    flash_attn_head_f32_v32<true>(Qh.data(), Kh.data(), v, o, T, d, dv, scale,
+                                                  l_buf.data(), m_buf.data(), kp_buf.data());
+                else
+                    flash_attn_head_f32_v32<false>(Qh.data(), Kh.data(), v, o, T, d, dv, scale,
+                                                   l_buf.data(), m_buf.data(), nullptr);
             } else if (use_simd) {
                 flash_attn_head_f32<true>(Qh.data(), Kh.data(), v, o, T, d, dv, scale,
                                           l_buf.data(), m_buf.data(), kp_buf.data());
@@ -1465,7 +1794,7 @@ std::optional<Tensor> try_fused_ipa_daa_flash(
     const std::vector<py::object>& kind_kwargs,
     const std::vector<py::object>& weights,
     const py::object& attn_mask, double dropout_p, bool is_causal,
-    const py::object& scale, bool use_simd) {
+    const py::object& scale, bool use_simd, bool use_v32 = false) {
     if (kind_names.size() != 2) return std::nullopt;
     if (!(kind_names[0] == "ipa" && kind_names[1] == "daa")) return std::nullopt;
     if (query.scalar_type() != torch::kFloat32 ||
@@ -1488,7 +1817,7 @@ std::optional<Tensor> try_fused_ipa_daa_flash(
 
     return compute_fused_ipa_daa_flash_attention(
         query, key, value, static_cast<float>(*ipa_w), static_cast<float>(*daa_w),
-        eps, scale, use_simd);
+        eps, scale, use_simd, use_v32);
 }
 
 }  // namespace
@@ -1510,7 +1839,10 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
     int sdpa_mode = 0) {
     // sdpa_mode selects how the scaled-dot-product-attention core is computed:
     //   0 = naive scalar (v0/v1), 1 = flash tiled scalar (v2),
-    //   2 = flash tiled AVX2/FMA (v3), other = PyTorch library SDPA.
+    //   2 = flash tiled AVX2/FMA (v3),
+    //   3 = v3_2 (hoisted K-pack + vectorized row-max; AVX-512 kernels when the
+    //       build targets a CPU with AVX-512, else the AVX2 kernels),
+    //   other = PyTorch library SDPA.
     check_mv_attention_tensor(query, "equi_geometric_attention_mv_only: query");
     check_mv_attention_tensor(key, "equi_geometric_attention_mv_only: key");
     check_mv_attention_tensor(value, "equi_geometric_attention_mv_only: value");
@@ -1581,10 +1913,11 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
     // Fused path for the flash SDPA modes (v2/v3): assemble Q/K per head into
     // cache-resident scratch and run the SDPA on it, skipping the global
     // query_flat/key_flat materialization.
-    if (sdpa_mode == 1 || sdpa_mode == 2) {
+    if (sdpa_mode == 1 || sdpa_mode == 2 || sdpa_mode == 3) {
         auto fused = try_fused_ipa_daa_flash(
             query, key, value, kind_names, kind_kwargs, weights,
-            attn_mask, dropout_p, is_causal, scale, /*use_simd=*/sdpa_mode == 2);
+            attn_mask, dropout_p, is_causal, scale,
+            /*use_simd=*/sdpa_mode >= 2, /*use_v32=*/sdpa_mode == 3);
         if (fused.has_value()) {
             return *fused;
         }
@@ -1646,6 +1979,7 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
                 attn_mask, dropout_p, is_causal, scale, /*use_simd=*/false);
             break;
         case 2:  // flash attention, AVX2/FMA inner kernel (v3: SIMD)
+        case 3:  // v3_2: if the fused path declined, fall back to the v3 flash SDPA
             ret = compute_flash_attention_sdpa(
                 query_flat, key_flat, value_flat,
                 attn_mask, dropout_p, is_causal, scale, /*use_simd=*/true);
@@ -1729,6 +2063,26 @@ torch::Tensor equi_geometric_attention_mv_only_ver_3(
         query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale,
         /*use_cache=*/true, /*use_direct_daa=*/true, /*use_fast_paths=*/true,
         /*use_simd=*/true, /*sdpa_mode=*/2);
+}
+
+torch::Tensor equi_geometric_attention_mv_only_ver_3_2(
+    const torch::Tensor& query,
+    const torch::Tensor& key,
+    const torch::Tensor& value,
+    const py::dict& kinds,
+    const py::object& weight,
+    const py::object& attn_mask,
+    double dropout_p,
+    bool is_causal,
+    const py::object& scale) {
+    // v3_2: same fused IPA+DAA assembly as v3, but the flash SDPA uses the v3_2
+    // head kernel — K packed once per head (not per query block), vectorized row
+    // max, and AVX-512 QK^T / P@V micro-kernels when the build has AVX-512 (else
+    // the v3 AVX2 kernels). Numerically identical to v3 up to fp reassociation.
+    return equi_geometric_attention_mv_only_impl(
+        query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale,
+        /*use_cache=*/true, /*use_direct_daa=*/true, /*use_fast_paths=*/true,
+        /*use_simd=*/true, /*sdpa_mode=*/3);
 }
 
 torch::Tensor equi_geometric_attention_mv_only(

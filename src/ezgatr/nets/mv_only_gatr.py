@@ -37,6 +37,7 @@ from ezgatr.opt import (
     equi_join_v3 as equi_join_ver_3,
     scaler_gated_gelu_ver_3,
     equi_geometric_attention_ver_3,
+    equi_geometric_attention_ver_3_2,
 
     geometric_bilinear_v3_1,
 )
@@ -2293,6 +2294,67 @@ class MVOnlyGATrModelASL_ver_3(nn.Module):
             self.embedding(x),
         )
         return self.head(x)
+
+
+# ---------------------------------------------------------------------------
+# ver_3_2: same architecture as ver_3, but the attention uses the v3_2 SDPA
+# kernel (K packed once per head, vectorized row-max, AVX-512 QK^T / P@V kernels
+# when the build targets a CPU with AVX-512, else the v3 AVX2 kernels). Only the
+# attention op call differs; every other module is reused from ver_3.
+# ---------------------------------------------------------------------------
+class MVOnlyGATrAttentionASL_ver_3_2(MVOnlyGATrAttentionASL_ver_3):
+    r"""ver_3 attention with the v3_2 SDPA kernel."""
+
+    def forward(
+        self, x: torch.Tensor, attn_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        residual = x
+
+        x = self.layer_norm(x)
+        q, k, v = rearrange(
+            self.proj_qkv(x),
+            "b t (qkv h c) k -> qkv b h t c k",
+            qkv=3,
+            h=self.config.attn_num_heads,
+            c=self.config.size_channels_hidden,
+        )
+        x = equi_geometric_attention_ver_3_2(
+            q,
+            k,
+            v,
+            kinds=self.config.attn_kinds,
+            weight=[w.exp() for w in self.attn_mix.values()],
+            attn_mask=attn_mask,
+            is_causal=self.config.attn_is_causal,
+            dropout_p=self.config.attn_dropout_p,
+            scale=self.config.attn_scale,
+        )
+        x = rearrange(x, "b h t c k -> b t (h c) k", h=self.config.attn_num_heads)
+        x = self.proj_out(x)
+
+        return x + residual
+
+
+class MVOnlyGATrBlockASL_ver_3_2(MVOnlyGATrBlockASL_ver_3):
+    r"""GATr block (ver_3_2): ver_3 MLP + v3_2 attention."""
+
+    def __init__(self, config: MVOnlyGATrConfig, layer_id: int) -> None:
+        super().__init__(config, layer_id)
+        self.attn = MVOnlyGATrAttentionASL_ver_3_2(config)
+
+
+class MVOnlyGATrModelASL_ver_3_2(MVOnlyGATrModelASL_ver_3):
+    r"""Multi-Vector only GATr model (ver_3_2): ver_3 modules with v3_2 attention."""
+
+    def __init__(self, config: MVOnlyGATrConfig) -> None:
+        nn.Module.__init__(self)
+        self.config = config
+        self.embedding = MVOnlyGATrEmbeddingASL_ver_3(config)
+        self.blocks = nn.ModuleList(
+            MVOnlyGATrBlockASL_ver_3_2(config, i) for i in range(config.num_layers)
+        )
+        self.head = EquiLinearASL_ver_3(config.size_channels_hidden, config.size_channels_out)
+        self.apply(self._init_params)
 
 
 # ---------------------------------------------------------------------------

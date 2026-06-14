@@ -30,7 +30,7 @@ from ezgatr.nets.mv_only_gatr import (  # noqa: E402
     MVOnlyGATrConfig, MVOnlyGATrModel,
     MVOnlyGATrModelASL_ver_0, MVOnlyGATrModelASL_ver_1,
     MVOnlyGATrModelASL_ver_2, MVOnlyGATrModelASL_ver_3,
-    MVOnlyGATrModelASL_ver_3_1,
+    MVOnlyGATrModelASL_ver_3_1, MVOnlyGATrModelASL_ver_3_2,
 )
 
 torch.set_num_threads(1)
@@ -51,12 +51,13 @@ FAMILIES = {
     "equi_geometric_attention": {"v0": "equi_geometric_attention_ver_0",
                                  "v1": "equi_geometric_attention_ver_1",
                                  "v2": "equi_geometric_attention_ver_2",
-                                 "v3": "equi_geometric_attention_ver_3"},
+                                 "v3": "equi_geometric_attention_ver_3",
+                                 "v3_2": "equi_geometric_attention_ver_3_2"},
 }
 MODEL_VERSIONS = {
     "ref": MVOnlyGATrModel, "v0": MVOnlyGATrModelASL_ver_0, "v1": MVOnlyGATrModelASL_ver_1,
     "v2": MVOnlyGATrModelASL_ver_2, "v3": MVOnlyGATrModelASL_ver_3,
-    "v3_1": MVOnlyGATrModelASL_ver_3_1,
+    "v3_1": MVOnlyGATrModelASL_ver_3_1, "v3_2": MVOnlyGATrModelASL_ver_3_2,
 }
 
 # Cache benchmark_repo inputs per n (avoids re-allocating attention tensors per target).

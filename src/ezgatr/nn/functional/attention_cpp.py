@@ -172,3 +172,36 @@ def equi_geometric_attention_cpp_ver_3(
         scale,
     )
     return ret, None
+
+
+def equi_geometric_attention_cpp_ver_3_2(
+    query: GeometricQKVType,
+    key: GeometricQKVType,
+    value: GeometricQKVType,
+    kinds: dict[GeometricAttnKindType, dict[str, object] | None],
+    weight: list[torch.Tensor | float] | None = None,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+) -> GeometricQKVType:
+    r"""v3_2: v3 fused assembly + improved flash SDPA (K packed once per head, vectorized row-max, AVX-512 QK^T / P@V micro-kernels when the build targets a CPU with AVX-512, else the v3 AVX2 kernels)."""
+
+    if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
+        raise NotImplementedError(
+            "The C++ port currently supports the multivector-only attention path."
+        )
+
+    ext = _load_attention_cpp_extension()
+    ret = ext.equi_geometric_attention_mv_only_ver_3_2(
+        query,
+        key,
+        value,
+        kinds,
+        weight,
+        attn_mask,
+        dropout_p,
+        is_causal,
+        scale,
+    )
+    return ret, None
