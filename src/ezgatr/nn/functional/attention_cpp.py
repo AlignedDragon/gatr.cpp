@@ -174,7 +174,7 @@ def equi_geometric_attention_cpp_ver_3(
     return ret, None
 
 
-def equi_geometric_attention_cpp_ver_3_2(
+def equi_geometric_attention_cpp_ver_3_1(
     query: GeometricQKVType,
     key: GeometricQKVType,
     value: GeometricQKVType,
@@ -185,7 +185,7 @@ def equi_geometric_attention_cpp_ver_3_2(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""v3_2: v3 fused assembly + improved flash SDPA (K packed once per head, vectorized row-max, AVX-512 QK^T / P@V micro-kernels when the build targets a CPU with AVX-512, else the v3 AVX2 kernels)."""
+    r"""v3_1: v3 fused assembly + optimized flash SDPA (K packed once per head, vectorized row-max, NR-reblocked P@V; AVX-512 QK^T / P@V micro-kernels when the build targets a CPU with AVX-512, else the AVX2 kernels)."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
@@ -193,7 +193,7 @@ def equi_geometric_attention_cpp_ver_3_2(
         )
 
     ext = _load_attention_cpp_extension()
-    ret = ext.equi_geometric_attention_mv_only_ver_3_2(
+    ret = ext.equi_geometric_attention_mv_only_ver_3_1(
         query,
         key,
         value,
@@ -205,3 +205,4 @@ def equi_geometric_attention_cpp_ver_3_2(
         scale,
     )
     return ret, None
+

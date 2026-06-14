@@ -37,7 +37,7 @@ from ezgatr.opt import (
     equi_join_v3 as equi_join_ver_3,
     scaler_gated_gelu_ver_3,
     equi_geometric_attention_ver_3,
-    equi_geometric_attention_ver_3_2,
+    equi_geometric_attention_ver_3_1,
 
     geometric_bilinear_v3_1,
 )
@@ -2297,13 +2297,13 @@ class MVOnlyGATrModelASL_ver_3(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# ver_3_2: same architecture as ver_3, but the attention uses the v3_2 SDPA
-# kernel (K packed once per head, vectorized row-max, AVX-512 QK^T / P@V kernels
-# when the build targets a CPU with AVX-512, else the v3 AVX2 kernels). Only the
-# attention op call differs; every other module is reused from ver_3.
+# Optimized attention module for the ver_3_1 final variant: same wiring as ver_3
+# attention, but calls the optimized SDPA kernel (K packed once per head,
+# vectorized row-max, NR-reblocked P@V; AVX-512 QK^T / P@V kernels when the build
+# targets a CPU with AVX-512, else the AVX2 kernels). Bit-identical to ver_3.
 # ---------------------------------------------------------------------------
-class MVOnlyGATrAttentionASL_ver_3_2(MVOnlyGATrAttentionASL_ver_3):
-    r"""ver_3 attention with the v3_2 SDPA kernel."""
+class MVOnlyGATrAttentionASL_ver_3_1(MVOnlyGATrAttentionASL_ver_3):
+    r"""ver_3 attention wiring with the optimized v3_1 SDPA kernel."""
 
     def forward(
         self, x: torch.Tensor, attn_mask: torch.Tensor | None = None
@@ -2318,7 +2318,7 @@ class MVOnlyGATrAttentionASL_ver_3_2(MVOnlyGATrAttentionASL_ver_3):
             h=self.config.attn_num_heads,
             c=self.config.size_channels_hidden,
         )
-        x = equi_geometric_attention_ver_3_2(
+        x = equi_geometric_attention_ver_3_1(
             q,
             k,
             v,
@@ -2335,32 +2335,10 @@ class MVOnlyGATrAttentionASL_ver_3_2(MVOnlyGATrAttentionASL_ver_3):
         return x + residual
 
 
-class MVOnlyGATrBlockASL_ver_3_2(MVOnlyGATrBlockASL_ver_3):
-    r"""GATr block (ver_3_2): ver_3 MLP + v3_2 attention."""
-
-    def __init__(self, config: MVOnlyGATrConfig, layer_id: int) -> None:
-        super().__init__(config, layer_id)
-        self.attn = MVOnlyGATrAttentionASL_ver_3_2(config)
-
-
-class MVOnlyGATrModelASL_ver_3_2(MVOnlyGATrModelASL_ver_3):
-    r"""Multi-Vector only GATr model (ver_3_2): ver_3 modules with v3_2 attention."""
-
-    def __init__(self, config: MVOnlyGATrConfig) -> None:
-        nn.Module.__init__(self)
-        self.config = config
-        self.embedding = MVOnlyGATrEmbeddingASL_ver_3(config)
-        self.blocks = nn.ModuleList(
-            MVOnlyGATrBlockASL_ver_3_2(config, i) for i in range(config.num_layers)
-        )
-        self.head = EquiLinearASL_ver_3(config.size_channels_hidden, config.size_channels_out)
-        self.apply(self._init_params)
-
-
 # ---------------------------------------------------------------------------
 # ver_3_1: additive variant of ver_3 that fuses the geometric bilinear
-# (gp + join + cat -> one kernel, no torch.cat) and uses the improved attention
-# kernel (K pre-pack + cheaper exp). Everything else (linears, rms-norm, gelu,
+# (gp + join + cat -> one kernel, no torch.cat) and uses the optimized attention
+# kernel (K pre-pack, vectorized row-max, NR-reblocked P@V). Everything else (linears, rms-norm, gelu,
 # embedding, head) reuses the ver_3 modules unchanged.
 # ---------------------------------------------------------------------------
 
@@ -2428,12 +2406,12 @@ class MVOnlyGATrMLPASL_ver_3_1(nn.Module):
 
 
 class MVOnlyGATrBlockASL_ver_3_1(nn.Module):
-    r"""GATr block (ver_3_1): ver_3_1 MLP (fused bilinear) + ver_3 attention."""
+    r"""GATr block (ver_3_1): ver_3_1 MLP (fused bilinear) + optimized v3_1 attention."""
 
     config: MVOnlyGATrConfig
     layer_id: int
     mlp: MVOnlyGATrMLPASL_ver_3_1
-    attn: MVOnlyGATrAttentionASL_ver_3
+    attn: MVOnlyGATrAttentionASL_ver_3_1
 
     def __init__(self, config: MVOnlyGATrConfig, layer_id: int) -> None:
         super().__init__()
@@ -2442,7 +2420,7 @@ class MVOnlyGATrBlockASL_ver_3_1(nn.Module):
         self.layer_id = layer_id
 
         self.mlp = MVOnlyGATrMLPASL_ver_3_1(config)
-        self.attn = MVOnlyGATrAttentionASL_ver_3(config)
+        self.attn = MVOnlyGATrAttentionASL_ver_3_1(config)
 
     def forward(
         self,

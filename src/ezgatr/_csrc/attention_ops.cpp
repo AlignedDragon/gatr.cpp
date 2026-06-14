@@ -1045,21 +1045,123 @@ static inline void pv_block_simd(float* __restrict__ O, const float* __restrict_
         }
     }
 }
+
+// v3_3 P@V kernel: same math as pv_block_simd but NR=16 (16 value-columns per
+// row block, 8 accumulators) so each p[r][c] broadcast feeds TWO FMAs. The NR=8
+// pv_block_simd was load-port bound (1 V-load + 4 broadcasts : 4 FMA per step);
+// NR=16 is 2 V-loads + 4 broadcasts : 8 FMA, i.e. FMA-bound. Per-element
+// accumulation order is unchanged, so the result is bit-identical to pv_block_simd.
+static inline void pv_block_simd_nr16(float* __restrict__ O, const float* __restrict__ P,
+                                      const float* __restrict__ V, const float* __restrict__ es,
+                                      int64_t br, int64_t bc, int64_t dv,
+                                      int64_t p_ld = kFlashBc) {
+    int64_t r0 = 0;
+    for (; r0 + 4 <= br; r0 += 4) {
+        float* o0 = O + (r0 + 0) * dv;
+        float* o1 = O + (r0 + 1) * dv;
+        float* o2 = O + (r0 + 2) * dv;
+        float* o3 = O + (r0 + 3) * dv;
+        const float* p0 = P + (r0 + 0) * p_ld;
+        const float* p1 = P + (r0 + 1) * p_ld;
+        const float* p2 = P + (r0 + 2) * p_ld;
+        const float* p3 = P + (r0 + 3) * p_ld;
+        const __m256 e0 = _mm256_set1_ps(es[r0 + 0]);
+        const __m256 e1 = _mm256_set1_ps(es[r0 + 1]);
+        const __m256 e2 = _mm256_set1_ps(es[r0 + 2]);
+        const __m256 e3 = _mm256_set1_ps(es[r0 + 3]);
+        int64_t v = 0;
+        for (; v + 16 <= dv; v += 16) {  // 16 cols/row -> 8 accumulators (2 per row)
+            __m256 a0 = _mm256_mul_ps(_mm256_loadu_ps(o0 + v),     e0);
+            __m256 a0b= _mm256_mul_ps(_mm256_loadu_ps(o0 + v + 8), e0);
+            __m256 a1 = _mm256_mul_ps(_mm256_loadu_ps(o1 + v),     e1);
+            __m256 a1b= _mm256_mul_ps(_mm256_loadu_ps(o1 + v + 8), e1);
+            __m256 a2 = _mm256_mul_ps(_mm256_loadu_ps(o2 + v),     e2);
+            __m256 a2b= _mm256_mul_ps(_mm256_loadu_ps(o2 + v + 8), e2);
+            __m256 a3 = _mm256_mul_ps(_mm256_loadu_ps(o3 + v),     e3);
+            __m256 a3b= _mm256_mul_ps(_mm256_loadu_ps(o3 + v + 8), e3);
+            for (int64_t c = 0; c < bc; ++c) {
+                const __m256 vv  = _mm256_loadu_ps(V + c * dv + v);
+                const __m256 vvb = _mm256_loadu_ps(V + c * dv + v + 8);
+                const __m256 w0 = _mm256_set1_ps(p0[c]);
+                const __m256 w1 = _mm256_set1_ps(p1[c]);
+                const __m256 w2 = _mm256_set1_ps(p2[c]);
+                const __m256 w3 = _mm256_set1_ps(p3[c]);
+                a0 = _mm256_fmadd_ps(w0, vv, a0); a0b = _mm256_fmadd_ps(w0, vvb, a0b);
+                a1 = _mm256_fmadd_ps(w1, vv, a1); a1b = _mm256_fmadd_ps(w1, vvb, a1b);
+                a2 = _mm256_fmadd_ps(w2, vv, a2); a2b = _mm256_fmadd_ps(w2, vvb, a2b);
+                a3 = _mm256_fmadd_ps(w3, vv, a3); a3b = _mm256_fmadd_ps(w3, vvb, a3b);
+            }
+            _mm256_storeu_ps(o0 + v, a0); _mm256_storeu_ps(o0 + v + 8, a0b);
+            _mm256_storeu_ps(o1 + v, a1); _mm256_storeu_ps(o1 + v + 8, a1b);
+            _mm256_storeu_ps(o2 + v, a2); _mm256_storeu_ps(o2 + v + 8, a2b);
+            _mm256_storeu_ps(o3 + v, a3); _mm256_storeu_ps(o3 + v + 8, a3b);
+        }
+        for (; v + 8 <= dv; v += 8) {  // 8-wide remainder (dv not a multiple of 16)
+            __m256 a0 = _mm256_mul_ps(_mm256_loadu_ps(o0 + v), e0);
+            __m256 a1 = _mm256_mul_ps(_mm256_loadu_ps(o1 + v), e1);
+            __m256 a2 = _mm256_mul_ps(_mm256_loadu_ps(o2 + v), e2);
+            __m256 a3 = _mm256_mul_ps(_mm256_loadu_ps(o3 + v), e3);
+            for (int64_t c = 0; c < bc; ++c) {
+                const __m256 vv = _mm256_loadu_ps(V + c * dv + v);
+                a0 = _mm256_fmadd_ps(_mm256_set1_ps(p0[c]), vv, a0);
+                a1 = _mm256_fmadd_ps(_mm256_set1_ps(p1[c]), vv, a1);
+                a2 = _mm256_fmadd_ps(_mm256_set1_ps(p2[c]), vv, a2);
+                a3 = _mm256_fmadd_ps(_mm256_set1_ps(p3[c]), vv, a3);
+            }
+            _mm256_storeu_ps(o0 + v, a0);
+            _mm256_storeu_ps(o1 + v, a1);
+            _mm256_storeu_ps(o2 + v, a2);
+            _mm256_storeu_ps(o3 + v, a3);
+        }
+        for (; v < dv; ++v) {  // scalar remainder
+            float s0 = o0[v] * es[r0 + 0], s1 = o1[v] * es[r0 + 1];
+            float s2 = o2[v] * es[r0 + 2], s3 = o3[v] * es[r0 + 3];
+            for (int64_t c = 0; c < bc; ++c) {
+                const float vv = V[c * dv + v];
+                s0 += p0[c] * vv; s1 += p1[c] * vv; s2 += p2[c] * vv; s3 += p3[c] * vv;
+            }
+            o0[v] = s0; o1[v] = s1; o2[v] = s2; o3[v] = s3;
+        }
+    }
+    for (; r0 < br; ++r0) {  // row remainder (MR=1)
+        float* o0 = O + r0 * dv;
+        const float* p0 = P + r0 * p_ld;
+        const __m256 e0 = _mm256_set1_ps(es[r0]);
+        int64_t v = 0;
+        for (; v + 16 <= dv; v += 16) {
+            __m256 a0 = _mm256_mul_ps(_mm256_loadu_ps(o0 + v),     e0);
+            __m256 a0b= _mm256_mul_ps(_mm256_loadu_ps(o0 + v + 8), e0);
+            for (int64_t c = 0; c < bc; ++c) {
+                const __m256 w0 = _mm256_set1_ps(p0[c]);
+                a0  = _mm256_fmadd_ps(w0, _mm256_loadu_ps(V + c * dv + v),     a0);
+                a0b = _mm256_fmadd_ps(w0, _mm256_loadu_ps(V + c * dv + v + 8), a0b);
+            }
+            _mm256_storeu_ps(o0 + v, a0); _mm256_storeu_ps(o0 + v + 8, a0b);
+        }
+        for (; v + 8 <= dv; v += 8) {
+            __m256 a0 = _mm256_mul_ps(_mm256_loadu_ps(o0 + v), e0);
+            for (int64_t c = 0; c < bc; ++c)
+                a0 = _mm256_fmadd_ps(_mm256_set1_ps(p0[c]), _mm256_loadu_ps(V + c * dv + v), a0);
+            _mm256_storeu_ps(o0 + v, a0);
+        }
+        for (; v < dv; ++v) {
+            float s0 = o0[v] * es[r0];
+            for (int64_t c = 0; c < bc; ++c) s0 += p0[c] * V[c * dv + v];
+            o0[v] = s0;
+        }
+    }
+}
 #endif
 
 #if defined(__AVX512F__)
 // ---------------------------------------------------------------------------
-// v3_2 AVX-512 micro-kernels. Structurally identical to the AVX2 qk/pv blocks
-// above, but 16-wide (ZMM) with AVX-512 masks for the column / dv remainders so
-// there is no scalar tail. Only compiled when the build targets a CPU with
-// AVX-512 (e.g. -march=tigerlake for the README's i7-1165G7); on AVX2-only
-// builds the v3_2 head kernel falls back to qk_block_simd / pv_block_simd.
-//
-// NOTE on the README target (i7-1165G7, Tiger Lake): that part has a *single*
-// 512-bit FMA unit, so peak fp32 FMA throughput equals 2x256-bit. These kernels
-// are FMA-bound, so the expected win there is small (fewer load/broadcast/store
-// uops and loop trips, not more FLOP/cycle). The portable wins (hoisted K-pack,
-// vectorized row-max) live in flash_attn_head_f32_v32 and help on any ISA.
+// v3_2 AVX-512 micro-kernels: the AVX2 qk/pv blocks above at 16-wide (ZMM) with
+// masks for the column / dv remainders (no scalar tail). Compiled only for
+// AVX-512 builds (e.g. -march=tigerlake); AVX2 builds use qk_block_simd /
+// pv_block_simd. On a core with one 512-bit FMA unit these stay FMA-bound, so
+// the gain over AVX2 is from fewer load/broadcast/store uops and loop trips, not
+// more FLOP/cycle; the ISA-independent wins (hoisted K-pack, vectorized row-max)
+// are in flash_attn_head_f32_v32.
 
 // S = scale * (Qi @ Kp). 4x32 ZMM register block (8 accumulators); masked 16
 // tail for the last (partial) key tile.
@@ -1214,6 +1316,91 @@ static inline void pv_block_avx512(float* __restrict__ O, const float* __restric
         }
     }
 }
+
+// NR=32 AVX-512 P@V kernel. NOT wired into the dispatch (see flash_attn_head_f32_v32):
+// the README target has a single 512-bit FMA unit, so NR=32 is no better than the
+// NR=16 pv_block_avx512 there. Retained for a hypothetical dual-512-bit-FMA CPU,
+// where the extra broadcast reuse would help. NR=32 (two ZMM per row, 8
+// accumulators) so each P broadcast feeds two FMAs; the 16-wide masked loop
+// handles dv not a multiple of 32. Bit-identical to pv_block_avx512.
+static inline void pv_block_avx512_nr32(float* __restrict__ O, const float* __restrict__ P,
+                                        const float* __restrict__ V, const float* __restrict__ es,
+                                        int64_t br, int64_t bc, int64_t dv,
+                                        int64_t p_ld = kFlashBc) {
+    int64_t r0 = 0;
+    for (; r0 + 4 <= br; r0 += 4) {
+        float* o0 = O + (r0 + 0) * dv;
+        float* o1 = O + (r0 + 1) * dv;
+        float* o2 = O + (r0 + 2) * dv;
+        float* o3 = O + (r0 + 3) * dv;
+        const float* p0 = P + (r0 + 0) * p_ld;
+        const float* p1 = P + (r0 + 1) * p_ld;
+        const float* p2 = P + (r0 + 2) * p_ld;
+        const float* p3 = P + (r0 + 3) * p_ld;
+        const __m512 e0 = _mm512_set1_ps(es[r0 + 0]);
+        const __m512 e1 = _mm512_set1_ps(es[r0 + 1]);
+        const __m512 e2 = _mm512_set1_ps(es[r0 + 2]);
+        const __m512 e3 = _mm512_set1_ps(es[r0 + 3]);
+        int64_t v = 0;
+        for (; v + 32 <= dv; v += 32) {
+            __m512 a0 = _mm512_mul_ps(_mm512_loadu_ps(o0 + v), e0), a0b = _mm512_mul_ps(_mm512_loadu_ps(o0 + v + 16), e0);
+            __m512 a1 = _mm512_mul_ps(_mm512_loadu_ps(o1 + v), e1), a1b = _mm512_mul_ps(_mm512_loadu_ps(o1 + v + 16), e1);
+            __m512 a2 = _mm512_mul_ps(_mm512_loadu_ps(o2 + v), e2), a2b = _mm512_mul_ps(_mm512_loadu_ps(o2 + v + 16), e2);
+            __m512 a3 = _mm512_mul_ps(_mm512_loadu_ps(o3 + v), e3), a3b = _mm512_mul_ps(_mm512_loadu_ps(o3 + v + 16), e3);
+            for (int64_t c = 0; c < bc; ++c) {
+                const __m512 vv = _mm512_loadu_ps(V + c * dv + v), vvb = _mm512_loadu_ps(V + c * dv + v + 16);
+                const __m512 w0 = _mm512_set1_ps(p0[c]); a0 = _mm512_fmadd_ps(w0, vv, a0); a0b = _mm512_fmadd_ps(w0, vvb, a0b);
+                const __m512 w1 = _mm512_set1_ps(p1[c]); a1 = _mm512_fmadd_ps(w1, vv, a1); a1b = _mm512_fmadd_ps(w1, vvb, a1b);
+                const __m512 w2 = _mm512_set1_ps(p2[c]); a2 = _mm512_fmadd_ps(w2, vv, a2); a2b = _mm512_fmadd_ps(w2, vvb, a2b);
+                const __m512 w3 = _mm512_set1_ps(p3[c]); a3 = _mm512_fmadd_ps(w3, vv, a3); a3b = _mm512_fmadd_ps(w3, vvb, a3b);
+            }
+            _mm512_storeu_ps(o0 + v, a0); _mm512_storeu_ps(o0 + v + 16, a0b);
+            _mm512_storeu_ps(o1 + v, a1); _mm512_storeu_ps(o1 + v + 16, a1b);
+            _mm512_storeu_ps(o2 + v, a2); _mm512_storeu_ps(o2 + v + 16, a2b);
+            _mm512_storeu_ps(o3 + v, a3); _mm512_storeu_ps(o3 + v + 16, a3b);
+        }
+        for (; v < dv; v += 16) {  // 16-wide masked tail for dv not a multiple of 32
+            const int64_t rem = dv - v;
+            const __mmask16 mk = (rem >= 16) ? (__mmask16)0xFFFF : (__mmask16)((1u << rem) - 1u);
+            __m512 a0 = _mm512_mul_ps(_mm512_maskz_loadu_ps(mk, o0 + v), e0);
+            __m512 a1 = _mm512_mul_ps(_mm512_maskz_loadu_ps(mk, o1 + v), e1);
+            __m512 a2 = _mm512_mul_ps(_mm512_maskz_loadu_ps(mk, o2 + v), e2);
+            __m512 a3 = _mm512_mul_ps(_mm512_maskz_loadu_ps(mk, o3 + v), e3);
+            for (int64_t c = 0; c < bc; ++c) {
+                const __m512 vv = _mm512_maskz_loadu_ps(mk, V + c * dv + v);
+                a0 = _mm512_fmadd_ps(_mm512_set1_ps(p0[c]), vv, a0);
+                a1 = _mm512_fmadd_ps(_mm512_set1_ps(p1[c]), vv, a1);
+                a2 = _mm512_fmadd_ps(_mm512_set1_ps(p2[c]), vv, a2);
+                a3 = _mm512_fmadd_ps(_mm512_set1_ps(p3[c]), vv, a3);
+            }
+            _mm512_mask_storeu_ps(o0 + v, mk, a0); _mm512_mask_storeu_ps(o1 + v, mk, a1);
+            _mm512_mask_storeu_ps(o2 + v, mk, a2); _mm512_mask_storeu_ps(o3 + v, mk, a3);
+        }
+    }
+    for (; r0 < br; ++r0) {  // row remainder (MR=1)
+        float* o0 = O + r0 * dv;
+        const float* p0 = P + r0 * p_ld;
+        const __m512 e0 = _mm512_set1_ps(es[r0]);
+        int64_t v = 0;
+        for (; v + 32 <= dv; v += 32) {
+            __m512 a0 = _mm512_mul_ps(_mm512_loadu_ps(o0 + v), e0), a0b = _mm512_mul_ps(_mm512_loadu_ps(o0 + v + 16), e0);
+            for (int64_t c = 0; c < bc; ++c) {
+                const __m512 w0 = _mm512_set1_ps(p0[c]);
+                a0  = _mm512_fmadd_ps(w0, _mm512_loadu_ps(V + c * dv + v), a0);
+                a0b = _mm512_fmadd_ps(w0, _mm512_loadu_ps(V + c * dv + v + 16), a0b);
+            }
+            _mm512_storeu_ps(o0 + v, a0); _mm512_storeu_ps(o0 + v + 16, a0b);
+        }
+        for (; v < dv; v += 16) {
+            const int64_t rem = dv - v;
+            const __mmask16 mk = (rem >= 16) ? (__mmask16)0xFFFF : (__mmask16)((1u << rem) - 1u);
+            __m512 a0 = _mm512_mul_ps(_mm512_maskz_loadu_ps(mk, o0 + v), e0);
+            for (int64_t c = 0; c < bc; ++c)
+                a0 = _mm512_fmadd_ps(_mm512_set1_ps(p0[c]), _mm512_maskz_loadu_ps(mk, V + c * dv + v), a0);
+            _mm512_mask_storeu_ps(o0 + v, mk, a0);
+        }
+    }
+}
 #endif  // __AVX512F__
 
 // out[c] = exp(in[c] - m); returns sum(out). Vectorized exp for v3, std::exp for v2.
@@ -1336,7 +1523,9 @@ static void flash_attn_head_f32(
 //       build has __AVX512F__, else the AVX2 kernels.
 // (1) and (2) are ISA-independent and apply on any AVX2 build. Kp must be sized
 // nKT * d * kFlashBc floats by the caller (nKT = ceil(T / kFlashBc)).
-template <bool SIMD>
+// PV_NR16 selects the v3_3 P@V kernel (NR=16 AVX2 / NR=32 AVX-512) over the v3_2
+// one; everything else is identical, so v3_3 output is bit-identical to v3_2.
+template <bool SIMD, bool PV_NR16 = false>
 static void flash_attn_head_f32_v32(
     const float* __restrict__ Q,
     const float* __restrict__ K,
@@ -1425,9 +1614,16 @@ static void flash_attn_head_f32_v32(
 #if defined(__AVX2__)
             if constexpr (SIMD) {
 #if defined(__AVX512F__)
+                // AVX-512 intentionally ignores PV_NR16 and always uses the NR=16
+                // kernel: the README target (i7-1165G7) has a single 512-bit FMA
+                // unit, so P@V is already FMA-bound at NR=16 and NR=32 gives no
+                // benefit (and at C=1 would degenerate to a masked path). Keeping
+                // NR=16 makes the AVX-512 path identical to v3_2 so the NR-reblock
+                // cannot regress on the target; the win is AVX2-only by design.
                 pv_block_avx512(Oi, P_block, Vj, es, br, bc, dv);
 #else
-                pv_block_simd(Oi, P_block, Vj, es, br, bc, dv);
+                if constexpr (PV_NR16) pv_block_simd_nr16(Oi, P_block, Vj, es, br, bc, dv);
+                else                   pv_block_simd(Oi, P_block, Vj, es, br, bc, dv);
 #endif
             } else
 #endif
@@ -1767,12 +1963,14 @@ Tensor compute_fused_ipa_daa_flash_attention(
                     direct_attn_head_f32<false>(Qh.data(), Kh.data(), v, o, T, d, dv, scale,
                                                 nullptr, sf_buf.data(), nullptr);
             } else if (use_v32) {
+                // v3_1 optimized attention: hoisted K-pack + vectorized row-max +
+                // NR-reblocked P@V (NR=16 on AVX2; AVX-512 stays NR=16 per option A).
                 if (use_simd)
-                    flash_attn_head_f32_v32<true>(Qh.data(), Kh.data(), v, o, T, d, dv, scale,
-                                                  l_buf.data(), m_buf.data(), kp_buf.data());
+                    flash_attn_head_f32_v32<true, true>(Qh.data(), Kh.data(), v, o, T, d, dv, scale,
+                                                        l_buf.data(), m_buf.data(), kp_buf.data());
                 else
-                    flash_attn_head_f32_v32<false>(Qh.data(), Kh.data(), v, o, T, d, dv, scale,
-                                                   l_buf.data(), m_buf.data(), nullptr);
+                    flash_attn_head_f32_v32<false, true>(Qh.data(), Kh.data(), v, o, T, d, dv, scale,
+                                                         l_buf.data(), m_buf.data(), nullptr);
             } else if (use_simd) {
                 flash_attn_head_f32<true>(Qh.data(), Kh.data(), v, o, T, d, dv, scale,
                                           l_buf.data(), m_buf.data(), kp_buf.data());
@@ -1840,8 +2038,9 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
     // sdpa_mode selects how the scaled-dot-product-attention core is computed:
     //   0 = naive scalar (v0/v1), 1 = flash tiled scalar (v2),
     //   2 = flash tiled AVX2/FMA (v3),
-    //   3 = v3_2 (hoisted K-pack + vectorized row-max; AVX-512 kernels when the
-    //       build targets a CPU with AVX-512, else the AVX2 kernels),
+    //   3 = v3_1 optimized (hoisted K-pack + vectorized row-max + NR-reblocked
+    //       P@V; AVX-512 kernels when the build targets a CPU with AVX-512, else
+    //       the AVX2 kernels),
     //   other = PyTorch library SDPA.
     check_mv_attention_tensor(query, "equi_geometric_attention_mv_only: query");
     check_mv_attention_tensor(key, "equi_geometric_attention_mv_only: key");
@@ -1979,7 +2178,7 @@ torch::Tensor equi_geometric_attention_mv_only_impl(
                 attn_mask, dropout_p, is_causal, scale, /*use_simd=*/false);
             break;
         case 2:  // flash attention, AVX2/FMA inner kernel (v3: SIMD)
-        case 3:  // v3_2: if the fused path declined, fall back to the v3 flash SDPA
+        case 3:  // v3_1 optimized: if the fused path declined, fall back to v3 flash SDPA
             ret = compute_flash_attention_sdpa(
                 query_flat, key_flat, value_flat,
                 attn_mask, dropout_p, is_causal, scale, /*use_simd=*/true);
@@ -2065,7 +2264,7 @@ torch::Tensor equi_geometric_attention_mv_only_ver_3(
         /*use_simd=*/true, /*sdpa_mode=*/2);
 }
 
-torch::Tensor equi_geometric_attention_mv_only_ver_3_2(
+torch::Tensor equi_geometric_attention_mv_only_ver_3_1(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,
@@ -2075,10 +2274,10 @@ torch::Tensor equi_geometric_attention_mv_only_ver_3_2(
     double dropout_p,
     bool is_causal,
     const py::object& scale) {
-    // v3_2: same fused IPA+DAA assembly as v3, but the flash SDPA uses the v3_2
-    // head kernel — K packed once per head (not per query block), vectorized row
-    // max, and AVX-512 QK^T / P@V micro-kernels when the build has AVX-512 (else
-    // the v3 AVX2 kernels). Numerically identical to v3 up to fp reassociation.
+    // v3_1 optimized attention: fused IPA+DAA assembly (as v3) with the optimized
+    // flash SDPA — K packed once per head, vectorized row-max, NR-reblocked P@V,
+    // and AVX-512 QK^T / P@V micro-kernels when the build has AVX-512 (else the
+    // AVX2 kernels). Bit-identical to v3 up to fp reassociation.
     return equi_geometric_attention_mv_only_impl(
         query, key, value, kinds, weight, attn_mask, dropout_p, is_causal, scale,
         /*use_cache=*/true, /*use_direct_daa=*/true, /*use_fast_paths=*/true,

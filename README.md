@@ -4,7 +4,7 @@ CPU-inference optimized variant of EzGATr (Easy Geometric Algebra Transformer).
 
 Our optimizations target:
 ```bibtex
-GenuineIntel, 11th Gen Core i7-1165G7, Tiger Lake
+GenuineIntel, 11th Gen Core i7-1165G7, Tiger Lake (single thread)
 ```
 
 Team members:

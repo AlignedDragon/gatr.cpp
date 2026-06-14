@@ -50,7 +50,7 @@ torch::Tensor equi_geometric_attention_mv_only_ver_3(
     bool is_causal = false,
     const py::object& scale = py::none());
 
-torch::Tensor equi_geometric_attention_mv_only_ver_3_2(
+torch::Tensor equi_geometric_attention_mv_only_ver_3_1(
     const torch::Tensor& query,
     const torch::Tensor& key,
     const torch::Tensor& value,

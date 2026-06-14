@@ -72,7 +72,7 @@ from ezgatr.opt import (
     equi_rms_norm_ver_3,
     scaler_gated_gelu_ver_3,
     equi_geometric_attention_ver_3,
-    equi_geometric_attention_ver_3_2,
+    equi_geometric_attention_ver_3_1,
     #equi_geometric_attention_mv_only_ver_3,
 )
 from ezgatr import opt as _opt
@@ -380,8 +380,8 @@ def build_target(name: str, device: torch.device, n: int):
             kinds={"ipa": None, "daa": None},
             is_causal=False,
         )
-    if name == "equi_geometric_attention_ver_3_2":
-        return lambda: equi_geometric_attention_ver_3_2(
+    if name == "equi_geometric_attention_ver_3_1":
+        return lambda: equi_geometric_attention_ver_3_1(
             inputs["attn_q"],
             inputs["attn_k"],
             inputs["attn_v"],
@@ -441,7 +441,7 @@ def get_target_names() -> list[str]:
         "equi_geometric_attention_ver_1",
         "equi_geometric_attention_ver_2",
         "equi_geometric_attention_ver_3",
-        "equi_geometric_attention_ver_3_2",
+        "equi_geometric_attention_ver_3_1",
         "scaler_gated_gelu",
         "scaler_gated_gelu_ver_0",
         "scaler_gated_gelu_ver_1",

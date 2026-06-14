@@ -6,7 +6,7 @@ from .attention_cpp import (
     equi_geometric_attention_cpp_ver_1,
     equi_geometric_attention_cpp_ver_2,
     equi_geometric_attention_cpp_ver_3,
-    equi_geometric_attention_cpp_ver_3_2,
+    equi_geometric_attention_cpp_ver_3_1,
 )
 from .dual import equi_dual, equi_join
 from .linear import equi_linear, geometric_product, inner_product, outer_product
@@ -22,7 +22,7 @@ __all__ = [
     "equi_geometric_attention_cpp_ver_1",
     "equi_geometric_attention_cpp_ver_2",
     "equi_geometric_attention_cpp_ver_3",
-    "equi_geometric_attention_cpp_ver_3_2",
+    "equi_geometric_attention_cpp_ver_3_1",
     "equi_join",
     "equi_linear",
     "equi_rms_norm",
