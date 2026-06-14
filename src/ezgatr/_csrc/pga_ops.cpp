@@ -44,6 +44,8 @@ namespace {
 #include "kernels/join_loop_unroll4.inc"
 #include "kernels/gp_soa_avx.inc"
 #include "kernels/join_soa_avx.inc"
+#include "kernels/gp_soa_avx512.inc"
+#include "kernels/join_soa_avx512.inc"
 
 using BasisTable = int8_t[16][16][16];
 
@@ -677,12 +679,102 @@ static inline void soa_transpose_out_f32(const float ob[16][8], int64_t n,
 }
 #endif  // __AVX2__ && __FMA__
 
+// ---------------------------------------------------------------------------
+// v3 (AVX-512) - same SoA scheme widened to 16 lanes per __m512. The 16-wide
+// AoS<->SoA transpose is built from two of the proven 8x8 AVX2 transposes
+// (lanes 0..7 -> tile columns 0..7, lanes 8..15 -> columns 8..15), so only the
+// FMA block widens; the shuffle network is the already-tested one. Requires
+// AVX-512F (and the AVX2/FMA helpers above, which Tiger Lake et al. also have).
+// ---------------------------------------------------------------------------
+#if defined(__AVX512F__) && defined(__AVX2__) && defined(__FMA__)
+// AoS -> SoA for one octet: 8 consecutive multivectors at rows n+col..n+col+7
+// fill tile columns col..col+7 of sb[16][16] (sb[j] = component j, 16 lanes).
+static inline void soa_in_octet_f32(const float* __restrict__ S, int64_t n,
+                                    int col, float sb[16][16]) {
+    const float* r0p = S + 16 * (n + col + 0);
+    const float* r1p = S + 16 * (n + col + 1);
+    const float* r2p = S + 16 * (n + col + 2);
+    const float* r3p = S + 16 * (n + col + 3);
+    const float* r4p = S + 16 * (n + col + 4);
+    const float* r5p = S + 16 * (n + col + 5);
+    const float* r6p = S + 16 * (n + col + 6);
+    const float* r7p = S + 16 * (n + col + 7);
+    for (int b = 0; b < 2; ++b) {
+        __m256 r0 = _mm256_loadu_ps(r0p + 8 * b);
+        __m256 r1 = _mm256_loadu_ps(r1p + 8 * b);
+        __m256 r2 = _mm256_loadu_ps(r2p + 8 * b);
+        __m256 r3 = _mm256_loadu_ps(r3p + 8 * b);
+        __m256 r4 = _mm256_loadu_ps(r4p + 8 * b);
+        __m256 r5 = _mm256_loadu_ps(r5p + 8 * b);
+        __m256 r6 = _mm256_loadu_ps(r6p + 8 * b);
+        __m256 r7 = _mm256_loadu_ps(r7p + 8 * b);
+        transpose8x8_ps(r0, r1, r2, r3, r4, r5, r6, r7);
+        _mm256_storeu_ps(&sb[8 * b + 0][col], r0);
+        _mm256_storeu_ps(&sb[8 * b + 1][col], r1);
+        _mm256_storeu_ps(&sb[8 * b + 2][col], r2);
+        _mm256_storeu_ps(&sb[8 * b + 3][col], r3);
+        _mm256_storeu_ps(&sb[8 * b + 4][col], r4);
+        _mm256_storeu_ps(&sb[8 * b + 5][col], r5);
+        _mm256_storeu_ps(&sb[8 * b + 6][col], r6);
+        _mm256_storeu_ps(&sb[8 * b + 7][col], r7);
+    }
+}
+
+// SoA -> AoS for one octet: tile columns col..col+7 of ob[16][16] become the 8
+// output rows n+col..n+col+7. When Scale, lane l's row is multiplied by s[col+l].
+template <bool Scale>
+static inline void soa_out_octet_f32(const float ob[16][16], int64_t n, int col,
+                                     float* __restrict__ O, const float s[16]) {
+    for (int b = 0; b < 2; ++b) {
+        __m256 r0 = _mm256_loadu_ps(&ob[8 * b + 0][col]);
+        __m256 r1 = _mm256_loadu_ps(&ob[8 * b + 1][col]);
+        __m256 r2 = _mm256_loadu_ps(&ob[8 * b + 2][col]);
+        __m256 r3 = _mm256_loadu_ps(&ob[8 * b + 3][col]);
+        __m256 r4 = _mm256_loadu_ps(&ob[8 * b + 4][col]);
+        __m256 r5 = _mm256_loadu_ps(&ob[8 * b + 5][col]);
+        __m256 r6 = _mm256_loadu_ps(&ob[8 * b + 6][col]);
+        __m256 r7 = _mm256_loadu_ps(&ob[8 * b + 7][col]);
+        transpose8x8_ps(r0, r1, r2, r3, r4, r5, r6, r7);
+        if constexpr (Scale) {
+            r0 = _mm256_mul_ps(r0, _mm256_set1_ps(s[col + 0]));
+            r1 = _mm256_mul_ps(r1, _mm256_set1_ps(s[col + 1]));
+            r2 = _mm256_mul_ps(r2, _mm256_set1_ps(s[col + 2]));
+            r3 = _mm256_mul_ps(r3, _mm256_set1_ps(s[col + 3]));
+            r4 = _mm256_mul_ps(r4, _mm256_set1_ps(s[col + 4]));
+            r5 = _mm256_mul_ps(r5, _mm256_set1_ps(s[col + 5]));
+            r6 = _mm256_mul_ps(r6, _mm256_set1_ps(s[col + 6]));
+            r7 = _mm256_mul_ps(r7, _mm256_set1_ps(s[col + 7]));
+        }
+        _mm256_storeu_ps(O + 16 * (n + col + 0) + 8 * b, r0);
+        _mm256_storeu_ps(O + 16 * (n + col + 1) + 8 * b, r1);
+        _mm256_storeu_ps(O + 16 * (n + col + 2) + 8 * b, r2);
+        _mm256_storeu_ps(O + 16 * (n + col + 3) + 8 * b, r3);
+        _mm256_storeu_ps(O + 16 * (n + col + 4) + 8 * b, r4);
+        _mm256_storeu_ps(O + 16 * (n + col + 5) + 8 * b, r5);
+        _mm256_storeu_ps(O + 16 * (n + col + 6) + 8 * b, r6);
+        _mm256_storeu_ps(O + 16 * (n + col + 7) + 8 * b, r7);
+    }
+}
+#endif  // __AVX512F__ && __AVX2__ && __FMA__
+
 template <typename T>
 static void gp_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
                          T* __restrict__ O, int64_t N) {
 #if defined(__AVX2__) && defined(__FMA__)
     if constexpr (std::is_same_v<T, float>) {
         int64_t n = 0;
+#if defined(__AVX512F__)
+        for (; n + 16 <= N; n += 16) {
+            alignas(64) float xb[16][16], yb[16][16], ob[16][16];
+            soa_in_octet_f32(X, n, 0, xb);
+            soa_in_octet_f32(X, n, 8, xb);
+            soa_in_octet_f32(Y, n, 0, yb);
+            soa_in_octet_f32(Y, n, 8, yb);
+            gp_soa_block_f32_avx512(xb, yb, ob);
+            soa_out_octet_f32<false>(ob, n, 0, O, nullptr);
+            soa_out_octet_f32<false>(ob, n, 8, O, nullptr);
+        }
+#endif
         for (; n + 8 <= N; n += 8) {
             alignas(32) float xb[16][8], yb[16][8], ob[16][8];
             soa_transpose_in_f32(X, n, xb);
@@ -709,6 +801,27 @@ static void join_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
     if constexpr (!HasRef) (void)R;
     if constexpr (std::is_same_v<T, float>) {
         int64_t n = 0;
+#if defined(__AVX512F__)
+        for (; n + 16 <= N; n += 16) {
+            alignas(64) float xb[16][16], yb[16][16], ob[16][16];
+            soa_in_octet_f32(X, n, 0, xb);
+            soa_in_octet_f32(X, n, 8, xb);
+            soa_in_octet_f32(Y, n, 0, yb);
+            soa_in_octet_f32(Y, n, 8, yb);
+            join_soa_block_f32_avx512(xb, yb, ob);
+            if constexpr (HasRef) {
+                const float s[16] = {R[n + 0],  R[n + 1],  R[n + 2],  R[n + 3],
+                                     R[n + 4],  R[n + 5],  R[n + 6],  R[n + 7],
+                                     R[n + 8],  R[n + 9],  R[n + 10], R[n + 11],
+                                     R[n + 12], R[n + 13], R[n + 14], R[n + 15]};
+                soa_out_octet_f32<true>(ob, n, 0, O, s);
+                soa_out_octet_f32<true>(ob, n, 8, O, s);
+            } else {
+                soa_out_octet_f32<false>(ob, n, 0, O, nullptr);
+                soa_out_octet_f32<false>(ob, n, 8, O, nullptr);
+            }
+        }
+#endif
         for (; n + 8 <= N; n += 8) {
             alignas(32) float xb[16][8], yb[16][8], ob[16][8];
             soa_transpose_in_f32(X, n, xb);
