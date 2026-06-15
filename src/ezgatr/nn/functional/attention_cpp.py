@@ -206,3 +206,38 @@ def equi_geometric_attention_cpp_ver_3_1(
     )
     return ret, None
 
+
+def equi_geometric_attention_cpp_ver_4(
+    query: GeometricQKVType,
+    key: GeometricQKVType,
+    value: GeometricQKVType,
+    kinds: dict[GeometricAttnKindType, dict[str, object] | None],
+    weight: list[torch.Tensor | float] | None = None,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+) -> GeometricQKVType:
+    r"""v4: optimized AVX2 fused, cache-resident flash SDPA from the
+    kiko-kernel-opt branch (causal tile-skip, V-row prefetch, fused feature
+    assembly in thread-local scratch, zero-copy output reshape)."""
+
+    if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
+        raise NotImplementedError(
+            "The C++ port currently supports the multivector-only attention path."
+        )
+
+    ext = _load_attention_cpp_extension()
+    ret = ext.equi_geometric_attention_mv_only_ver_4(
+        query,
+        key,
+        value,
+        kinds,
+        weight,
+        attn_mask,
+        dropout_p,
+        is_causal,
+        scale,
+    )
+    return ret, None
+

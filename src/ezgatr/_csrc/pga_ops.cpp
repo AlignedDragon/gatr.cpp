@@ -1445,6 +1445,52 @@ torch::Tensor equi_linear_v1(const torch::Tensor& x,
 //   O5. torch::empty (no zero-init pass): output is fully overwritten by
 //       the accumulator store.
 // ---------------------------------------------------------------------------
+namespace {
+// Process-wide cache of v2's normalized weights (each of the 9 coefficients
+// scaled by its inverse norm). Mirrors the v3 pack cache so that v2 also
+// prepares the weights once per tensor rather than on every call, keeping the
+// v2->v3 comparison a measure of the kernel and SIMD, not of weight prep.
+struct ElNormCache {
+    torch::Tensor src;         // strong ref pins the storage behind the key
+    uint32_t version;
+    torch::Tensor normalized;  // wf * inv_norms, same shape and dtype as wf
+};
+std::mutex g_el_norm_mu;
+std::map<const void*, ElNormCache> g_el_norm_cache;
+
+torch::Tensor el_get_normalized_weights(const torch::Tensor& weight,
+                                        const torch::Tensor& wf) {
+    // Only cache when wf shares storage with the caller's weight (contiguous);
+    // otherwise wf is a fresh temp whose pointer would dangle. Inference
+    // tensors carry no version counter and are immutable, so version 0 is safe.
+    const bool cacheable = weight.is_contiguous();
+    const void* key = wf.data_ptr();
+    auto* impl = wf.unsafeGetTensorImpl();
+    const uint32_t version =
+        impl->is_inference() ? 0 : impl->version_counter().current_version();
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(g_el_norm_mu);
+        auto it = g_el_norm_cache.find(key);
+        if (it != g_el_norm_cache.end() && it->second.version == version &&
+            it->second.normalized.scalar_type() == wf.scalar_type()) {
+            return it->second.normalized;
+        }
+    }
+    const double inv_d[9] = {
+        EQUI_LINEAR_INV_NORMS[0], EQUI_LINEAR_INV_NORMS[1], EQUI_LINEAR_INV_NORMS[2],
+        EQUI_LINEAR_INV_NORMS[3], EQUI_LINEAR_INV_NORMS[4], EQUI_LINEAR_INV_NORMS[5],
+        EQUI_LINEAR_INV_NORMS[6], EQUI_LINEAR_INV_NORMS[7], EQUI_LINEAR_INV_NORMS[8]};
+    auto inv = torch::tensor(c10::ArrayRef<double>(inv_d, 9), wf.options());
+    auto nw = (wf * inv).contiguous();
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(g_el_norm_mu);
+        if (g_el_norm_cache.size() > 64) g_el_norm_cache.clear();
+        g_el_norm_cache[key] = ElNormCache{wf, version, nw};
+    }
+    return nw;
+}
+}  // namespace
+
 torch::Tensor equi_linear_v2(const torch::Tensor& x,
                              const torch::Tensor& weight,
                              const c10::optional<torch::Tensor>& bias,
@@ -1456,36 +1502,15 @@ torch::Tensor equi_linear_v2(const torch::Tensor& x,
     torch::Tensor bias_t;
     if (has_bias) bias_t = bias.value().contiguous();
 
+    // O1: normalized weights (9 per (o,i)), cached process-wide so inference
+    // normalizes once per weight tensor instead of on every call. Layout:
+    // wn[(o*in_ch + i)*9 + k], identical to the previous per-call packing.
+    torch::Tensor wn_t =
+        normalize_basis ? el_get_normalized_weights(weight, s.wf) : s.wf;
+
     AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "equi_linear_v2", [&] {
         using T = scalar_t;
-        const T inv_norms[9] = {
-            T(EQUI_LINEAR_INV_NORMS[0]), T(EQUI_LINEAR_INV_NORMS[1]),
-            T(EQUI_LINEAR_INV_NORMS[2]), T(EQUI_LINEAR_INV_NORMS[3]),
-            T(EQUI_LINEAR_INV_NORMS[4]), T(EQUI_LINEAR_INV_NORMS[5]),
-            T(EQUI_LINEAR_INV_NORMS[6]), T(EQUI_LINEAR_INV_NORMS[7]),
-            T(EQUI_LINEAR_INV_NORMS[8]),
-        };
-
-        // (A) Thread-local scratch for packed normalized weights. Keeps
-        // capacity across calls so we don't pay the allocator on every
-        // forward pass when a model calls equi_linear many times.
-        static thread_local std::vector<uint8_t> tls_wn_buf;
-        const int64_t n_oi = s.out_ch * s.in_ch;
-        const size_t need_bytes = static_cast<size_t>(n_oi) * 9 * sizeof(T);
-        if (tls_wn_buf.size() < need_bytes) tls_wn_buf.resize(need_bytes);
-        T* __restrict__ wn = reinterpret_cast<T*>(tls_wn_buf.data());
-
-        // O1: pack normalized weights once. Layout: wn[o*Ci*9 + i*9 + k].
-        const T* __restrict__ wsrc = s.wf.data_ptr<T>();
-        if (normalize_basis) {
-            for (int64_t p = 0; p < n_oi; ++p) {
-                const T* __restrict__ sptr = wsrc + p * 9;
-                T*       __restrict__ dptr = wn   + p * 9;
-                for (int k = 0; k < 9; ++k) dptr[k] = sptr[k] * inv_norms[k];
-            }
-        } else {
-            std::memcpy(wn, wsrc, need_bytes);
-        }
+        const T* __restrict__ wn = wn_t.data_ptr<T>();
 
         // O3: raw restricted base pointers.
         const T* __restrict__ xp_base = s.xf.data_ptr<T>();

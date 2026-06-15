@@ -859,21 +859,61 @@ torch::Tensor inner_product_ver_2(const torch::Tensor& x,
 // ver_0 - NO OPTIMIZATION.
 // c++ implemnetation of the base version
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ver_0 - naive native C++ baseline. Dense scalar loops with no algebraic
+// knowledge: the squared norm runs over all 16 blades through a full metric
+// diagonal whose 8 inactive entries are zero, then two passes per group apply
+// the RMS scale. Mirrors the dense v0 baselines of the other operators.
+// ---------------------------------------------------------------------------
 torch::Tensor equi_rms_norm_ver_0(const torch::Tensor& x,
                             const c10::optional<torch::Tensor>& weight,
                             const c10::optional<double>& eps_opt){
     check_multivector(x, "equi_rms_norm x");
-    double eps = eps_opt.has_value()
-        ? *eps_opt
-        : 1e-7;
+    double eps = eps_opt.has_value() ? *eps_opt : 1e-7;
 
-    auto ip = inner_product_ver_0(x,x);
-    auto normip = ip.mean(/*dim=*/-2, /*keepdim=*/true);
-    auto result = x/torch::sqrt(torch::clamp(normip,eps));
-    if (weight.has_value()){
-        result = result * weight->view({-1,1});
-    }
-    return result;
+    auto xc = x.is_contiguous() ? x : x.contiguous();
+    auto out = torch::empty_like(xc);
+
+    int64_t M = x.size(-2);
+    int64_t groups = 1;
+    for (int64_t i = 0; i < x.dim() - 2; ++i) groups *= x.size(i);
+
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "equi_rms_norm_ver_0", [&] {
+        using T = scalar_t;
+        const T* X = xc.data_ptr<T>();
+        T*       O = out.data_ptr<T>();
+        torch::Tensor wc;
+        const T* W = nullptr;
+        if (weight.has_value()) { wc = weight->contiguous(); W = wc.data_ptr<T>(); }
+
+        // Full 16-entry metric diagonal: 1 on the metric-active blades, 0 else.
+        const int active[8] = {0, 2, 3, 4, 8, 9, 10, 14};
+        T metric[16] = {};
+        for (int k = 0; k < 8; ++k) metric[active[k]] = T(1);
+
+        const T eps_t = static_cast<T>(eps);
+        for (int64_t g = 0; g < groups; ++g) {
+            const T* gin  = X + g * (M << 4);
+            T*       gout = O + g * (M << 4);
+
+            // Pass 1: dense squared norm over all 16 blades, then group mean.
+            T sum = T(0);
+            for (int64_t m = 0; m < M; ++m) {
+                const T* xm = gin + (m << 4);
+                for (int b = 0; b < 16; ++b) sum += metric[b] * xm[b] * xm[b];
+            }
+            const T denom = std::sqrt(std::max(sum / static_cast<T>(M), eps_t));
+
+            // Pass 2: scale every blade, with the optional per-channel weight.
+            for (int64_t m = 0; m < M; ++m) {
+                const T* xm = gin + (m << 4);
+                T*       om = gout + (m << 4);
+                const T wm = W ? W[m] : T(1);
+                for (int b = 0; b < 16; ++b) om[b] = (xm[b] / denom) * wm;
+            }
+        }
+    });
+    return out;
 }
 
 
@@ -886,21 +926,56 @@ torch::Tensor equi_rms_norm_ver_0(const torch::Tensor& x,
 // reduce PyTorch overhead, improve cache locality, enable better SIMD
 // vectorization, and minimize temporary memory operations.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ver_1 - exploits the metric sparsity. The squared norm sums only the 8
+// metric-active blades instead of all 16, halving the reduction work. Still a
+// straightforward two-pass scalar kernel with a per-group mean.
+// ---------------------------------------------------------------------------
 torch::Tensor equi_rms_norm_ver_1(const torch::Tensor& x,
                             const c10::optional<torch::Tensor>& weight,
                             const c10::optional<double>& eps_opt){
     check_multivector(x, "equi_rms_norm x");
-    double eps = eps_opt.has_value()
-        ? *eps_opt
-        : 1e-7;
+    double eps = eps_opt.has_value() ? *eps_opt : 1e-7;
 
-    auto ip = inner_product_ver_1(x,x);
-    auto normip = ip.mean(/*dim=*/-2, /*keepdim=*/true);
-    auto result = x/torch::sqrt(torch::clamp(normip,eps));
-    if (weight.has_value()){
-        result = result * weight->view({-1,1});
-    }
-    return result;
+    auto xc = x.is_contiguous() ? x : x.contiguous();
+    auto out = torch::empty_like(xc);
+
+    int64_t M = x.size(-2);
+    int64_t groups = 1;
+    for (int64_t i = 0; i < x.dim() - 2; ++i) groups *= x.size(i);
+
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "equi_rms_norm_ver_1", [&] {
+        using T = scalar_t;
+        const T* X = xc.data_ptr<T>();
+        T*       O = out.data_ptr<T>();
+        torch::Tensor wc;
+        const T* W = nullptr;
+        if (weight.has_value()) { wc = weight->contiguous(); W = wc.data_ptr<T>(); }
+
+        const int active[8] = {0, 2, 3, 4, 8, 9, 10, 14};
+        const T eps_t = static_cast<T>(eps);
+        for (int64_t g = 0; g < groups; ++g) {
+            const T* gin  = X + g * (M << 4);
+            T*       gout = O + g * (M << 4);
+
+            // Pass 1: sparse squared norm over the 8 active blades only.
+            T sum = T(0);
+            for (int64_t m = 0; m < M; ++m) {
+                const T* xm = gin + (m << 4);
+                for (int k = 0; k < 8; ++k) { const T v = xm[active[k]]; sum += v * v; }
+            }
+            const T denom = std::sqrt(std::max(sum / static_cast<T>(M), eps_t));
+
+            // Pass 2: scale every blade, with the optional per-channel weight.
+            for (int64_t m = 0; m < M; ++m) {
+                const T* xm = gin + (m << 4);
+                T*       om = gout + (m << 4);
+                const T wm = W ? W[m] : T(1);
+                for (int b = 0; b < 16; ++b) om[b] = (xm[b] / denom) * wm;
+            }
+        }
+    });
+    return out;
 }
 
 
@@ -1112,6 +1187,12 @@ torch::Tensor equi_rms_norm_ver_3(
 
 
 
+// ---------------------------------------------------------------------------
+// ver_0 - naive native C++ baseline. No knowledge that the gate is shared, so it
+// recomputes the GELU of the scalar blade once per output blade, 16 redundant
+// transcendental evaluations per multivector. Handles both the tanh
+// approximation and the exact erf form.
+// ---------------------------------------------------------------------------
 torch::Tensor scaler_gated_gelu_ver_0(const torch::Tensor& x,
                                 const std::string& approximate){
     check_multivector(x, "scalar_gated_gelu: x");
@@ -1121,12 +1202,31 @@ torch::Tensor scaler_gated_gelu_ver_0(const torch::Tensor& x,
         approximate
     );
 
-    auto reduction = x.narrow(-1, 0, 1);
-    auto gates = torch::nn::functional::gelu(
-        reduction,
-        torch::nn::functional::GELUFuncOptions().approximate(approximate)
-    );
-    return x * gates;
+    auto xc = x.is_contiguous() ? x : x.contiguous();
+    auto out = torch::empty_like(xc);
+    const int64_t N = xc.numel() / 16;
+    const bool tanh_mode = (approximate == "tanh");
+
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scaler_gated_gelu_ver_0", [&] {
+        using T = scalar_t;
+        const T* X = xc.data_ptr<T>();
+        T*       O = out.data_ptr<T>();
+        const T kAlpha   = static_cast<T>(0.7978845608028654);
+        const T kBeta    = static_cast<T>(0.044715);
+        const T invsqrt2 = static_cast<T>(0.7071067811865476);
+        for (int64_t n = 0; n < N; ++n) {
+            const T* xm = X + (n << 4);
+            T*       om = O + (n << 4);
+            const T s = xm[0];
+            for (int b = 0; b < 16; ++b) {
+                const T gate = tanh_mode
+                    ? T(0.5) * s * (T(1) + std::tanh(kAlpha * (s + kBeta * s * s * s)))
+                    : T(0.5) * s * (T(1) + std::erf(s * invsqrt2));
+                om[b] = xm[b] * gate;
+            }
+        }
+    });
+    return out;
 }
 
 
@@ -1207,6 +1307,11 @@ torch::Tensor scaler_gated_gelu_ver_0(const torch::Tensor& x,
 // }
 
 
+// ---------------------------------------------------------------------------
+// ver_1 - computes the shared gate once per multivector from the scalar blade
+// and reuses it across all 16 blades, cutting the transcendental work 16x versus
+// ver_0. Handles both the tanh approximation and the exact erf form.
+// ---------------------------------------------------------------------------
 torch::Tensor scaler_gated_gelu_ver_1(const torch::Tensor& x,
                                 const std::string& approximate){
     check_multivector(x, "scalar_gated_gelu: x");
@@ -1216,31 +1321,29 @@ torch::Tensor scaler_gated_gelu_ver_1(const torch::Tensor& x,
         approximate
     );
 
-    if(approximate == "tanh"){
-        auto xc = x.contiguous();
-        auto out = torch::empty_like(xc);
-        auto outc = out.contiguous();
-        int64_t N = xc.numel() / 16;
-        //int64_t N = x.size(-2);
-        AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scalar_gated_gelu_kernel", [&] {
-            scalar_gated_gelu_kernel<scalar_t>(
-                xc.data_ptr<scalar_t>(),
-                outc.data_ptr<scalar_t>(),
-                N
-            );
-        });
-        return outc;
+    auto xc = x.is_contiguous() ? x : x.contiguous();
+    auto out = torch::empty_like(xc);
+    const int64_t N = xc.numel() / 16;
+    const bool tanh_mode = (approximate == "tanh");
 
-    }else{
-        auto reduction = x.narrow(-1, 0, 1);
-        auto gates = torch::nn::functional::gelu(
-            reduction,
-            torch::nn::functional::GELUFuncOptions().approximate(approximate)
-        );
-        return x * gates;
-    }
-
-    
+    AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "scaler_gated_gelu_ver_1", [&] {
+        using T = scalar_t;
+        const T* X = xc.data_ptr<T>();
+        T*       O = out.data_ptr<T>();
+        const T kAlpha   = static_cast<T>(0.7978845608028654);
+        const T kBeta    = static_cast<T>(0.044715);
+        const T invsqrt2 = static_cast<T>(0.7071067811865476);
+        for (int64_t n = 0; n < N; ++n) {
+            const T* xm = X + (n << 4);
+            T*       om = O + (n << 4);
+            const T s = xm[0];
+            const T gate = tanh_mode
+                ? T(0.5) * s * (T(1) + std::tanh(kAlpha * (s + kBeta * s * s * s)))
+                : T(0.5) * s * (T(1) + std::erf(s * invsqrt2));
+            for (int b = 0; b < 16; ++b) om[b] = xm[b] * gate;
+        }
+    });
+    return out;
 }
 
 
