@@ -37,9 +37,9 @@ from ezgatr.opt import (
     equi_join_v3 as equi_join_ver_3,
     scaler_gated_gelu_ver_3,
     equi_geometric_attention_ver_3,
-    equi_geometric_attention_ver_3_1,
+    equi_geometric_attention_ver_3,
 
-    geometric_bilinear_v3_1,
+    geometric_bilinear_v3,
 )
 
 
@@ -2318,7 +2318,7 @@ class MVOnlyGATrAttentionASL_ver_3_1(MVOnlyGATrAttentionASL_ver_3):
             h=self.config.attn_num_heads,
             c=self.config.size_channels_hidden,
         )
-        x = equi_geometric_attention_ver_3_1(
+        x = equi_geometric_attention_ver_3(
             q,
             k,
             v,
@@ -2344,7 +2344,7 @@ class MVOnlyGATrAttentionASL_ver_3_1(MVOnlyGATrAttentionASL_ver_3):
 
 
 class MVOnlyGATrBilinearASL_ver_3_1(nn.Module):
-    r"""Geometric bilinear sub-layer using the fused ``geometric_bilinear_v3_1``
+    r"""Geometric bilinear sub-layer using the fused ``geometric_bilinear_v3``
     kernel. The proj_bil output is fed directly into the fused op, which produces
     ``cat([gp(lg,rg), join(lj,rj,ref)])`` without a separate ``torch.cat``.
     """
@@ -2366,7 +2366,7 @@ class MVOnlyGATrBilinearASL_ver_3_1(nn.Module):
     def forward(
         self, x: torch.Tensor, reference: torch.Tensor | None = None
     ) -> torch.Tensor:
-        x = geometric_bilinear_v3_1(self.proj_bil(x), reference)
+        x = geometric_bilinear_v3(self.proj_bil(x), reference)
         return self.proj_out(x)
 
 
@@ -2432,7 +2432,7 @@ class MVOnlyGATrBlockASL_ver_3_1(nn.Module):
 
 
 class MVOnlyGATrModelASL_ver_3_1(nn.Module):
-    r"""Multi-Vector only GATr model (ver_3_1): ver_3_1 blocks; ver_3 embedding/head."""
+    r"""Multi-Vector only GATr model (v3): fused bilinear + optimized flash SDPA."""
 
     config: MVOnlyGATrConfig
     embedding: MVOnlyGATrEmbeddingASL_ver_3
@@ -2475,3 +2475,7 @@ class MVOnlyGATrModelASL_ver_3_1(nn.Module):
             self.embedding(x),
         )
         return self.head(x)
+
+
+# v3_1 is promoted to the canonical v3 — supersedes the old MVOnlyGATrModelASL_ver_3
+MVOnlyGATrModelASL_ver_3 = MVOnlyGATrModelASL_ver_3_1

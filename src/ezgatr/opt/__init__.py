@@ -31,7 +31,7 @@ equi_join_v2_6 = _opt_ops.equi_join_v2_6
 equi_join_v2_7 = _opt_ops.equi_join_v2_7
 equi_join_v3 = _opt_ops.equi_join_v3
 
-geometric_bilinear_v3_1 = _opt_ops.geometric_bilinear_v3_1
+geometric_bilinear_v3 = _opt_ops.geometric_bilinear_v3
 
 outer_product = _opt_ops.outer_product
 #inner_product = _opt_ops.inner_product
@@ -70,12 +70,10 @@ equi_linear_ver_3 = _opt_ops.equi_linear_ver_3
 equi_rms_norm_ver_3 = _opt_ops.equi_rms_norm_ver_3
 scaler_gated_gelu_ver_3 = _opt_ops.scaler_gated_gelu_ver_3
 equi_geometric_attention_ver_3 = _opt_ops.equi_geometric_attention_ver_3
-equi_geometric_attention_ver_3_1 = _opt_ops.equi_geometric_attention_ver_3_1
 
 
 __all__ = [
     "equi_geometric_attention_mv_only",
-    "equi_geometric_attention_ver_3_1",
 
     "geometric_product",
     "geometric_product_v0",
@@ -135,5 +133,5 @@ __all__ = [
     "equi_join_v2_6",
     "equi_join_v2_7",
     "equi_join_v3",
-    "geometric_bilinear_v3_1",
+    "geometric_bilinear_v3",
 ]

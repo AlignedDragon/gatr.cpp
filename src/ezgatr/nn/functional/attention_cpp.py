@@ -185,7 +185,7 @@ def equi_geometric_attention_cpp_ver_3_1(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""v3_1: v3 fused assembly + optimized flash SDPA (K packed once per head, vectorized row-max, NR-reblocked P@V; AVX-512 QK^T / P@V micro-kernels when the build targets a CPU with AVX-512, else the AVX2 kernels)."""
+    r"""Alias for equi_geometric_attention_cpp_ver_3 (v3_1 promoted to v3)."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
@@ -193,7 +193,7 @@ def equi_geometric_attention_cpp_ver_3_1(
         )
 
     ext = _load_attention_cpp_extension()
-    ret = ext.equi_geometric_attention_mv_only_ver_3_1(
+    ret = ext.equi_geometric_attention_mv_only_ver_3(
         query,
         key,
         value,

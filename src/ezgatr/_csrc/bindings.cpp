@@ -161,7 +161,7 @@ PYBIND11_MODULE(_opt_ops, m) {
             "Equivariant geometric attention version 2 alias.");
 
       m.def("equi_geometric_attention_mv_only_ver_3",
-            &ezgatr::opt::equi_geometric_attention_mv_only_ver_3,
+            &ezgatr::opt::equi_geometric_attention_mv_only_ver_3_1,
             py::arg("query"),
             py::arg("key"),
             py::arg("value"),
@@ -171,9 +171,9 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("dropout_p") = 0.0,
             py::arg("is_causal") = false,
             py::arg("scale") = py::none(),
-            "Equivariant geometric attention forward pass for mv-only inputs, fast-path assembly version.");
+            "Equivariant geometric attention v3: hoisted K-pack + vectorized row-max + NR-reblocked P@V (AVX-512 kernels when available).");
       m.def("equi_geometric_attention_ver_3",
-            &ezgatr::opt::equi_geometric_attention_mv_only_ver_3,
+            &ezgatr::opt::equi_geometric_attention_mv_only_ver_3_1,
             py::arg("query"),
             py::arg("key"),
             py::arg("value"),
@@ -184,31 +184,6 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("is_causal") = false,
             py::arg("scale") = py::none(),
             "Equivariant geometric attention version 3 alias.");
-
-      m.def("equi_geometric_attention_mv_only_ver_3_1",
-            &ezgatr::opt::equi_geometric_attention_mv_only_ver_3_1,
-            py::arg("query"),
-            py::arg("key"),
-            py::arg("value"),
-            py::arg("kinds"),
-            py::arg("weight") = py::none(),
-            py::arg("attn_mask") = py::none(),
-            py::arg("dropout_p") = 0.0,
-            py::arg("is_causal") = false,
-            py::arg("scale") = py::none(),
-            "Equivariant geometric attention v3_1: hoisted K-pack + vectorized row-max + NR-reblocked P@V (AVX-512 kernels when available).");
-      m.def("equi_geometric_attention_ver_3_1",
-            &ezgatr::opt::equi_geometric_attention_mv_only_ver_3_1,
-            py::arg("query"),
-            py::arg("key"),
-            py::arg("value"),
-            py::arg("kinds"),
-            py::arg("weight") = py::none(),
-            py::arg("attn_mask") = py::none(),
-            py::arg("dropout_p") = 0.0,
-            py::arg("is_causal") = false,
-            py::arg("scale") = py::none(),
-            "Equivariant geometric attention version 3_2 alias.");
 
       // m.def("inner_product", &ezgatr::opt::inner_product_ver_2,
       //       py::arg("x"), py::arg("y"),
@@ -352,9 +327,9 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
             "Equivariant join: AVX2 SoA vectorization across multivectors (fp32).");
 
-      m.def("geometric_bilinear_v3_1", &ezgatr::opt::geometric_bilinear_v3_1,
+      m.def("geometric_bilinear_v3", &ezgatr::opt::geometric_bilinear_v3_1,
             py::arg("p"), py::arg("reference") = py::none(),
-            "Fused geometric bilinear (v3_1): p=(...,4*inter,16) -> "
+            "Fused geometric bilinear (v3): p=(...,4*inter,16) -> "
             "cat([gp(lg,rg), join(lj,rj,ref)]) in one kernel, no torch.cat (fp32).");
 
 }
