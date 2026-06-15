@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 
-def cfg_from_n(n: int) -> dict[str, int]:
-    return {
-        "batch": 64,
-        "tokens": 16 * n,
-        "channels": 4 * n,
-        "heads": 128 * n,
-    }
+def cfg_from_n(n: int, formula: str = "old") -> dict[str, int]:
+    if formula == "new":
+        return {"batch": 2 * n, "tokens": 128 * n, "channels": 8, "heads": 4 * n}
+    # legacy formula used in version_sweep_1thread.json / run_project_version_sweep.py
+    return {"batch": 64, "tokens": 16 * n, "channels": 4 * n, "heads": 128 * n}
 
 
-def estimate_target_cost(target: str, n: int, dtype_bytes: int = 4) -> dict[str, float | str] | None:
+def estimate_target_cost(target: str, n: int, dtype_bytes: int = 4, formula: str = "old") -> dict[str, float | str] | None:
     """Return rough per-call FLOP/byte estimates for roofline fallback plots.
 
     These are intentionally simple analytical estimates. Prefer measured PAPI
@@ -18,7 +16,7 @@ def estimate_target_cost(target: str, n: int, dtype_bytes: int = 4) -> dict[str,
     floating-point or memory event.
     """
 
-    cfg = cfg_from_n(n)
+    cfg = cfg_from_n(n, formula=formula)
     batch = cfg["batch"]
     tokens = cfg["tokens"]
     channels = cfg["channels"]

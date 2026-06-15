@@ -763,18 +763,9 @@ static void gp_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
 #if defined(__AVX2__) && defined(__FMA__)
     if constexpr (std::is_same_v<T, float>) {
         int64_t n = 0;
-#if defined(__AVX512F__)
-        for (; n + 16 <= N; n += 16) {
-            alignas(64) float xb[16][16], yb[16][16], ob[16][16];
-            soa_in_octet_f32(X, n, 0, xb);
-            soa_in_octet_f32(X, n, 8, xb);
-            soa_in_octet_f32(Y, n, 0, yb);
-            soa_in_octet_f32(Y, n, 8, yb);
-            gp_soa_block_f32_avx512(xb, yb, ob);
-            soa_out_octet_f32<false>(ob, n, 0, O, nullptr);
-            soa_out_octet_f32<false>(ob, n, 8, O, nullptr);
-        }
-#endif
+        // AVX-512 SoA (16-MV blocks) is intentionally skipped for gp: the
+        // 16×16 transpose overhead + ZMM frequency throttle on Tiger Lake
+        // makes it slower than the AVX2 8-MV path across all tested sizes.
         for (; n + 8 <= N; n += 8) {
             alignas(32) float xb[16][8], yb[16][8], ob[16][8];
             soa_transpose_in_f32(X, n, xb);
@@ -801,27 +792,8 @@ static void join_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
     if constexpr (!HasRef) (void)R;
     if constexpr (std::is_same_v<T, float>) {
         int64_t n = 0;
-#if defined(__AVX512F__)
-        for (; n + 16 <= N; n += 16) {
-            alignas(64) float xb[16][16], yb[16][16], ob[16][16];
-            soa_in_octet_f32(X, n, 0, xb);
-            soa_in_octet_f32(X, n, 8, xb);
-            soa_in_octet_f32(Y, n, 0, yb);
-            soa_in_octet_f32(Y, n, 8, yb);
-            join_soa_block_f32_avx512(xb, yb, ob);
-            if constexpr (HasRef) {
-                const float s[16] = {R[n + 0],  R[n + 1],  R[n + 2],  R[n + 3],
-                                     R[n + 4],  R[n + 5],  R[n + 6],  R[n + 7],
-                                     R[n + 8],  R[n + 9],  R[n + 10], R[n + 11],
-                                     R[n + 12], R[n + 13], R[n + 14], R[n + 15]};
-                soa_out_octet_f32<true>(ob, n, 0, O, s);
-                soa_out_octet_f32<true>(ob, n, 8, O, s);
-            } else {
-                soa_out_octet_f32<false>(ob, n, 0, O, nullptr);
-                soa_out_octet_f32<false>(ob, n, 8, O, nullptr);
-            }
-        }
-#endif
+        // Same rationale as gp: AVX-512 16-MV SoA is slower than AVX2 8-MV
+        // on shuffle-heavy, bandwidth-bound operations on Tiger Lake.
         for (; n + 8 <= N; n += 8) {
             alignas(32) float xb[16][8], yb[16][8], ob[16][8];
             soa_transpose_in_f32(X, n, xb);
@@ -1630,7 +1602,7 @@ void el_pack_split_f32(const float* __restrict__ wsrc, int64_t n_oi,
     }
 }
 
-torch::Tensor el_get_packed_f32(const torch::Tensor& weight,
+[[maybe_unused]] torch::Tensor el_get_packed_f32(const torch::Tensor& weight,
                                 const torch::Tensor& wf,
                                 int64_t n_oi, bool normalize) {
     // wf is a fresh temp when weight is non-contiguous; only cache stable ptrs.
@@ -1874,6 +1846,256 @@ static void el_v3_kernel_f32(const float* __restrict__ X,
     if constexpr (NT) _mm_sfence();
 }
 
+// ---------------------------------------------------------------------------
+// AVX-512 equi_linear kernel — fuses the lo/hi half-passes into a single
+// 16-wide pass using __m512 + _mm512_permutexvar_ps.
+// Weight layout (32 floats per (o,i) pair):
+//   W512[p*32+0..15]  = combined diagonal:   lo_diag[8] | hi_diag[8]
+//   W512[p*32+16..31] = combined off-diag:   lo_off[8]  | hi_off[8]
+// Combined permutation for the off-diagonal swap (absolute lane indices):
+//   lo: {0,0,0,0,0,2,3,4}  (blade1←x0; blades5,6,7←x2,x3,x4)
+//   hi: {8,8,8,8,9,10,8,14} (blades11,12,13←x8,x9,x10; blade15←x14)
+// ---------------------------------------------------------------------------
+#if defined(__AVX512F__)
+
+struct ElPacked512 {
+    torch::Tensor src;
+    uint32_t version;
+    bool normalized;
+    torch::Tensor packed;   // float32 [n_oi * 32]
+};
+
+std::mutex g_el_pack512_mu;
+std::map<const void*, ElPacked512> g_el_pack512_cache;
+
+static void el_pack_avx512_f32(const float* __restrict__ wsrc, int64_t n_oi,
+                                bool normalize, float* __restrict__ W512) {
+    float inv[9];
+    for (int k = 0; k < 9; ++k)
+        inv[k] = normalize ? float(EQUI_LINEAR_INV_NORMS[k]) : 1.0f;
+    for (int64_t p = 0; p < n_oi; ++p) {
+        const float* ws = wsrc + p * 9;
+        const float w0=ws[0]*inv[0], w1=ws[1]*inv[1], w2=ws[2]*inv[2];
+        const float w3=ws[3]*inv[3], w4=ws[4]*inv[4], w5=ws[5]*inv[5];
+        const float w6=ws[6]*inv[6], w7=ws[7]*inv[7], w8=ws[8]*inv[8];
+        float* wd = W512 + p * 32;
+        float* wo = wd + 16;
+        // combined diagonal: lo_diag[8] | hi_diag[8]
+        wd[0]=w0; wd[1]=w1;  wd[2]=w1;  wd[3]=w1;  wd[4]=w1;  wd[5]=w2;  wd[6]=w2;  wd[7]=w2;
+        wd[8]=w2; wd[9]=w2;  wd[10]=w2; wd[11]=w3; wd[12]=w3; wd[13]=w3; wd[14]=w3; wd[15]=w4;
+        // combined off-diagonal: lo_off[8] | hi_off[8]
+        wo[0]=0;  wo[1]=w5;  wo[2]=0;   wo[3]=0;   wo[4]=0;   wo[5]=w6;  wo[6]=w6;  wo[7]=w6;
+        wo[8]=0;  wo[9]=0;   wo[10]=0;  wo[11]=w7; wo[12]=w7; wo[13]=w7; wo[14]=0;  wo[15]=w8;
+    }
+}
+
+static torch::Tensor el_get_packed_avx512_f32(const torch::Tensor& weight,
+                                               const torch::Tensor& wf,
+                                               int64_t n_oi, bool normalize) {
+    const bool cacheable = weight.is_contiguous();
+    const void* key = wf.data_ptr();
+    auto* impl = wf.unsafeGetTensorImpl();
+    const uint32_t version =
+        impl->is_inference() ? 0 : impl->version_counter().current_version();
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(g_el_pack512_mu);
+        auto it = g_el_pack512_cache.find(key);
+        if (it != g_el_pack512_cache.end() &&
+            it->second.version == version &&
+            it->second.normalized == normalize &&
+            it->second.packed.size(0) == n_oi * 32)
+            return it->second.packed;
+    }
+    auto packed = torch::empty({n_oi * 32}, wf.options());
+    el_pack_avx512_f32(wf.data_ptr<float>(), n_oi, normalize,
+                       packed.data_ptr<float>());
+    if (cacheable) {
+        std::lock_guard<std::mutex> lock(g_el_pack512_mu);
+        if (g_el_pack512_cache.size() > 64) g_el_pack512_cache.clear();
+        g_el_pack512_cache[key] = ElPacked512{wf, version, normalize, packed};
+    }
+    return packed;
+}
+
+// Store helper: NT path requires 64-byte alignment (caller must ensure).
+template <bool NT>
+static inline void el_store_512(float* p, __m512 v) {
+    if constexpr (NT) _mm512_stream_ps(p, v);
+    else              _mm512_storeu_ps(p, v);
+}
+
+// 4 output channels × 2 batch rows, full 16-float multivector at once.
+// W0..W3 point to the start of each output channel's packed weights (32f/pair).
+template <bool NT>
+static inline void el_half_4x2_avx512(
+    const float* __restrict__ xb0, const float* __restrict__ xb1,
+    const float* __restrict__ w0,  const float* __restrict__ w1,
+    const float* __restrict__ w2,  const float* __restrict__ w3,
+    float* __restrict__ ob0, float* __restrict__ ob1,
+    int64_t in_ch, __m512i idx, const float* bias4)
+{
+    const __m512 z = _mm512_setzero_ps();
+    __m512 a0b0=z, a1b0=z, a2b0=z, a3b0=z;
+    __m512 a0b1=z, a1b1=z, a2b1=z, a3b1=z;
+    if (bias4) {
+        a0b0 = _mm512_maskz_broadcastss_ps(0x0001u, _mm_set_ss(bias4[0])); a0b1 = a0b0;
+        a1b0 = _mm512_maskz_broadcastss_ps(0x0001u, _mm_set_ss(bias4[1])); a1b1 = a1b0;
+        a2b0 = _mm512_maskz_broadcastss_ps(0x0001u, _mm_set_ss(bias4[2])); a2b1 = a2b0;
+        a3b0 = _mm512_maskz_broadcastss_ps(0x0001u, _mm_set_ss(bias4[3])); a3b1 = a3b0;
+    }
+    for (int64_t i = 0; i < in_ch; ++i) {
+        const __m512 x0  = _mm512_loadu_ps(xb0 + i * 16);
+        const __m512 x1  = _mm512_loadu_ps(xb1 + i * 16);
+        const __m512 xp0 = _mm512_permutexvar_ps(idx, x0);
+        const __m512 xp1 = _mm512_permutexvar_ps(idx, x1);
+        { const __m512 wd = _mm512_loadu_ps(w0 + i*32);
+          const __m512 wo = _mm512_loadu_ps(w0 + i*32 + 16);
+          a0b0 = _mm512_fmadd_ps(wd, x0,  a0b0); a0b1 = _mm512_fmadd_ps(wd, x1,  a0b1);
+          a0b0 = _mm512_fmadd_ps(wo, xp0, a0b0); a0b1 = _mm512_fmadd_ps(wo, xp1, a0b1); }
+        { const __m512 wd = _mm512_loadu_ps(w1 + i*32);
+          const __m512 wo = _mm512_loadu_ps(w1 + i*32 + 16);
+          a1b0 = _mm512_fmadd_ps(wd, x0,  a1b0); a1b1 = _mm512_fmadd_ps(wd, x1,  a1b1);
+          a1b0 = _mm512_fmadd_ps(wo, xp0, a1b0); a1b1 = _mm512_fmadd_ps(wo, xp1, a1b1); }
+        { const __m512 wd = _mm512_loadu_ps(w2 + i*32);
+          const __m512 wo = _mm512_loadu_ps(w2 + i*32 + 16);
+          a2b0 = _mm512_fmadd_ps(wd, x0,  a2b0); a2b1 = _mm512_fmadd_ps(wd, x1,  a2b1);
+          a2b0 = _mm512_fmadd_ps(wo, xp0, a2b0); a2b1 = _mm512_fmadd_ps(wo, xp1, a2b1); }
+        { const __m512 wd = _mm512_loadu_ps(w3 + i*32);
+          const __m512 wo = _mm512_loadu_ps(w3 + i*32 + 16);
+          a3b0 = _mm512_fmadd_ps(wd, x0,  a3b0); a3b1 = _mm512_fmadd_ps(wd, x1,  a3b1);
+          a3b0 = _mm512_fmadd_ps(wo, xp0, a3b0); a3b1 = _mm512_fmadd_ps(wo, xp1, a3b1); }
+    }
+    el_store_512<NT>(ob0 + 0*16, a0b0); el_store_512<NT>(ob0 + 1*16, a1b0);
+    el_store_512<NT>(ob0 + 2*16, a2b0); el_store_512<NT>(ob0 + 3*16, a3b0);
+    el_store_512<NT>(ob1 + 0*16, a0b1); el_store_512<NT>(ob1 + 1*16, a1b1);
+    el_store_512<NT>(ob1 + 2*16, a2b1); el_store_512<NT>(ob1 + 3*16, a3b1);
+}
+
+template <bool NT>
+static inline void el_half_1x2_avx512(
+    const float* __restrict__ xb0, const float* __restrict__ xb1,
+    const float* __restrict__ w0,
+    float* __restrict__ ob0, float* __restrict__ ob1,
+    int64_t in_ch, __m512i idx, const float* bias1)
+{
+    const __m512 z = _mm512_setzero_ps();
+    __m512 ab0 = bias1 ? _mm512_maskz_broadcastss_ps(0x0001u, _mm_set_ss(*bias1)) : z;
+    __m512 ab1 = ab0;
+    for (int64_t i = 0; i < in_ch; ++i) {
+        const __m512 x0  = _mm512_loadu_ps(xb0 + i * 16);
+        const __m512 x1  = _mm512_loadu_ps(xb1 + i * 16);
+        const __m512 wd  = _mm512_loadu_ps(w0 + i*32);
+        const __m512 wo  = _mm512_loadu_ps(w0 + i*32 + 16);
+        ab0 = _mm512_fmadd_ps(wd, x0, ab0);
+        ab1 = _mm512_fmadd_ps(wd, x1, ab1);
+        ab0 = _mm512_fmadd_ps(wo, _mm512_permutexvar_ps(idx, x0), ab0);
+        ab1 = _mm512_fmadd_ps(wo, _mm512_permutexvar_ps(idx, x1), ab1);
+    }
+    el_store_512<NT>(ob0, ab0);
+    el_store_512<NT>(ob1, ab1);
+}
+
+template <bool NT>
+static inline void el_half_4x1_avx512(
+    const float* __restrict__ xb0,
+    const float* __restrict__ w0, const float* __restrict__ w1,
+    const float* __restrict__ w2, const float* __restrict__ w3,
+    float* __restrict__ ob0,
+    int64_t in_ch, __m512i idx, const float* bias4)
+{
+    const __m512 z = _mm512_setzero_ps();
+    __m512 a0 = bias4 ? _mm512_maskz_broadcastss_ps(0x0001u, _mm_set_ss(bias4[0])) : z;
+    __m512 a1 = bias4 ? _mm512_maskz_broadcastss_ps(0x0001u, _mm_set_ss(bias4[1])) : z;
+    __m512 a2 = bias4 ? _mm512_maskz_broadcastss_ps(0x0001u, _mm_set_ss(bias4[2])) : z;
+    __m512 a3 = bias4 ? _mm512_maskz_broadcastss_ps(0x0001u, _mm_set_ss(bias4[3])) : z;
+    for (int64_t i = 0; i < in_ch; ++i) {
+        const __m512 x0  = _mm512_loadu_ps(xb0 + i * 16);
+        const __m512 xp0 = _mm512_permutexvar_ps(idx, x0);
+        a0 = _mm512_fmadd_ps(_mm512_loadu_ps(w0 + i*32), x0, a0);
+        a1 = _mm512_fmadd_ps(_mm512_loadu_ps(w1 + i*32), x0, a1);
+        a2 = _mm512_fmadd_ps(_mm512_loadu_ps(w2 + i*32), x0, a2);
+        a3 = _mm512_fmadd_ps(_mm512_loadu_ps(w3 + i*32), x0, a3);
+        a0 = _mm512_fmadd_ps(_mm512_loadu_ps(w0 + i*32 + 16), xp0, a0);
+        a1 = _mm512_fmadd_ps(_mm512_loadu_ps(w1 + i*32 + 16), xp0, a1);
+        a2 = _mm512_fmadd_ps(_mm512_loadu_ps(w2 + i*32 + 16), xp0, a2);
+        a3 = _mm512_fmadd_ps(_mm512_loadu_ps(w3 + i*32 + 16), xp0, a3);
+    }
+    el_store_512<NT>(ob0 + 0*16, a0); el_store_512<NT>(ob0 + 1*16, a1);
+    el_store_512<NT>(ob0 + 2*16, a2); el_store_512<NT>(ob0 + 3*16, a3);
+}
+
+template <bool NT>
+static inline void el_half_1x1_avx512(
+    const float* __restrict__ xb0, const float* __restrict__ w0,
+    float* __restrict__ ob0,
+    int64_t in_ch, __m512i idx, const float* bias1)
+{
+    const __m512 z = _mm512_setzero_ps();
+    __m512 a0 = bias1 ? _mm512_maskz_broadcastss_ps(0x0001u, _mm_set_ss(*bias1)) : z;
+    for (int64_t i = 0; i < in_ch; ++i) {
+        const __m512 x0 = _mm512_loadu_ps(xb0 + i * 16);
+        a0 = _mm512_fmadd_ps(_mm512_loadu_ps(w0 + i*32), x0, a0);
+        a0 = _mm512_fmadd_ps(_mm512_loadu_ps(w0 + i*32 + 16),
+                             _mm512_permutexvar_ps(idx, x0), a0);
+    }
+    el_store_512<NT>(ob0, a0);
+}
+
+template <bool NT>
+static void el_v3_kernel_f32_avx512(const float* __restrict__ X,
+                                     const float* __restrict__ W512,
+                                     const float* __restrict__ bp,
+                                     float* __restrict__ O,
+                                     int64_t batch, int64_t in_ch, int64_t out_ch)
+{
+    // Combined off-diagonal permutation: lo {0,0,0,0,0,2,3,4} | hi {8,8,8,8,9,10,8,14}
+    const __m512i idx = _mm512_setr_epi32(0,0,0,0,0,2,3,4, 8,8,8,8,9,10,8,14);
+
+    const int64_t n_quad = out_ch / 4;
+    int64_t b = 0;
+    for (; b + 1 < batch; b += 2) {
+        const float* xb0 = X + b       * in_ch * 16;
+        const float* xb1 = X + (b + 1) * in_ch * 16;
+        float* ob0 = O + b       * out_ch * 16;
+        float* ob1 = O + (b + 1) * out_ch * 16;
+        for (int64_t g = 0; g < n_quad; ++g) {
+            const int64_t o0 = g * 4;
+            el_half_4x2_avx512<NT>(xb0, xb1,
+                W512 + (o0 + 0) * in_ch * 32,
+                W512 + (o0 + 1) * in_ch * 32,
+                W512 + (o0 + 2) * in_ch * 32,
+                W512 + (o0 + 3) * in_ch * 32,
+                ob0 + o0 * 16, ob1 + o0 * 16,
+                in_ch, idx, bp ? bp + o0 : nullptr);
+        }
+        for (int64_t o = n_quad * 4; o < out_ch; ++o) {
+            el_half_1x2_avx512<NT>(xb0, xb1, W512 + o * in_ch * 32,
+                ob0 + o * 16, ob1 + o * 16,
+                in_ch, idx, bp ? bp + o : nullptr);
+        }
+    }
+    for (; b < batch; ++b) {
+        const float* xb0 = X + b * in_ch * 16;
+        float* ob0 = O + b * out_ch * 16;
+        for (int64_t g = 0; g < n_quad; ++g) {
+            const int64_t o0 = g * 4;
+            el_half_4x1_avx512<NT>(xb0,
+                W512 + (o0 + 0) * in_ch * 32,
+                W512 + (o0 + 1) * in_ch * 32,
+                W512 + (o0 + 2) * in_ch * 32,
+                W512 + (o0 + 3) * in_ch * 32,
+                ob0 + o0 * 16, in_ch, idx, bp ? bp + o0 : nullptr);
+        }
+        for (int64_t o = n_quad * 4; o < out_ch; ++o) {
+            el_half_1x1_avx512<NT>(xb0, W512 + o * in_ch * 32, ob0 + o * 16,
+                in_ch, idx, bp ? bp + o : nullptr);
+        }
+    }
+    if constexpr (NT) _mm_sfence();
+}
+
+#endif  // __AVX512F__
+
 }  // namespace
 #endif  // EZGATR_HAVE_AVX2
 torch::Tensor equi_linear_v3(const torch::Tensor& x,
@@ -1897,27 +2119,45 @@ torch::Tensor equi_linear_v3(const torch::Tensor& x,
         const int64_t batch  = s.batch;
         const int64_t n_oi   = out_ch * in_ch;
 
-        auto packed = el_get_packed_f32(weight, s.wf, n_oi, normalize_basis);
-        const float* __restrict__ WL = packed.data_ptr<float>();
-        const float* __restrict__ WH = WL + n_oi * 16;
-
         const float* __restrict__ xp_base = s.xf.data_ptr<float>();
         float*       __restrict__ op_base = out.data_ptr<float>();
 
-        // Non-temporal stores skip the read-for-ownership of the destination,
-        // but only pay off when the output cannot stay cache-resident anyway
-        // (16 MB = one CCX worth of L3 on the target Zen 2 machine).
-        const bool use_nt =
-            batch * out_ch * 16 * static_cast<int64_t>(sizeof(float)) >= (16 << 20) &&
-            reinterpret_cast<uintptr_t>(op_base) % 32 == 0;
+        const int64_t out_bytes =
+            batch * out_ch * 16 * static_cast<int64_t>(sizeof(float));
 
-        if (use_nt) {
-            el_v3_kernel_f32<true>(xp_base, WL, WH, bp, op_base,
-                                   batch, in_ch, out_ch);
-        } else {
-            el_v3_kernel_f32<false>(xp_base, WL, WH, bp, op_base,
-                                    batch, in_ch, out_ch);
+#if defined(__AVX512F__)
+        {
+            auto packed512 = el_get_packed_avx512_f32(weight, s.wf, n_oi, normalize_basis);
+            const float* __restrict__ W512 = packed512.data_ptr<float>();
+            // NT stores require 64-byte alignment.
+            const bool use_nt =
+                out_bytes >= (16 << 20) &&
+                reinterpret_cast<uintptr_t>(op_base) % 64 == 0;
+            if (use_nt)
+                el_v3_kernel_f32_avx512<true>(xp_base, W512, bp, op_base,
+                                               batch, in_ch, out_ch);
+            else
+                el_v3_kernel_f32_avx512<false>(xp_base, W512, bp, op_base,
+                                                batch, in_ch, out_ch);
         }
+#else
+        {
+            auto packed = el_get_packed_f32(weight, s.wf, n_oi, normalize_basis);
+            const float* __restrict__ WL = packed.data_ptr<float>();
+            const float* __restrict__ WH = WL + n_oi * 16;
+            // Non-temporal stores only pay off when the output cannot stay
+            // cache-resident (16 MB = one CCX worth of L3).
+            const bool use_nt =
+                out_bytes >= (16 << 20) &&
+                reinterpret_cast<uintptr_t>(op_base) % 32 == 0;
+            if (use_nt)
+                el_v3_kernel_f32<true>(xp_base, WL, WH, bp, op_base,
+                                       batch, in_ch, out_ch);
+            else
+                el_v3_kernel_f32<false>(xp_base, WL, WH, bp, op_base,
+                                        batch, in_ch, out_ch);
+        }
+#endif  // __AVX512F__
 
         // Bias was folded into the accumulator init; finalize without it.
         return equi_linear_finalize(out, c10::nullopt, s.out_shape);

@@ -29,7 +29,7 @@ from ezgatr.opt import (
     geometric_product_v0, geometric_product_v1, geometric_product_v2, geometric_product_v3,
     equi_join_v0, equi_join_v1, equi_join_v2, equi_join_v3,
     scaler_gated_gelu_ver_0, scaler_gated_gelu_ver_1, scaler_gated_gelu_ver_2, scaler_gated_gelu_ver_3,
-    geometric_bilinear_v3_1,
+    geometric_bilinear_v3,
 )
 
 # Tiger Lake i7-1165G7 cache sizes (per-core), for labelling the working set.
@@ -78,7 +78,7 @@ def _bilinear_sep(p, ref):
 
 BILINEAR_VERSIONS = [
     ("sep", _bilinear_sep),
-    ("v3_1", geometric_bilinear_v3_1),
+    ("v3_1", geometric_bilinear_v3),
 ]
 
 # Default M sweep: 1 KB/multivector-block at channels=16, so this spans

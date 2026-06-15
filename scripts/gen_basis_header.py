@@ -12,6 +12,7 @@ Generates:
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from pathlib import Path
 
 import torch
@@ -373,81 +374,147 @@ def fmt_loop_unroll(name_prefix: str, kernel: torch.Tensor, K: int,
     return "\n".join(L), total_nnz
 
 
-def fmt_soa_avx(name_prefix: str, kernel: torch.Tensor) -> tuple[str, int]:
+def _soa_emit_blade(L: list[str], i: int, triples: list[tuple[int, int, int]],
+                    preload_x: set[int], preload_y: set[int],
+                    reg: str, vec: str, load: str, add: str, mul: str) -> None:
+    """Emit one output-blade block into L.
+
+    reg  — register type string, e.g. '__m256' or '__m512'
+    vec  — SIMD width descriptor used in intrinsic names, e.g. '256' or '512'
+    load — load intrinsic without type suffix, e.g. '_mm256_load_ps'
+    add  — horizontal-add intrinsic, e.g. '_mm256_add_ps'
+    mul  — multiply intrinsic, e.g. '_mm256_mul_ps'
+    """
+    def xr(j: int) -> str:
+        return f"x{j:02d}" if j in preload_x else f"{load}(xb[{j}])"
+
+    def yr(k: int) -> str:
+        return f"y{k:02d}" if k in preload_y else f"{load}(yb[{k}])"
+
+    fmadd  = f"_mm{vec}_fmadd_ps"
+    fnmadd = f"_mm{vec}_fnmadd_ps"
+    zero   = f"_mm{vec}_setzero_ps()"
+    store  = f"_mm{vec}_store_ps"
+
+    nterms = len(triples)
+    L.append(f"    {{  // blade {i:02d}")
+
+    if nterms == 1:
+        j, k, s = triples[0]
+        val = f"{mul}({xr(j)}, {yr(k)})"
+        if s < 0:
+            val = f"{fnmadd}({xr(j)}, {yr(k)}, {zero})"
+        L.append(f"        {store}(ob[{i}], {val});")
+    else:
+        # Use 2 accumulators only when it shortens the critical path (nterms >= 4).
+        # For nterms < 4, both strategies give the same latency but 1 accumulator
+        # avoids the extra setzero + add instructions.
+        nslots = 2 if nterms >= 4 else 1
+        L.append(f"        {reg} a0 = {zero};")
+        if nslots == 2:
+            L.append(f"        {reg} a1 = {zero};")
+        for t_idx, (j, k, s) in enumerate(triples):
+            slot = t_idx % nslots
+            fn = fmadd if s > 0 else fnmadd
+            L.append(f"        a{slot} = {fn}({xr(j)}, {yr(k)}, a{slot});")
+        if nslots == 2:
+            L.append(f"        {store}(ob[{i}], {add}(a0, a1));")
+        else:
+            L.append(f"        {store}(ob[{i}], a0);")
+    L.append("    }")
+
+
+def fmt_soa_avx(name_prefix: str, kernel: torch.Tensor,
+                preload_max: int = 0) -> tuple[str, int]:
     """Emit a float-specialized AVX2 SoA block kernel.
 
     Operates on transposed Struct-of-Arrays tiles: xb[j] / yb[k] each hold the
     8 lanes (8 consecutive multivectors) of component j / k. Each output blade
-    is a sequence of packed FMAs over the 8 lanes (2 accumulators to break the
-    add chain) — no gather, no reduction. The caller transposes AoS->SoA, calls
-    this, then transposes back.
+    is a sequence of packed FMAs over the 8 lanes — no gather, no reduction.
+    The caller transposes AoS->SoA, calls this, then transposes back.
+
+    Two accumulators break the FP-add chain for blades with >=4 terms; for
+    sparser blades a single accumulator avoids the extra setzero+add overhead
+    while keeping the same critical-path latency.
+
+    When preload_max > 0, the most-frequently-referenced xb[j] / yb[k] indices
+    (up to preload_max total, split evenly between x and y) are pre-loaded into
+    const __m256 registers at function entry, saving repeated L1 stack loads
+    for high-reuse indices.  Use only when the kernel is sparse enough that
+    preload_max + 2 (accumulators) stays well within the 16 YMM register budget.
     """
     blades, total_nnz = _blade_triples(kernel)
+
+    # Optionally hoist frequently-used xb[j] / yb[k] into dedicated registers.
+    preload_x: set[int] = set()
+    preload_y: set[int] = set()
+    if preload_max > 0:
+        xb_cnt: Counter[int] = Counter(j for ts in blades for j, k, s in ts)
+        yb_cnt: Counter[int] = Counter(k for ts in blades for j, k, s in ts)
+        half = preload_max // 2
+        preload_x = {j for j, _ in xb_cnt.most_common(half)}
+        preload_y = {k for k, _ in yb_cnt.most_common(preload_max - half)}
 
     L: list[str] = []
     L.append(f"static inline void {name_prefix}_soa_block_f32(")
     L.append("        const float xb[16][8], const float yb[16][8], float ob[16][8]) {")
+    if preload_x or preload_y:
+        L.append("    // Pre-load hot input blades into registers to cut repeated stack loads.")
+        for j in sorted(preload_x):
+            L.append(f"    const __m256 x{j:02d} = _mm256_load_ps(xb[{j}]);")
+        for k in sorted(preload_y):
+            L.append(f"    const __m256 y{k:02d} = _mm256_load_ps(yb[{k}]);")
     for i, triples in enumerate(blades):
         if not triples:
             L.append(f"    _mm256_store_ps(ob[{i}], _mm256_setzero_ps());")
             continue
-        nslots = min(2, len(triples))
-        L.append(f"    {{  // blade {i:02d}")
-        L.append("        __m256 a0 = _mm256_setzero_ps();")
-        if nslots == 2:
-            L.append("        __m256 a1 = _mm256_setzero_ps();")
-        for t_idx, (j, k, s) in enumerate(triples):
-            slot = t_idx % nslots
-            fn = "_mm256_fmadd_ps" if s > 0 else "_mm256_fnmadd_ps"
-            L.append(
-                f"        a{slot} = {fn}("
-                f"_mm256_load_ps(xb[{j}]), _mm256_load_ps(yb[{k}]), a{slot});"
-            )
-        if nslots == 2:
-            L.append(f"        _mm256_store_ps(ob[{i}], _mm256_add_ps(a0, a1));")
-        else:
-            L.append(f"        _mm256_store_ps(ob[{i}], a0);")
-        L.append("    }")
+        _soa_emit_blade(L, i, triples, preload_x, preload_y,
+                        "__m256", "256", "_mm256_load_ps",
+                        "_mm256_add_ps", "_mm256_mul_ps")
     L.append("}")
     return "\n".join(L), total_nnz
 
 
-def fmt_soa_avx512(name_prefix: str, kernel: torch.Tensor) -> tuple[str, int]:
+def fmt_soa_avx512(name_prefix: str, kernel: torch.Tensor,
+                   preload_max: int = 0) -> tuple[str, int]:
     """Emit a float-specialized AVX-512 SoA block kernel (16 lanes).
 
     Identical structure to fmt_soa_avx but over a 16-wide transposed tile:
     xb[j] / yb[k] each hold the 16 lanes (16 consecutive multivectors) of
-    component j / k, so each output blade is a sequence of packed __m512 FMAs
-    (2 accumulators to break the add chain) — no gather, no reduction. Doubles
-    the lanes-per-FMA versus the AVX2 block; the caller transposes AoS<->SoA
-    around it. fp32 + AVX-512F only.
+    component j / k — no gather, no reduction. Doubles the lanes-per-FMA
+    versus the AVX2 block; the caller transposes AoS<->SoA around it.
+    fp32 + AVX-512F only.
+
+    preload_max controls register hoisting (see fmt_soa_avx). With 32 ZMM
+    registers available, larger values (up to ~24) are safe for sparse kernels.
     """
     blades, total_nnz = _blade_triples(kernel)
+
+    preload_x: set[int] = set()
+    preload_y: set[int] = set()
+    if preload_max > 0:
+        xb_cnt: Counter[int] = Counter(j for ts in blades for j, k, s in ts)
+        yb_cnt: Counter[int] = Counter(k for ts in blades for j, k, s in ts)
+        half = preload_max // 2
+        preload_x = {j for j, _ in xb_cnt.most_common(half)}
+        preload_y = {k for k, _ in yb_cnt.most_common(preload_max - half)}
 
     L: list[str] = []
     L.append(f"static inline void {name_prefix}_soa_block_f32_avx512(")
     L.append("        const float xb[16][16], const float yb[16][16], float ob[16][16]) {")
+    if preload_x or preload_y:
+        L.append("    // Pre-load hot input blades into registers to cut repeated stack loads.")
+        for j in sorted(preload_x):
+            L.append(f"    const __m512 x{j:02d} = _mm512_load_ps(xb[{j}]);")
+        for k in sorted(preload_y):
+            L.append(f"    const __m512 y{k:02d} = _mm512_load_ps(yb[{k}]);")
     for i, triples in enumerate(blades):
         if not triples:
             L.append(f"    _mm512_store_ps(ob[{i}], _mm512_setzero_ps());")
             continue
-        nslots = min(2, len(triples))
-        L.append(f"    {{  // blade {i:02d}")
-        L.append("        __m512 a0 = _mm512_setzero_ps();")
-        if nslots == 2:
-            L.append("        __m512 a1 = _mm512_setzero_ps();")
-        for t_idx, (j, k, s) in enumerate(triples):
-            slot = t_idx % nslots
-            fn = "_mm512_fmadd_ps" if s > 0 else "_mm512_fnmadd_ps"
-            L.append(
-                f"        a{slot} = {fn}("
-                f"_mm512_load_ps(xb[{j}]), _mm512_load_ps(yb[{k}]), a{slot});"
-            )
-        if nslots == 2:
-            L.append(f"        _mm512_store_ps(ob[{i}], _mm512_add_ps(a0, a1));")
-        else:
-            L.append(f"        _mm512_store_ps(ob[{i}], a0);")
-        L.append("    }")
+        _soa_emit_blade(L, i, triples, preload_x, preload_y,
+                        "__m512", "512", "_mm512_load_ps",
+                        "_mm512_add_ps", "_mm512_mul_ps")
     L.append("}")
     return "\n".join(L), total_nnz
 
@@ -472,13 +539,16 @@ def write_loop_unroll(out_path: Path, name_prefix: str, kernel: torch.Tensor,
 
 
 def write_soa_avx(out_path: Path, name_prefix: str, kernel: torch.Tensor,
-                  sources_note: str) -> int:
-    body, nnz = fmt_soa_avx(name_prefix, kernel)
+                  sources_note: str, preload_max: int = 0) -> int:
+    body, nnz = fmt_soa_avx(name_prefix, kernel, preload_max=preload_max)
+    preload_note = (f", {preload_max} hot-blade registers pre-loaded"
+                    if preload_max > 0 else "")
     text = (
         "// AUTO-GENERATED by scripts/gen_basis_header.py — do not edit.\n"
         f"// {sources_note}\n"
-        "// AVX2 (float) SoA block: packed 8-lane FMAs over a transposed tile,\n"
-        "// 2 accumulators per blade. Requires <immintrin.h>, AVX2 + FMA.\n"
+        "// AVX2 (float) SoA block: packed 8-lane FMAs over a transposed tile.\n"
+        f"// Accumulators per blade: 2 when terms>=4, else 1{preload_note}.\n"
+        "// Requires <immintrin.h>, AVX2 + FMA.\n"
         f"// Total non-zero terms across all 16 output blades: {nnz}.\n"
         "// Designed to be #include'd inside the ezgatr::opt namespace.\n\n"
         "#if defined(__AVX2__) && defined(__FMA__)\n"
@@ -487,18 +557,21 @@ def write_soa_avx(out_path: Path, name_prefix: str, kernel: torch.Tensor,
     )
     out_path.write_text(text)
     print(f"wrote {out_path.relative_to(REPO)} "
-          f"({out_path.stat().st_size} bytes, nnz={nnz})")
+          f"({out_path.stat().st_size} bytes, nnz={nnz}, preload={preload_max})")
     return nnz
 
 
 def write_soa_avx512(out_path: Path, name_prefix: str, kernel: torch.Tensor,
-                     sources_note: str) -> int:
-    body, nnz = fmt_soa_avx512(name_prefix, kernel)
+                     sources_note: str, preload_max: int = 0) -> int:
+    body, nnz = fmt_soa_avx512(name_prefix, kernel, preload_max=preload_max)
+    preload_note = (f", {preload_max} hot-blade registers pre-loaded"
+                    if preload_max > 0 else "")
     text = (
         "// AUTO-GENERATED by scripts/gen_basis_header.py — do not edit.\n"
         f"// {sources_note}\n"
-        "// AVX-512 (float) SoA block: packed 16-lane FMAs over a transposed tile,\n"
-        "// 2 accumulators per blade. Requires <immintrin.h>, AVX-512F.\n"
+        "// AVX-512 (float) SoA block: packed 16-lane FMAs over a transposed tile.\n"
+        f"// Accumulators per blade: 2 when terms>=4, else 1{preload_note}.\n"
+        "// Requires <immintrin.h>, AVX-512F.\n"
         f"// Total non-zero terms across all 16 output blades: {nnz}.\n"
         "// Designed to be #include'd inside the ezgatr::opt namespace.\n\n"
         "#if defined(__AVX512F__)\n"
@@ -507,7 +580,7 @@ def write_soa_avx512(out_path: Path, name_prefix: str, kernel: torch.Tensor,
     )
     out_path.write_text(text)
     print(f"wrote {out_path.relative_to(REPO)} "
-          f"({out_path.stat().st_size} bytes, nnz={nnz})")
+          f"({out_path.stat().st_size} bytes, nnz={nnz}, preload={preload_max})")
     return nnz
 
 
@@ -613,8 +686,10 @@ namespace ezgatr {{ namespace opt {{
     write_unrolled_acc(OUT_GP_ACC4_INC, "gp", gp, K=4, sources_note=gp_note)
     write_loop_unroll(OUT_GP_UNROLL2_INC, "gp", gp, K=2, is_join=False, sources_note=gp_note)
     write_loop_unroll(OUT_GP_UNROLL4_INC, "gp", gp, K=4, is_join=False, sources_note=gp_note)
-    write_soa_avx(OUT_GP_SOA_AVX_INC, "gp", gp, sources_note=gp_note)
-    write_soa_avx512(OUT_GP_SOA_AVX512_INC, "gp", gp, sources_note=gp_note)
+    # GP is dense (192 terms) — pre-loading all hot blades would exhaust the YMM
+    # register file (AVX2 has only 16). Leave preload_max=0 for GP.
+    write_soa_avx(OUT_GP_SOA_AVX_INC, "gp", gp, sources_note=gp_note, preload_max=0)
+    write_soa_avx512(OUT_GP_SOA_AVX512_INC, "gp", gp, sources_note=gp_note, preload_max=0)
 
     join = compute_join_kernel(op)
     write_unrolled(
@@ -634,8 +709,13 @@ namespace ezgatr {{ namespace opt {{
     write_unrolled_acc(OUT_JOIN_ACC4_INC, "join", join, K=4, sources_note=join_note)
     write_loop_unroll(OUT_JOIN_UNROLL2_INC, "join", join, K=2, is_join=True, sources_note=join_note)
     write_loop_unroll(OUT_JOIN_UNROLL4_INC, "join", join, K=4, is_join=True, sources_note=join_note)
-    write_soa_avx(OUT_JOIN_SOA_AVX_INC, "join", join, sources_note=join_note)
-    write_soa_avx512(OUT_JOIN_SOA_AVX512_INC, "join", join, sources_note=join_note)
+    # Join is sparse (81 terms) with strong hot-blade concentration:
+    # xb[15]/yb[15] appear in all 16 output blades, xb/yb[11-14] in 7-8 each.
+    # Pre-loading 10 values (5 xb + 5 yb) for AVX2 saves ~52% of stack loads
+    # while staying within the 16 YMM register budget (10 pre-loaded + 2 accum + 4 misc).
+    # AVX-512 has 32 ZMM registers — afford 20 pre-loaded (10 xb + 10 yb), saving ~70%.
+    write_soa_avx(OUT_JOIN_SOA_AVX_INC, "join", join, sources_note=join_note, preload_max=10)
+    write_soa_avx512(OUT_JOIN_SOA_AVX512_INC, "join", join, sources_note=join_note, preload_max=20)
 
 
 if __name__ == "__main__":

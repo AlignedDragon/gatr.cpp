@@ -591,5 +591,6 @@ inline constexpr int8_t OP_BASIS[16][16][16] = {
 
 inline constexpr int64_t DUAL_PERM[16] = {15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
 inline constexpr int8_t DUAL_SIGN[16] = {1, -1, 1, -1, 1, 1, -1, 1, 1, -1, 1, -1, 1, -1, 1, 1};
+inline constexpr int64_t INNER_SELECTOR[16] = {0, 2, 3, 4, 8, 9, 10, 14};
 
 }}  // namespace ezgatr::opt

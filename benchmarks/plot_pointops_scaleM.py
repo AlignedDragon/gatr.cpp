@@ -28,10 +28,12 @@ channels = data["channels"]
 cache = data["cache_bytes"]
 
 VERSION_STYLE = {
-    "v0": ("#B0BEC5", "v0 (baseline)"),
-    "v1": ("#FF9800", "v1 (math)"),
-    "v2": ("#2196F3", "v2 (pre-SIMD)"),
-    "v3": ("#4CAF50", "v3 (AVX2)"),
+    "v0":   ("#B0BEC5", "v0 (baseline)"),
+    "v1":   ("#FF9800", "v1 (math)"),
+    "v2":   ("#2196F3", "v2 (pre-SIMD)"),
+    "v3":   ("#4CAF50", "v3 (AVX2)"),
+    "sep":  ("#B0BEC5", "sep (baseline)"),
+    "v3_1": ("#4CAF50", "v3 (AVX2)"),
 }
 
 
@@ -67,15 +69,18 @@ def plot_op(op_name, rows):
     ax.legend(fontsize=8)
     add_cache_bands(ax, rows)
 
-    # Right: v3 speedup vs M.
+    # Right: best speedup vs M (v3/v2 and v3/v0 when available; v3_1/sep for bilinear).
     ax = axes[1]
-    s32 = [r["speedup_v3_over_v2"] for r in rows]
-    s30 = [r["speedup_v3_over_v0"] for r in rows]
-    ax.plot(M, s32, "s-", color="#2196F3", label="v3 / v2", lw=1.8, ms=5)
-    valid30 = [(m, s) for m, s in zip(M, s30) if s == s]
-    if valid30:
-        ax.plot([m for m, _ in valid30], [s for _, s in valid30],
-                "^-", color="#B0BEC5", label="v3 / v0", lw=1.8, ms=5)
+    fast_key = "v3" if any(r["gflops"].get("v3") for r in rows) else "v3_1"
+    base_keys = [("v2", "#2196F3", "fast / v2"), ("v0", "#B0BEC5", "fast / v0"),
+                 ("sep", "#B0BEC5", f"{fast_key} / sep")]
+    for bk, bcolor, blabel in base_keys:
+        pts = [(r["M"], r["gflops"][fast_key] / r["gflops"][bk])
+               for r in rows
+               if r["gflops"].get(fast_key) and r["gflops"].get(bk)]
+        if pts:
+            ax.plot([p[0] for p in pts], [p[1] for p in pts],
+                    "s-", color=bcolor, label=blabel, lw=1.8, ms=5)
     ax.axhline(1.0, color="k", ls="--", lw=0.8, alpha=0.4)
     ax.set_xscale("log", base=2)
     ax.set_xlabel("Number of multivectors M (log₂)")

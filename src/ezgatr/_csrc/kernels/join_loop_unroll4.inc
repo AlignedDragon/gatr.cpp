@@ -242,10 +242,10 @@ static inline void join_loop_unroll4(const T* __restrict__ X, const T* __restric
             o3[15] = a3_0;
         }
         if constexpr (HasRef) {
-            const T s0 = R[n + 0];
-            const T s1 = R[n + 1];
-            const T s2 = R[n + 2];
-            const T s3 = R[n + 3];
+            const T s0 = R[16 * (n + 0) + 14];
+            const T s1 = R[16 * (n + 1) + 14];
+            const T s2 = R[16 * (n + 2) + 14];
+            const T s3 = R[16 * (n + 3) + 14];
             for (int i = 0; i < 16; ++i) o0[i] *= s0;
             for (int i = 0; i < 16; ++i) o1[i] *= s1;
             for (int i = 0; i < 16; ++i) o2[i] *= s2;
@@ -273,7 +273,7 @@ static inline void join_loop_unroll4(const T* __restrict__ X, const T* __restric
         o[14] = join_blade_14<T>(x, y);
         o[15] = join_blade_15<T>(x, y);
         if constexpr (HasRef) {
-            const T s = R[n];
+            const T s = R[16 * n + 14];
             for (int i = 0; i < 16; ++i) o[i] *= s;
         }
     }

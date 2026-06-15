@@ -207,6 +207,154 @@ static void gelu_gate_kernel_avx2(const float* __restrict__ X,
 }
 #endif  // __AVX2__ && __FMA__
 
+#if defined(__AVX512F__)
+// AVX-512 versions of exp and tanh (same Cephes minimax, 16-wide).
+static inline __m512 exp512_ps(__m512 x) {
+    const __m512 hi = _mm512_set1_ps(88.3762626647949f);
+    const __m512 lo = _mm512_set1_ps(-88.3762626647949f);
+    const __m512 LOG2EF = _mm512_set1_ps(1.44269504088896341f);
+    const __m512 C1  = _mm512_set1_ps(0.693359375f);
+    const __m512 C2  = _mm512_set1_ps(-2.12194440e-4f);
+    const __m512 one = _mm512_set1_ps(1.f);
+    const __m512 half = _mm512_set1_ps(0.5f);
+    x = _mm512_min_ps(_mm512_max_ps(x, lo), hi);
+    __m512 fx = _mm512_floor_ps(_mm512_fmadd_ps(x, LOG2EF, half));
+    x = _mm512_sub_ps(x, _mm512_mul_ps(fx, C1));
+    x = _mm512_sub_ps(x, _mm512_mul_ps(fx, C2));
+    const __m512 z = _mm512_mul_ps(x, x);
+    __m512 y = _mm512_set1_ps(1.9875691500E-4f);
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(1.3981999507E-3f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(8.3334519073E-3f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(4.1665795894E-2f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(1.6666665459E-1f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(5.0000001201E-1f));
+    y = _mm512_fmadd_ps(y, z, x);
+    y = _mm512_add_ps(y, one);
+    __m512i emm0 = _mm512_cvttps_epi32(fx);
+    emm0 = _mm512_slli_epi32(_mm512_add_epi32(emm0, _mm512_set1_epi32(0x7f)), 23);
+    return _mm512_mul_ps(y, _mm512_castsi512_ps(emm0));
+}
+
+static inline __m512 tanh512_ps(__m512 x) {
+    const __m512 one = _mm512_set1_ps(1.f);
+    const __m512 two = _mm512_set1_ps(2.f);
+    __m512 e = exp512_ps(_mm512_mul_ps(x, two));
+    return _mm512_sub_ps(one, _mm512_div_ps(two, _mm512_add_ps(e, one)));
+}
+
+// AVX-512 scaler-gated GELU. Gathers x[0] from 16 consecutive MVs at once,
+// computes 16 gates with 16-wide tanh, then applies them with 512-bit stores.
+static void gelu_gate_kernel_avx512(const float* __restrict__ X,
+                                    float* __restrict__ O, int64_t N) {
+    const __m512 half   = _mm512_set1_ps(0.5f);
+    const __m512 one    = _mm512_set1_ps(1.f);
+    const __m512 kAlpha = _mm512_set1_ps(0.7978845608028654f);
+    const __m512 kBeta  = _mm512_set1_ps(0.044715f);
+    // Byte offsets for x[0] of 16 consecutive multivectors (stride 16 floats).
+    const __m512i sidx = _mm512_setr_epi32(
+        0, 16, 32, 48, 64, 80, 96, 112,
+        128, 144, 160, 176, 192, 208, 224, 240);
+    int64_t n = 0;
+    for (; n + 16 <= N; n += 16) {
+        const float* base = X + (n << 4);
+        const __m512 s  = _mm512_i32gather_ps(sidx, base, 4);
+        const __m512 s2 = _mm512_mul_ps(s, s);
+        const __m512 arg = _mm512_mul_ps(_mm512_mul_ps(kAlpha, s),
+                                         _mm512_fmadd_ps(kBeta, s2, one));
+        const __m512 gate = _mm512_mul_ps(_mm512_mul_ps(half, s),
+                                          _mm512_add_ps(one, tanh512_ps(arg)));
+        alignas(64) float g[16];
+        _mm512_store_ps(g, gate);
+        for (int j = 0; j < 16; ++j) {
+            const float* xi = base + (j << 4);
+            float*       oi = O + ((n + j) << 4);
+            const __m512 gj = _mm512_set1_ps(g[j]);
+            _mm512_storeu_ps(oi, _mm512_mul_ps(_mm512_loadu_ps(xi), gj));
+        }
+    }
+    // Tail: fall through to the AVX2 loop for the remaining < 16 multivectors.
+#if defined(__AVX2__) && defined(__FMA__)
+    gelu_gate_kernel_avx2(X + (n << 4), O + (n << 4), N - n);
+#else
+    for (; n < N; ++n) {
+        const float* xi = X + (n << 4);
+        float*       oi = O + (n << 4);
+        const float sc = xi[0];
+        const float gate_s = 0.5f * sc *
+            (1.f + std::tanh(0.7978845608028654f * (sc + 0.044715f * sc * sc * sc)));
+        for (int i = 0; i < 16; ++i) oi[i] = xi[i] * gate_s;
+    }
+#endif
+}
+
+// AVX-512 equi_rms_norm (float32). Single 512-bit load per row, masked squared
+// accumulation (active blades: 0,2,3,4,8,9,10,14 → mask 0x471D), 512-bit store.
+template <bool HasWeight>
+void rms_norm_kernel_avx512(
+    const float* __restrict__ X,
+    float*       __restrict__ O,
+    const float* __restrict__ W,
+    int64_t groups,
+    int64_t M,
+    float   eps
+) {
+    // active blades: 0,2,3,4,8,9,10,14
+    static constexpr __mmask16 AMASK = 0x471Du;
+    // Float mask for masked FMA (same active pattern, as 1.0/0.0 per lane).
+    const __m512 fmask = _mm512_setr_ps(1,0,1,1,1,0,0,0,1,1,1,0,0,0,1,0);
+
+    for (int64_t g = 0; g < groups; ++g) {
+        const float* gin  = X + g * (M << 4);
+        float*       gout = O + g * (M << 4);
+
+        // Pass 1: compute RMS over active blades with 4 independent accumulators.
+        __m512 acc0 = _mm512_setzero_ps();
+        __m512 acc1 = _mm512_setzero_ps();
+        __m512 acc2 = _mm512_setzero_ps();
+        __m512 acc3 = _mm512_setzero_ps();
+        int64_t m = 0;
+        for (; m + 3 < M; m += 4) {
+            __m512 x0 = _mm512_loadu_ps(gin + (m    ) * 16);
+            __m512 x1 = _mm512_loadu_ps(gin + (m + 1) * 16);
+            __m512 x2 = _mm512_loadu_ps(gin + (m + 2) * 16);
+            __m512 x3 = _mm512_loadu_ps(gin + (m + 3) * 16);
+            // acc += mask * x * x  (inactive lanes zeroed via mask vector)
+            acc0 = _mm512_fmadd_ps(_mm512_mul_ps(fmask, x0), x0, acc0);
+            acc1 = _mm512_fmadd_ps(_mm512_mul_ps(fmask, x1), x1, acc1);
+            acc2 = _mm512_fmadd_ps(_mm512_mul_ps(fmask, x2), x2, acc2);
+            acc3 = _mm512_fmadd_ps(_mm512_mul_ps(fmask, x3), x3, acc3);
+        }
+        acc0 = _mm512_add_ps(_mm512_add_ps(acc0, acc1),
+                             _mm512_add_ps(acc2, acc3));
+        for (; m < M; ++m) {
+            __m512 x = _mm512_loadu_ps(gin + m * 16);
+            acc0 = _mm512_fmadd_ps(_mm512_mul_ps(fmask, x), x, acc0);
+        }
+
+        float accs = _mm512_reduce_add_ps(acc0) / static_cast<float>(M);
+        accs = std::max(accs, eps);
+
+        // rsqrt + one Newton-Raphson step (~23-bit accuracy).
+        const float half_v = 0.5f * accs;
+        __m128 vr = _mm_rsqrt_ss(_mm_set_ss(accs));
+        vr = _mm_mul_ss(vr,
+             _mm_sub_ss(_mm_set_ss(1.5f),
+             _mm_mul_ss(_mm_set_ss(half_v),
+             _mm_mul_ss(vr, vr))));
+        float scale = _mm_cvtss_f32(vr);
+
+        // Pass 2: scale (and optional per-channel weight).
+        for (int64_t i = 0; i < M; ++i) {
+            const float* x = gin  + (i << 4);
+            float*       o = gout + (i << 4);
+            float sw = HasWeight ? scale * W[i] : scale;
+            _mm512_storeu_ps(o, _mm512_mul_ps(_mm512_loadu_ps(x),
+                                              _mm512_set1_ps(sw)));
+        }
+    }
+}
+#endif  // __AVX512F__
+
 
 void check_multivector(const torch::Tensor& t, const char* name) {
     TORCH_CHECK(t.dim() >= 1, name, ": expected at least 1 dim, got ", t.dim());
@@ -864,7 +1012,24 @@ torch::Tensor equi_rms_norm_ver_3(
         return out;
     }
 
-    //FAST PATH (intrinsics)
+    // AVX-512 fast path for float32 (single 512-bit load/store per row).
+#if defined(__AVX512F__)
+    if (xc.scalar_type() == torch::kFloat) {
+        const float* X = xc.data_ptr<float>();
+        float*       Op = out.data_ptr<float>();
+        if (weight.has_value()) {
+            auto wc = weight->contiguous();
+            rms_norm_kernel_avx512<true>(X, Op, wc.data_ptr<float>(),
+                                         groups, M, static_cast<float>(eps));
+        } else {
+            rms_norm_kernel_avx512<false>(X, Op, nullptr,
+                                          groups, M, static_cast<float>(eps));
+        }
+        return out;
+    }
+#endif
+
+    // AVX2 fast path (all other floating types).
     AT_DISPATCH_FLOATING_TYPES(xc.scalar_type(), "rms_norm_kernel_intrins", [&] {
         if (weight.has_value()) {
             rms_norm_kernel_intrins<scalar_t, true>(
@@ -1132,16 +1297,27 @@ torch::Tensor scaler_gated_gelu_ver_3(
         approximate
     );
 
-#if defined(__AVX2__) && defined(__FMA__)
     if (approximate == "tanh" && x.scalar_type() == torch::kFloat) {
         auto xc = x.contiguous();
         auto out = torch::empty_like(xc);
         const int64_t N = xc.numel() / 16;
+#if defined(__AVX512F__)
+        gelu_gate_kernel_avx512(xc.data_ptr<float>(), out.data_ptr<float>(), N);
+#elif defined(__AVX2__) && defined(__FMA__)
         gelu_gate_kernel_avx2(xc.data_ptr<float>(), out.data_ptr<float>(), N);
+#else
+        for (int64_t n = 0; n < N; ++n) {
+            const float* xi = xc.data_ptr<float>() + (n << 4);
+            float*       oi = out.data_ptr<float>()  + (n << 4);
+            const float sc = xi[0];
+            const float gate_s = 0.5f * sc *
+                (1.f + std::tanh(0.7978845608028654f * (sc + 0.044715f * sc * sc * sc)));
+            for (int i = 0; i < 16; ++i) oi[i] = xi[i] * gate_s;
+        }
+#endif
         return out;
     }
-#endif
-    // float64 / "none" / non-AVX2: numerically identical scalar path.
+    // float64 / "none": numerically identical scalar path.
     return scaler_gated_gelu_ver_2(x, approximate);
 }
 

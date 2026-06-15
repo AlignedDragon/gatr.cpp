@@ -1,26 +1,21 @@
-"""Standalone single-core end-to-end benchmark for the MV-only GATr model.
+"""Standalone single-core end-to-end benchmark for the MV-only GATr model,
+sweeping the problem-size parameter n with the standard formula B=2n, H=4n,
+T=128n, C=8 (same formula used everywhere in this benchmark suite).
 
-Companion to bench_pointops_scaleM.py. Where that isolates individual kernels,
-this times the full model forward pass: embedding -> N x (attention + bilinear +
-MLP) -> head. It compares the reference MVOnlyGATrModel against the ASL-optimized
-variants ver_0/1/2/3. ver_3 is the fully optimized chain: equi_linear v3,
-rms_norm v3, gelu v3, and the fused flash-SDPA attention v3.
+Attention is O(T^2) = O(n^2), so this sweep shows how both the flash-SDPA
+kernel and the full model scale with sequence length. v0/v1 (non-flash) are
+capped at n=3 (T=384) to avoid multi-minute runtimes.
 
-Scaling axis: sequence length T (size_context). Attention is O(T^2), so this is
-the canonical transformer axis and the one that exercises the fused flash-SDPA
-attention most. batch / heads / channels / layers are held FIXED at realistic
-values so memory stays controlled (the original benchmark_repo coupled
-heads=128n, which is what made n>=6 OOM).
-
-Weights are copied from the reference into every variant, so the run doubles as
-a correctness check (max abs diff printed) on top of the timing.
+Weights are copied from the reference into every variant so the run doubles as
+a correctness check (max abs diff printed).
 
 Usage:
     python benchmarks/bench_endtoend_scaleT.py
-    python benchmarks/bench_endtoend_scaleT.py --t-values 16 64 256 --json-out benchmarks/results/endtoend.json
+    python benchmarks/bench_endtoend_scaleT.py --n-values 1 2 3 4 5 --json-out results/endtoend_scaleT.json
 """
 import argparse
 import json
+import gc
 import time
 from pathlib import Path
 
@@ -35,110 +30,96 @@ from ezgatr.nets.mv_only_gatr import (
     MVOnlyGATrModelASL_ver_3,
 )
 
-# Fixed, realistic model shape. Only T (sequence length) sweeps.
-BATCH = 8
-HEADS = 4
-CHANNELS = 16
 LAYERS = 2
 
 MODEL_VERSIONS = [
     ("ref", MVOnlyGATrModel),
-    ("v0", MVOnlyGATrModelASL_ver_0),
-    ("v1", MVOnlyGATrModelASL_ver_1),
-    ("v2", MVOnlyGATrModelASL_ver_2),
-    ("v3", MVOnlyGATrModelASL_ver_3),
+    ("v0",  MVOnlyGATrModelASL_ver_0),
+    ("v1",  MVOnlyGATrModelASL_ver_1),
+    ("v2",  MVOnlyGATrModelASL_ver_2),
+    ("v3",  MVOnlyGATrModelASL_ver_3),
 ]
 
-DEFAULT_T = [16, 32, 64, 128, 256, 512]
+# v0/v1 OOM / too slow past n=3 (T=384); v2 past n=5 (T=640)
+SLOW_VERSION_MAX_N = {"v0": 3, "v1": 3, "v2": 5}
+
+DEFAULT_N = list(range(1, 10))  # n=1..9
 
 
-def make_config(T):
-    return MVOnlyGATrConfig(
-        num_layers=LAYERS,
-        size_context=T,
-        size_channels_in=1,
-        size_channels_out=1,
-        size_channels_hidden=CHANNELS,
-        size_channels_intermediate=CHANNELS,
-        attn_num_heads=HEADS,
-        attn_is_causal=False,
+def make_config(n: int):
+    B, T, H, C = 2 * n, 128 * n, 4 * n, 8
+    cfg = MVOnlyGATrConfig(
+        num_layers=LAYERS, size_context=T, size_channels_in=1, size_channels_out=1,
+        size_channels_hidden=C, size_channels_intermediate=C,
+        attn_num_heads=H, attn_is_causal=False,
     )
+    return cfg, B, T, H, C
 
 
-def time_call(fn, *, warmup_budget=0.4, measure_budget=1.2, min_reps=15, max_reps=2000):
-    """Min-time over adaptive reps. Generous warmup so a cold first window (page
-    faults, freq ramp, transient load) doesn't inflate the short fast-version
-    runtimes; min over many reps so at least one lands uncontended."""
-    t0 = time.perf_counter()
-    fn()
-    single = time.perf_counter() - t0
-    while time.perf_counter() - t0 < warmup_budget:
-        fn()
-    reps = int(measure_budget / single) if single > 0 else max_reps
-    reps = max(min_reps, min(max_reps, reps))
+def time_call(fn, *, warmup_budget=0.3, measure_budget=1.0, min_reps=5, max_reps=500):
+    t0 = time.perf_counter(); fn(); single = time.perf_counter() - t0
+    while time.perf_counter() - t0 < warmup_budget: fn()
+    reps = max(min_reps, min(max_reps, int(measure_budget / single) if single > 0 else max_reps))
     best = float("inf")
     for _ in range(reps):
-        t0 = time.perf_counter()
-        fn()
-        best = min(best, time.perf_counter() - t0)
+        t0 = time.perf_counter(); fn(); best = min(best, time.perf_counter() - t0)
     return best * 1e6  # microseconds
 
 
-def run(t_values):
-    print(f"\n=== MV-only GATr end-to-end  (batch={BATCH}, heads={HEADS}, "
-          f"channels={CHANNELS}, layers={LAYERS}, 1 thread) ===")
-    header = f"{'T':>6}  " + "  ".join(f"{v:>10}" for v, _ in MODEL_VERSIONS) + "   v3/ref  v3/v0   maxdiff"
+def run(n_values):
+    print(f"\n=== MV-only GATr end-to-end  (B=2n H=4n T=128n C=8, layers={LAYERS}, 1 thread) ===")
+    header = (f"{'n':>4} {'B':>4} {'T':>5} {'H':>5}  "
+              + "  ".join(f"{v:>10}" for v, _ in MODEL_VERSIONS) + "   v3/ref  v3/v0   maxdiff")
     print(header)
     print("-" * len(header))
 
-    import gc
     rows = []
-    for T in t_values:
-        cfg = make_config(T)
+    for n in n_values:
+        cfg, B, T, H, C = make_config(n)
+        x = torch.randn(B, T, 1, 16)
+
         ref = MVOnlyGATrModel(cfg).eval()
         ref_sd = ref.state_dict()
-        x = torch.randn(BATCH, T, 1, 16)
-
-        # Time each version with only ONE model resident at a time. Keeping all
-        # five resident perturbs allocator/cache placement and inflates whichever
-        # fast version (v2/v3) lands on a bad address — a harness artifact, not a
-        # model property. y_ref is captured once for the correctness check.
         times, max_diff = {}, 0.0
         with torch.inference_mode():
             y_ref = ref(x).clone()
             for vname, cls in MODEL_VERSIONS:
+                if n > SLOW_VERSION_MAX_N.get(vname, float("inf")):
+                    times[vname] = None
+                    continue
                 m = ref if vname == "ref" else cls(cfg).eval()
                 if vname != "ref":
-                    m.load_state_dict(ref_sd)  # share weights -> fair timing + correctness
+                    m.load_state_dict(ref_sd)
                     max_diff = max(max_diff, (m(x) - y_ref).abs().max().item())
                 times[vname] = time_call(lambda m=m: m(x))
                 if vname != "ref":
-                    del m
-                    gc.collect()
+                    del m; gc.collect()
 
-        s_ref = times["ref"] / times["v3"]
-        s_v0 = times["v0"] / times["v3"]
-        print(f"{T:>6}  " + "  ".join(f"{times[v]:10.2f}" for v, _ in MODEL_VERSIONS)
+        def fmt(v):
+            return f"{times[v]:10.2f}" if times[v] is not None else f"{'skip':>10}"
+
+        s_ref = times["ref"] / times["v3"] if times.get("ref") and times.get("v3") else float("nan")
+        s_v0  = times["v0"]  / times["v3"] if times.get("v0")  and times.get("v3") else float("nan")
+        print(f"{n:>4} {B:>4} {T:>5} {H:>5}  " + "  ".join(fmt(v) for v, _ in MODEL_VERSIONS)
               + f"   {s_ref:6.2f}x {s_v0:6.2f}x  {max_diff:.1e}")
-        rows.append({"T": T, "batch": BATCH, "heads": HEADS, "channels": CHANNELS,
-                     "layers": LAYERS, "times_us": times,
+        rows.append({"n": n, "B": B, "T": T, "heads": H, "channels": C, "layers": LAYERS,
+                     "times_us": times,
                      "speedup_v3_over_ref": s_ref, "speedup_v3_over_v0": s_v0,
-                     "speedup_v2_over_ref": times["ref"] / times["v2"],
                      "max_abs_diff_vs_ref": max_diff})
     return rows
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--t-values", type=int, nargs="*", default=DEFAULT_T)
+    ap.add_argument("--n-values", type=int, nargs="*", default=DEFAULT_N)
     ap.add_argument("--json-out", type=str, default=None)
     args = ap.parse_args()
 
     torch.set_num_threads(1)
     torch.manual_seed(0)
 
-    rows = run(args.t_values)
-    out = {"batch": BATCH, "heads": HEADS, "channels": CHANNELS, "layers": LAYERS,
+    rows = run(args.n_values)
+    out = {"dim_formula": "B=2n,H=4n,T=128n,C=8", "layers": LAYERS,
            "num_threads": 1, "rows": rows}
     if args.json_out:
         p = Path(args.json_out)
