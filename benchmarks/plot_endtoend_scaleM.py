@@ -27,7 +27,7 @@ VERSION_STYLE = {
     "v0":  ("#B0BEC5", "v0 (baseline)"),
     "v1":  ("#FF9800", "v1 (math)"),
     "v2":  ("#2196F3", "v2 (pre-SIMD)"),
-    "v3":  ("#4CAF50", "v3 (full AVX2)"),
+    "v3":  ("#2E7D32", "v3 (SIMD + AVX-512 attn)"),
 }
 
 

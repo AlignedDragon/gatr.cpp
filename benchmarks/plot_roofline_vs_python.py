@@ -28,7 +28,7 @@ PEAK_GFLOPS = 89.6
 PEAK_BW_GBS = 45.0
 
 # ── Load Python timings ───────────────────────────────────────────────────────
-pf = json.loads(Path("benchmarks/results/run_20260614/per_function.json").read_text())
+pf = json.loads(Path("benchmarks/results/run_20260615/per_function.json").read_text())
 py_times: dict[str, dict[int, float]] = {}
 for op, dat in pf["pointwise"].items():
     py_times[op] = {n: dat["versions"]["py"][i] for i, n in enumerate(dat["n_values"])}
@@ -154,7 +154,7 @@ for fname, color, py_key, py_papi_ref, cpp_versions in FUNCS:
                             fontsize=7.5, color=color, fontweight='bold')
 
 ax.set_xscale('log'); ax.set_yscale('log')
-ax.set_xlim(0.1, 8000); ax.set_ylim(0.05, PEAK_GFLOPS * 2)
+ax.set_xlim(0.01, 8000); ax.set_ylim(0.01, PEAK_GFLOPS * 2)
 ax.set_xlabel('Arithmetic Intensity [FLOP/byte]', fontsize=12)
 ax.set_ylabel('Performance [GFLOP/s]', fontsize=12)
 ax.set_title(

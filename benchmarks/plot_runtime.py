@@ -42,11 +42,11 @@ ver_funcs = {
     'v2': ['geometric_product_v2', 'equi_join_v2', 'equi_linear_ver_2', 'equi_rms_norm_ver_2',
            'scaler_gated_gelu_ver_2', 'equi_geometric_attention_ver_2'],
     'v3': ['geometric_product_v3', 'equi_join_v3', 'equi_linear_ver_3', 'equi_rms_norm_ver_3',
-           'scaler_gated_gelu_ver_3', 'equi_geometric_attention_ver_3'],
+           'scaler_gated_gelu_ver_3', 'equi_geometric_attention_ver_3_1'],
 }
 
-vc  = {'v0': '#B0BEC5', 'v1': '#FF9800', 'v2': '#2196F3', 'v3': '#4CAF50'}
-vl  = {'v0': 'v0 — Baseline', 'v1': 'v1 — Math', 'v2': 'v2 — Scalar mem.', 'v3': 'v3 — SIMD'}
+vc  = {'v0': '#B0BEC5', 'v1': '#FF9800', 'v2': '#2196F3', 'v3': '#2E7D32'}
+vl  = {'v0': 'v0 — Baseline', 'v1': 'v1 — Math', 'v2': 'v2 — Scalar mem.', 'v3': 'v3 — SIMD + AVX-512 attn'}
 
 func_info = [
     ('Geom.\nProduct',  ['geometric_product_v0', 'geometric_product_v1',
@@ -59,7 +59,7 @@ func_info = [
     ('Gated\nGELU',    ['scaler_gated_gelu_ver_0', 'scaler_gated_gelu_ver_1',
                          'scaler_gated_gelu_ver_2', 'scaler_gated_gelu_ver_3']),
     ('Attention',       ['equi_geometric_attention_ver_0', 'equi_geometric_attention_ver_1',
-                         'equi_geometric_attention_ver_2', 'equi_geometric_attention_ver_3']),
+                         'equi_geometric_attention_ver_2', 'equi_geometric_attention_ver_3_1']),
 ]
 
 # ── PLOT 1: speedup bars n=3 (solid) and n=5 (hatched) ───────────────────────
@@ -187,7 +187,7 @@ ATTN_MAX_N = {'v0': 3, 'v1': 3, 'v2': 5, 'v3': 9}
 
 ALL_GROUPS = NON_ATTN_GROUPS + [
     ('attention', ['equi_geometric_attention_ver_0', 'equi_geometric_attention_ver_1',
-                   'equi_geometric_attention_ver_2', 'equi_geometric_attention_ver_3']),
+                   'equi_geometric_attention_ver_2', 'equi_geometric_attention_ver_3_1']),
 ]
 
 

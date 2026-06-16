@@ -32,7 +32,7 @@ RIDGE_POINT = PEAK_GFLOPS / PEAK_BW_GBS
 
 
 # ── Load bench_repo min_ms (best-case timing) ─────────────────────────────────
-NS = list(range(1, 13))
+NS = list(range(1, 10))  # current benchmark run goes to n=9
 times: dict[int, dict[str, float]] = {}
 for n in NS:
     f = DATA_DIR / f"bench_repo_n{n}.json"
@@ -74,7 +74,7 @@ def get_point(target: str, n: int) -> tuple[float, float] | None:
 
 
 # ── Python runtimes from per_function.json ────────────────────────────────────
-pf = json.loads(Path("benchmarks/results/run_20260614/per_function.json").read_text())
+pf = json.loads(Path("benchmarks/results/run_20260615/per_function.json").read_text())
 py_pw: dict[str, dict[int, float]] = {}
 for op, dat in pf["pointwise"].items():
     py_pw[op] = {n: dat["versions"]["py"][i] for i, n in enumerate(dat["n_values"])}
@@ -147,6 +147,14 @@ for fname, color, ver_tgts, py_key, py_papi_ref in funcs:
     for n, filled in [(3, True), (9, False)]:
         v3_pt = get_point(ver_tgts[-1], n)
 
+        # Arrow from v0 to v3 showing improvement direction
+        pt0 = get_point(ver_tgts[0], n)
+        pt3 = get_point(ver_tgts[-1], n)
+        if pt0 and pt3:
+            ax.annotate("", xy=pt3, xytext=pt0,
+                        arrowprops=dict(arrowstyle="->", color=color,
+                                        lw=1.2, alpha=0.45))
+
         for vi, (vtgt, sz, alpha, mk) in enumerate(
                 zip(ver_tgts, ver_sizes, ver_alphas, markers)):
             pt = get_point(vtgt, n)
@@ -183,7 +191,7 @@ for fname, color, ver_tgts, py_key, py_papi_ref in funcs:
                             fontsize=6.5, color=color, alpha=0.85)
 
 ax.set_xscale("log"); ax.set_yscale("log")
-ax.set_xlim(0.1, 8000); ax.set_ylim(0.05, 1000)
+ax.set_xlim(0.01, 8000); ax.set_ylim(0.01, 1000)
 ax.set_xlabel("Arithmetic Intensity [FLOP/byte]", fontsize=12)
 ax.set_ylabel("Performance [GFLOP/s]", fontsize=12)
 ax.set_title(
@@ -230,9 +238,12 @@ ATTN_TGT = {
     "v0": "equi_geometric_attention_ver_0",
     "v1": "equi_geometric_attention_ver_1",
     "v2": "equi_geometric_attention_ver_2",
-    "v3": "equi_geometric_attention_ver_3",
+    "v3": "equi_geometric_attention_ver_3_1",
 }
-ATTN_MAX_N = {"v0": 3, "v1": 3, "v2": 5, "v3": 9}
+# PAPI reference for FLOPs/bytes model — v3 timing uses ver_3_1, but FLOPs/bytes from ver_3 PAPI
+PAPI_ATTN_REF = dict(ATTN_TGT)
+PAPI_ATTN_REF["v3"] = "equi_geometric_attention_ver_3"
+ATTN_MAX_N = {"v0": 5, "v1": 5, "v2": 5, "v3": 9}
 
 # Scaling exponents derived from PAPI measurements at n=3 and n=9 (v3).
 # Non-attn FLOPs ∝ n^2 (exact); non-attn bytes grow faster due to L3 pressure ∝ n^5.5.
@@ -243,10 +254,10 @@ ATTN_FL_EXP = 4.0
 ATTN_BY_EXP = 3.29
 
 ver_style = {
-    "v0": ("#B0BEC5", "o", "v0 — Baseline"),
-    "v1": ("#FF9800", "s", "v1 — Math"),
-    "v2": ("#2196F3", "^", "v2 — Scalar"),
-    "v3": ("#4CAF50", "D", "v3 — SIMD"),
+    "v0":  ("#B0BEC5", "o", "v0 — Baseline"),
+    "v1":  ("#FF9800", "s", "v1 — Math"),
+    "v2":  ("#2196F3", "^", "v2 — Scalar"),
+    "v3":  ("#2E7D32", "D", "v3 — SIMD + AVX-512 attn"),
 }
 
 
@@ -269,7 +280,7 @@ def sweep_ver(ver: str, n: int) -> tuple[float, float] | None:
         total_ms += t
 
     if n <= ATTN_MAX_N[ver]:
-        ref = papi3.get(ATTN_TGT[ver])
+        ref = papi3.get(PAPI_ATTN_REF[ver])
         if ref:
             t = times.get(n, {}).get(ATTN_TGT[ver])
             if t is not None:
@@ -359,22 +370,14 @@ for ver, pts in sweep_curves.items():
                     textcoords="offset points", xytext=(6, 4),
                     fontsize=7.5, color=color)
 
-# Arrows v0→v1→v2→v3 at n=3
-vers_chain = ["v0", "v1", "v2", "v3"]
-pts_n3 = {ver: next(((ai, gf) for ai, gf, n in pts if n == 3), None)
-          for ver, pts in sweep_curves.items()}
-for v_from, v_to in zip(vers_chain, vers_chain[1:]):
-    p1 = pts_n3.get(v_from)
-    p2 = pts_n3.get(v_to)
-    if p1 and p2:
-        ax.annotate("", xy=p2, xytext=p1,
-                    arrowprops=dict(arrowstyle="->", color="#444",
-                                   lw=1.8, alpha=0.65))
-# Label the n=3 arrow start/end
-if pts_n3.get("v0") and pts_n3.get("v3"):
-    ax.annotate("n=3", pts_n3["v0"],
-                textcoords="offset points", xytext=(-8, -14),
-                fontsize=8, color="#555", style="italic")
+# Cross-version connecting lines at each n (v0→v1→v2→v3 "rungs")
+all_ns = sorted({n for pts in sweep_curves.values() for _, _, n in pts})
+for n in all_ns:
+    rung = [(ai, gf) for ver in ["v0", "v1", "v2", "v3"]
+            for ai, gf, nn in sweep_curves.get(ver, []) if nn == n]
+    if len(rung) > 1:
+        ax.plot([p[0] for p in rung], [p[1] for p in rung],
+                "-", color="#888", lw=1.0, alpha=0.40, zorder=5)
 
 # Python dashed curve
 if py_curve:
@@ -390,7 +393,7 @@ if py_curve:
                 fontsize=8, color="#555")
 
 ax.set_xscale("log"); ax.set_yscale("log")
-ax.set_xlim(0.5, 2000); ax.set_ylim(0.05, 300)
+ax.set_xlim(0.01, 2000); ax.set_ylim(0.05, 300)
 ax.set_xlabel("Arithmetic Intensity [FLOP/byte]", fontsize=12)
 ax.set_ylabel("Performance [GFLOP/s]", fontsize=12)
 ax.set_title(

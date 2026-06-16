@@ -40,7 +40,7 @@ from ezgatr.opt import (
     scaler_gated_gelu_ver_0, scaler_gated_gelu_ver_1, scaler_gated_gelu_ver_2, scaler_gated_gelu_ver_3,
     equi_geometric_attention_ver_0, equi_geometric_attention_ver_1,
     equi_geometric_attention_ver_2, equi_geometric_attention_ver_3,
-    equi_geometric_attention_ver_3,
+    equi_geometric_attention_ver_3_1,
 )
 from ezgatr.nn.functional import (
     geometric_product as gp_py,
@@ -160,11 +160,11 @@ POINTWISE_FAMILIES = {
 #   v3_1  n=9 → ~5s/call   × 3 reps = 15s — OK
 ATTENTION_VERSIONS = [
     ("py",   attn_py,                          range(1, 5),  {"kinds": KINDS, "is_causal": False}),
-    ("v0",   equi_geometric_attention_ver_0,   range(1, 4),  {"kinds": KINDS, "is_causal": False}),
-    ("v1",   equi_geometric_attention_ver_1,   range(1, 4),  {"kinds": KINDS, "is_causal": False}),
+    ("v0",   equi_geometric_attention_ver_0,   range(1, 6),  {"kinds": KINDS, "is_causal": False}),
+    ("v1",   equi_geometric_attention_ver_1,   range(1, 6),  {"kinds": KINDS, "is_causal": False}),
     ("v2",   equi_geometric_attention_ver_2,   range(1, 6),  {"kinds": KINDS, "is_causal": False}),
     ("v3",   equi_geometric_attention_ver_3,   range(1, 8),  {"kinds": KINDS, "is_causal": False}),
-    ("v3_1", equi_geometric_attention_ver_3, range(1, 10), {"kinds": KINDS, "is_causal": False}),
+    ("v3_1", equi_geometric_attention_ver_3_1, range(1, 10), {"kinds": KINDS, "is_causal": False}),
 ]
 
 

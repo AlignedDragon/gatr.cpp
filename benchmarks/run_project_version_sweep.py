@@ -48,10 +48,18 @@ VERSION_TARGETS = {
         "scaler_gated_gelu_ver_3",
         "equi_geometric_attention_ver_3",
     ],
+    "v3_1": [
+        "geometric_product_v3",
+        "equi_join_v3",
+        "equi_linear_ver_3",
+        "equi_rms_norm_ver_3",
+        "scaler_gated_gelu_ver_3",
+        "equi_geometric_attention_ver_3_1",
+    ],
 }
 
-# Attention is O(T^2); v0/v1 OOM/too-slow past n=3 (T=384), v2 past n=5 (T=640)
-ATTN_MAX_N = {"v0": 3, "v1": 3, "v2": 5, "v3": 9}
+# Attention is O(T^2); v0/v1 feasible to n=5 (T=640, ~51s/call), v2 same, v3 to n=9
+ATTN_MAX_N = {"v0": 5, "v1": 5, "v2": 5, "v3": 9, "v3_1": 9}
 ATTN_TARGETS = {t for ts in VERSION_TARGETS.values() for t in ts if "attention" in t}
 
 

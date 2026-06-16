@@ -28,10 +28,10 @@ ATTN = [
     "equi_geometric_attention_ver_0", "equi_geometric_attention_ver_1",
     "equi_geometric_attention_ver_2", "equi_geometric_attention_ver_3",
 ]
-# Attention caps: v0/v1 OOM/too-slow past n=3 (T=384), v2 past n=5 (T=640), v3 runs to n=9
+# Attention caps: v0/v1 feasible to n=5 (T=640, ~51s/call turbo-off), v2 same, v3 to n=9
 ATTN_MAX_N = {
-    "equi_geometric_attention_ver_0": 3,
-    "equi_geometric_attention_ver_1": 3,
+    "equi_geometric_attention_ver_0": 5,
+    "equi_geometric_attention_ver_1": 5,
     "equi_geometric_attention_ver_2": 5,
     "equi_geometric_attention_ver_3": 9,
 }

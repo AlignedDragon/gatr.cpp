@@ -15,9 +15,9 @@ results = {r["target"]: r for r in data["results"]}
 versions = ["equi_geometric_attention_ver_0",
             "equi_geometric_attention_ver_1",
             "equi_geometric_attention_ver_2",
-            "equi_geometric_attention_ver_3"]
-labels  = ["v0\n(baseline)", "v1\n(cache-opt)", "v2\n(explicit DAA)", "v3\n(flash SDPA)"]
-colors  = ["#B0BEC5", "#FF9800", "#2196F3", "#4CAF50"]
+            "equi_geometric_attention_ver_3_1"]
+labels  = ["v0\n(baseline)", "v1\n(cache-opt)", "v2\n(explicit DAA)", "v3\n(AVX-512)"]
+colors  = ["#B0BEC5", "#FF9800", "#2196F3", "#2E7D32"]
 
 t0 = results[versions[0]]["min_ms"]
 mins    = [results[v]["min_ms"]  for v in versions]

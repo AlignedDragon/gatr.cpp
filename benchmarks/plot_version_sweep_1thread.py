@@ -24,50 +24,51 @@ for agg in sweep['results']:
         times[n][t['target']] = t['min_ms']
 NS = sorted(set(NS))
 
-# PAPI flops/bytes/gflops per target for the per-kernel roofline (measured at n=4 and n=6).
-# These were measured with an older dim formula; gflops is self-consistent within each file.
-papi_flops, papi_bytes, papi_gflops_krnl = {}, {}, {}
-for n in [4, 6]:
-    fn = f'benchmarks/results/version_sweep_1thread_papi_n{n}.json'
+# PAPI per-kernel data from current-code new-dims files (June 15).
+# n=3 → filled markers; n=9 → hollow markers.
+papi_flops, papi_bytes, papi_gflops_krnl, papi_ai_krnl = {}, {}, {}, {}
+papi3: dict[str, dict] = {}   # also serves as project-roofline reference
+for n, fn in [(3, 'benchmarks/results/papi_1thread_n3.json'),
+              (9, 'benchmarks/results/papi_1thread_n9.json')]:
     if not Path(fn).exists():
         continue
     d = json.load(open(fn))
     for r in d['results']:
-        fl = r.get('flops_per_call'); by = r.get('memory_bytes_per_call'); gf = r.get('gflops')
+        fl = r.get('flops_per_call'); by = r.get('memory_bytes_per_call')
+        gf = r.get('gflops');         ai = r.get('arithmetic_intensity')
         if fl and by and gf:
             papi_flops[(r['target'], n)]       = fl
             papi_bytes[(r['target'], n)]       = by
             papi_gflops_krnl[(r['target'], n)] = gf
-
-# PAPI reference at n=3 (new dims, B=2n H=4n T=128n C=8) for the whole-project roofline.
-def load_papi3(path: str) -> dict:
-    p = Path(path)
-    if not p.exists():
-        return {}
-    d = json.loads(p.read_text())
-    out = {}
-    for r in d['results']:
-        fl = r.get('flops_per_call'); by = r.get('memory_bytes_per_call'); gf = r.get('gflops')
-        if fl and by and gf:
-            out[r['target']] = {'flops': fl, 'bytes': by, 'gflops': gf}
-    return out
-
-papi3 = load_papi3('benchmarks/results/papi_1thread_n3.json')
+            if ai:
+                papi_ai_krnl[(r['target'], n)] = ai
+            if n == 3:
+                papi3[r['target']] = {'flops': fl, 'bytes': by, 'gflops': gf}
 N_REF = 3
+
+# Python (PyTorch 1-thread) timings for comparison
+_pf_path = Path('benchmarks/results/run_20260615/per_function.json')
+py_times: dict[str, dict[int, float]] = {}
+attn_py_ms: dict[int, float] = {}
+if _pf_path.exists():
+    _pf = json.load(open(_pf_path))
+    for op, dat in _pf['pointwise'].items():
+        py_times[op] = {n: dat['versions']['py'][i] for i, n in enumerate(dat['n_values'])}
+    attn_py_ms = {int(k): float(v) for k, v in _pf['attention']['py'].items()}
 # Exponents measured from PAPI n=3 vs n=9 on new dims.
 NA_FL_EXP   = 2.0
 NA_BY_EXP   = 5.5
 ATTN_FL_EXP = 4.0
 ATTN_BY_EXP = 3.29
 
-vc = {'v0': '#B0BEC5', 'v1': '#FF9800', 'v2': '#2196F3', 'v3': '#4CAF50'}
-vl = {'v0': 'v0 - Baseline', 'v1': 'v1 - Math', 'v2': 'v2 - Scalar mem.', 'v3': 'v3 - SIMD'}
+vc = {'v0': '#B0BEC5', 'v1': '#FF9800', 'v2': '#2196F3', 'v3': '#2E7D32'}
+vl = {'v0': 'v0 - Baseline', 'v1': 'v1 - Math', 'v2': 'v2 - Scalar mem.', 'v3': 'v3 - SIMD + AVX-512 attn'}
 
 ver_funcs = {
     'v0': ['geometric_product_v0', 'equi_join_v0', 'equi_linear_ver_0', 'equi_rms_norm_ver_0', 'equi_geometric_attention_ver_0'],
     'v1': ['geometric_product_v1', 'equi_join_v1', 'equi_linear_ver_1', 'equi_rms_norm_ver_1', 'equi_geometric_attention_ver_1'],
     'v2': ['geometric_product_v2', 'equi_join_v2', 'equi_linear_ver_2', 'equi_rms_norm_ver_2', 'equi_geometric_attention_ver_2'],
-    'v3': ['geometric_product_v3', 'equi_join_v3', 'equi_linear_ver_3', 'equi_rms_norm_ver_3', 'equi_geometric_attention_ver_3'],
+    'v3': ['geometric_product_v3', 'equi_join_v3', 'equi_linear_ver_3', 'equi_rms_norm_ver_3', 'equi_geometric_attention_ver_3_1'],
 }
 NON_ATTN_GROUPS_SW = [
     ('geometric_product', ['geometric_product_v0', 'geometric_product_v1', 'geometric_product_v2', 'geometric_product_v3']),
@@ -97,7 +98,7 @@ func_info = [
     ('Equi.\nJoin',    ['equi_join_v0', 'equi_join_v1', 'equi_join_v2', 'equi_join_v3']),
     ('Equi.\nLinear',  ['equi_linear_ver_0', 'equi_linear_ver_1', 'equi_linear_ver_2', 'equi_linear_ver_3']),
     ('RMS\nNorm',      ['equi_rms_norm_ver_0', 'equi_rms_norm_ver_1', 'equi_rms_norm_ver_2', 'equi_rms_norm_ver_3']),
-    ('Attention',      ['equi_geometric_attention_ver_0', 'equi_geometric_attention_ver_1', 'equi_geometric_attention_ver_2', 'equi_geometric_attention_ver_3']),
+    ('Attention',      ['equi_geometric_attention_ver_0', 'equi_geometric_attention_ver_1', 'equi_geometric_attention_ver_2', 'equi_geometric_attention_ver_3_1']),
 ]
 
 # Two n values for the bar chart: a mid size and the largest measured.
@@ -209,11 +210,11 @@ plt.close()
 
 
 def draw_roofline(ax):
-    ai_range = np.logspace(-1, 4, 500)
+    ai_range = np.logspace(-2, 4, 500)
     roof = np.minimum(PEAK_BW_GBS * ai_range, PEAK_GFLOPS)
     ax.plot(ai_range, roof, 'k-', lw=2.5, zorder=5)
     ax.axvline(RIDGE_POINT, color='k', ls='--', lw=1, alpha=0.35)
-    ax.text(0.13, PEAK_BW_GBS * 0.13 * 1.3, f'Mem BW: {PEAK_BW_GBS} GB/s', fontsize=8.5, rotation=36, va='bottom')
+    ax.text(0.013, PEAK_BW_GBS * 0.013 * 1.3, f'Mem BW: {PEAK_BW_GBS} GB/s', fontsize=8.5, rotation=36, va='bottom')
     ax.text(3500, PEAK_GFLOPS * 1.08, f'Peak: {PEAK_GFLOPS} GFLOPS', fontsize=8.5, ha='right')
     ax.text(RIDGE_POINT * 1.1, 55, f'Ridge\n{RIDGE_POINT:.1f} F/B', fontsize=7.5, color='gray')
 
@@ -231,10 +232,15 @@ ver_alphas = [0.45, 0.65, 0.85, 1.0]
 
 fig, ax = plt.subplots(figsize=(12, 7))
 draw_roofline(ax)
-for _, ver_tgts, fname, color in funcs:
-    for n, filled in [(4, True), (6, False)]:
-        # measured AI from the v3 PAPI point (all versions share the same algorithm AI)
-        prev_gf = None
+for fname_key, ver_tgts, fname, color in funcs:
+    for n, filled in [(3, True), (9, False)]:
+        # Arrow from v0 to v3 showing improvement direction
+        fl0 = papi_flops.get((ver_tgts[0], n)); by0 = papi_bytes.get((ver_tgts[0], n)); gf0 = papi_gflops_krnl.get((ver_tgts[0], n))
+        fl3 = papi_flops.get((ver_tgts[-1], n)); by3 = papi_bytes.get((ver_tgts[-1], n)); gf3 = papi_gflops_krnl.get((ver_tgts[-1], n))
+        if fl0 and by0 and gf0 and fl3 and by3 and gf3:
+            ax.annotate('', xy=(fl3/by3, gf3), xytext=(fl0/by0, gf0),
+                        arrowprops=dict(arrowstyle='->', color=color, lw=1.2, alpha=0.45))
+
         for vi, (vtgt, sz, alpha) in enumerate(zip(ver_tgts, ver_sizes, ver_alphas)):
             fl = papi_flops.get((vtgt, n))
             by = papi_bytes.get((vtgt, n))
@@ -251,23 +257,38 @@ for _, ver_tgts, fname, color in funcs:
         by3 = papi_bytes.get((ver_tgts[-1], n))
         gf3 = papi_gflops_krnl.get((ver_tgts[-1], n))
         if fl3 and by3 and gf3:
-            ai3 = fl3 / by3
-            xoff = 7 if n == 4 else -65
-            yoff = 4 if n == 4 else -12
+            ai3 = papi_ai_krnl.get((ver_tgts[-1], n), fl3 / by3)
+            xoff = 7 if n == 3 else -65
+            yoff = 4 if n == 3 else -12
             ax.annotate(f'{fname}\nn={n}', (ai3, gf3), textcoords='offset points',
                         xytext=(xoff, yoff), fontsize=8, color=color,
-                        fontweight='bold' if n == 4 else 'normal', alpha=1.0 if n == 4 else 0.8)
+                        fontweight='bold' if n == 3 else 'normal', alpha=1.0 if n == 3 else 0.8)
+        # Python star marker at n=3 using v3 PAPI AI and Python timing
+        if n == 3:
+            fl_ref = papi_flops.get((ver_tgts[-1], n))
+            by_ref = papi_bytes.get((ver_tgts[-1], n))
+            if fl_ref and by_ref:
+                ai_ref = fl_ref / by_ref
+                py_key = fname_key if fname_key != 'attention' else None
+                py_ms = py_times.get(py_key, {}).get(n) if py_key else attn_py_ms.get(n)
+                if py_ms:
+                    gf_py = fl_ref / (py_ms / 1000) / 1e9
+                    ax.scatter(ai_ref, gf_py, s=130, marker='*', color=color,
+                               facecolors=color, edgecolors=color, linewidths=1.2,
+                               alpha=0.9, zorder=11)
 ax.set_xscale('log'); ax.set_yscale('log')
-ax.set_xlim(0.1, 8000); ax.set_ylim(0.2, 200)
+ax.set_xlim(0.01, 8000); ax.set_ylim(0.01, 200)
 ax.set_xlabel('Arithmetic Intensity [FLOP/byte]', fontsize=12)
 ax.set_ylabel('Performance [GFLOPS]', fontsize=12)
-ax.set_title('Roofline - all kernels, all versions (v0-v3), measured with PAPI\nFilled markers = n=4 | Hollow markers = n=6 | Tiger Lake i7-1165G7', fontsize=11)
+ax.set_title('Roofline - all kernels, all versions (v0-v3), measured with PAPI\n'
+             'Filled = n=3 | Hollow = n=9 | ★ Python (1T) at n=3 | Tiger Lake i7-1165G7', fontsize=11)
 ax.grid(True, which='both', alpha=0.2, ls='--')
 func_leg = [mlines.Line2D([], [], color=c, marker='D', ls='None', ms=9, label=n) for _, _, n, c in funcs]
 ver_leg = [mlines.Line2D([], [], color='gray', marker=m, ls='None', ms=7, alpha=a, label=l)
            for m, a, l in zip(['o', 's', '^', 'D'], ver_alphas, ['v0', 'v1', 'v2', 'v3'])]
 n_leg = [mlines.Line2D([], [], color='gray', marker='o', ls='None', ms=7, label='n=4 (filled)'),
-         mlines.Line2D([], [], color='gray', marker='o', ls='None', ms=7, mfc='white', mew=2, label='n=6 (hollow)')]
+         mlines.Line2D([], [], color='gray', marker='o', ls='None', ms=7, mfc='white', mew=2, label='n=9 (hollow)'),
+         mlines.Line2D([], [], color='gray', marker='*', ls='None', ms=10, label='★ Python (1T) n=3')]
 l1 = ax.legend(handles=func_leg, loc='lower right', fontsize=9, title='Function', framealpha=0.9, ncol=1)
 ax.add_artist(l1)
 ax.legend(handles=ver_leg + n_leg, loc='upper left', fontsize=9, title='Version / Size', framealpha=0.9, ncol=2)
@@ -279,7 +300,7 @@ plt.close()
 # PLOT 4: whole-project roofline sweep (PAPI-anchored, same approach as roofline_project_versions.png).
 # FLOPs/bytes: scaled from PAPI n=3 reference using measured exponents.
 # Timing: version_sweep_1thread.json min_ms (new dims: B=2n H=4n T=128n C=8).
-VER_MAX_N_ATTN = {'v0': 3, 'v1': 3, 'v2': 5, 'v3': 9}
+VER_MAX_N_ATTN = {'v0': 5, 'v1': 5, 'v2': 5, 'v3': 9}
 NON_ATTN_REFS = {
     'v0': ['geometric_product_v0', 'equi_join_v0', 'equi_linear_ver_0',
            'equi_rms_norm_ver_0', 'scaler_gated_gelu_ver_0'],
@@ -294,13 +315,16 @@ ATTN_REFS = {
     'v0': 'equi_geometric_attention_ver_0',
     'v1': 'equi_geometric_attention_ver_1',
     'v2': 'equi_geometric_attention_ver_2',
-    'v3': 'equi_geometric_attention_ver_3',
+    'v3': 'equi_geometric_attention_ver_3_1',
 }
+# PAPI FLOPs/bytes reference — v3 timing uses ver_3_1, but FLOPs/bytes come from ver_3 PAPI data
+PAPI_ATTN_REFS = dict(ATTN_REFS)
+PAPI_ATTN_REFS['v3'] = 'equi_geometric_attention_ver_3'
 ver_style = {
     'v0': ('#B0BEC5', 'o', 'v0 - Baseline C++'),
     'v1': ('#FF9800', 's', 'v1 - Math optimizations'),
     'v2': ('#2196F3', '^', 'v2 - Scalar memory'),
-    'v3': ('#4CAF50', 'D', 'v3 - SIMD + FMA + parallel'),
+    'v3': ('#2E7D32', 'D', 'v3 - SIMD + AVX-512 attn'),
 }
 
 
@@ -317,7 +341,7 @@ def sweep_proj(ver: str, n: int) -> tuple[float, float] | None:
         total_by += ref['bytes'] * (n / N_REF) ** NA_BY_EXP
         total_ms += t
     if n <= VER_MAX_N_ATTN[ver]:
-        ref = papi3.get(ATTN_REFS[ver])
+        ref = papi3.get(PAPI_ATTN_REFS[ver])
         if ref:
             t = times.get(n, {}).get(ATTN_REFS[ver])
             if t is not None:
@@ -329,6 +353,39 @@ def sweep_proj(ver: str, n: int) -> tuple[float, float] | None:
     ai = total_fl / total_by
     gf = min(total_fl / (total_ms / 1000) / 1e9, PEAK_GFLOPS * 0.995)
     return ai, gf
+
+
+_PY_OP_MAP_1T = {
+    'geometric_product_v0': 'geometric_product',
+    'equi_join_v0':         'equi_join',
+    'equi_linear_ver_0':    'equi_linear',
+    'equi_rms_norm_ver_0':  'equi_rms_norm',
+    'scaler_gated_gelu_ver_0': 'scaler_gated_gelu',
+}
+
+
+def sweep_proj_py(n: int):
+    """Python project roofline point: papi3 FLOPs (new dims) + Python timing (new dims)."""
+    if not papi3 or not py_times:
+        return None
+    total_fl = total_by = total_ms = 0.0
+    for tgt, py_op in _PY_OP_MAP_1T.items():
+        ref = papi3.get(tgt)
+        py_ms = py_times.get(py_op, {}).get(n)
+        if not ref or py_ms is None:
+            return None
+        total_fl += ref['flops'] * (n / N_REF) ** NA_FL_EXP
+        total_by += ref['bytes'] * (n / N_REF) ** NA_BY_EXP
+        total_ms += py_ms
+    ref_a = papi3.get(ATTN_REFS['v0'])
+    py_ms_a = attn_py_ms.get(n)
+    if ref_a and py_ms_a is not None:
+        total_fl += ref_a['flops'] * (n / N_REF) ** ATTN_FL_EXP
+        total_by += ref_a['bytes'] * (n / N_REF) ** ATTN_BY_EXP
+        total_ms += py_ms_a
+    if not total_by or not total_ms:
+        return None
+    return total_fl / total_by, total_fl / (total_ms / 1000) / 1e9
 
 
 points: dict[str, list] = {}
@@ -350,20 +407,36 @@ for ver, pts in points.items():
             xoff = 6; yoff = 4
             ax.annotate(f'n={n}', (ai, gf), textcoords='offset points', xytext=(xoff, yoff),
                         fontsize=7.5, color=color)
-# Arrows at n where both v0 and v3 have data
-v0_by_n = {n: (ai, gf) for ai, gf, n in points.get('v0', [])}
-v3_by_n = {n: (ai, gf) for ai, gf, n in points.get('v3', [])}
-for n in sorted(set(v0_by_n) & set(v3_by_n)):
-    v0ai, v0gf = v0_by_n[n]
-    v3ai, v3gf = v3_by_n[n]
-    ax.annotate('', xy=(v3ai, v3gf), xytext=(v0ai, v0gf),
-                arrowprops=dict(arrowstyle='->', color='#444', lw=1.1, alpha=0.55))
+# Cross-version connecting lines at each n (v0→v1→v2→v3 "rungs")
+all_ns_proj = sorted({n for pts in points.values() for _, _, n in pts})
+for n in all_ns_proj:
+    rung = [(ai, gf) for ver in ['v0', 'v1', 'v2', 'v3']
+            for ai, gf, nn in points.get(ver, []) if nn == n]
+    if len(rung) > 1:
+        ax.plot([p[0] for p in rung], [p[1] for p in rung],
+                '-', color='#888', lw=1.0, alpha=0.40, zorder=5)
+# Python (1-thread) project reference at n=1..4
+py_pts_1t = []
+for _n in [1, 2, 3, 4]:
+    _pt = sweep_proj_py(_n)
+    if _pt:
+        py_pts_1t.append((_pt[0], _pt[1], _n))
+if py_pts_1t:
+    _py_ais = [p[0] for p in py_pts_1t]; _py_gfs = [p[1] for p in py_pts_1t]
+    ax.plot(_py_ais, _py_gfs, '-', color='#9E9E9E', lw=1.2, alpha=0.5, zorder=6)
+    ax.scatter(_py_ais, _py_gfs, color='#757575', marker='*', s=160, zorder=11,
+               edgecolors='#444', linewidths=0.8, label='Python (1T)')
+    for _ai, _gf, _n in py_pts_1t:
+        ax.annotate(f'n={_n}', (_ai, _gf), textcoords='offset points',
+                    xytext=(5, 5), fontsize=7, color='#555')
 ax.set_xscale('log'); ax.set_yscale('log')
-ax.set_xlim(0.1, 5000); ax.set_ylim(0.8, 200)
-ax.set_xlabel('Arithmetic Intensity [FLOP/byte]', fontsize=12)
-ax.set_ylabel('Performance [GFLOPS]', fontsize=12)
-ax.set_title('Whole-project roofline — v0:n=1..3, v1:n=1..3, v2:n=1..5, v3:n=1..9\n'
-             'Tiger Lake i7-1165G7 | 6 kernels | Arrows: v0→v3 at n=3 | PAPI-anchored AI', fontsize=10)
+_p4_ais = [p[0] for pts in points.values() for p in pts] + [p[0] for p in py_pts_1t]
+_p4_gfs = [p[1] for pts in points.values() for p in pts] + [p[1] for p in py_pts_1t]
+ax.set_xlim(0.01, 5000); ax.set_ylim(0.05, PEAK_GFLOPS * 1.6)
+ax.set_xlabel('Arithmetic Intensity [estimated FLOP/byte]', fontsize=12)
+ax.set_ylabel('Performance [estimated GFLOPS]', fontsize=12)
+ax.set_title('Whole-project roofline — v0:n=1..5, v1:n=1..5, v2:n=1..5, v3:n=1..9\n'
+             'Tiger Lake i7-1165G7 | 6 kernels | Arrows: v0→v3 | PAPI-anchored AI', fontsize=10)
 ax.grid(True, which='both', alpha=0.2, ls='--')
 ax.legend(loc='lower right', fontsize=9.5, framealpha=0.9)
 plt.tight_layout()
