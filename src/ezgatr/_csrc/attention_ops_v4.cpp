@@ -1096,7 +1096,12 @@ static inline void pv_block_simd(float* __restrict__ O, const float* __restrict_
         }
     }
 }
-#endif
+#endif  // __AVX2__
+
+// Note: AVX-512 QK/PV kernels were tried but benchmarked slower on Tiger Lake
+// i7-1165G7 (1× 512-bit FMA == 2× 256-bit FMA in FLOP/clock; ZMM transition
+// overhead + instruction pressure negate the wider register width). AVX2 wins.
+
 
 // max(m0, max(in[0..n))). Vectorized for v3, scalar for v2.
 template <bool SIMD>

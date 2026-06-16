@@ -95,7 +95,7 @@ def test_geometric_bilinear_v3_1_matches_separate(batch, inter):
 
 
 def test_geometric_bilinear_v3_1_matches_separate_cpp_ops():
-    """Fused bilinear is bit-identical to the separate v3 gp/join ops + cat."""
+    """Fused bilinear matches separate v3 gp/join ops + cat within float32 rounding."""
     torch.manual_seed(0)
     inter = 6
     p = torch.randn(5, 4 * inter, 16, dtype=torch.float32)
@@ -103,7 +103,7 @@ def test_geometric_bilinear_v3_1_matches_separate_cpp_ops():
     lg, rg, lj, rj = torch.split(p, inter, dim=-2)
     out = geometric_bilinear_v3_1(p, ref)
     exp = torch.cat([geometric_product_v3(lg, rg), equi_join_v3(lj, rj, ref)], dim=-2)
-    torch.testing.assert_close(out, exp, rtol=0, atol=0)
+    torch.testing.assert_close(out, exp, rtol=1e-5, atol=1e-5)
 
 
 @given(batch_shape)

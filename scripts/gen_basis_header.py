@@ -352,7 +352,7 @@ def fmt_loop_unroll(name_prefix: str, kernel: torch.Tensor, K: int,
     if is_join:
         L.append("        if constexpr (HasRef) {")
         for lane in range(K):
-            L.append(f"            const T s{lane} = R[16 * (n + {lane}) + 14];")
+            L.append(f"            const T s{lane} = R[n + {lane}];")
         for lane in range(K):
             L.append(f"            for (int i = 0; i < 16; ++i) o{lane}[i] *= s{lane};")
         L.append("        }")
@@ -366,7 +366,7 @@ def fmt_loop_unroll(name_prefix: str, kernel: torch.Tensor, K: int,
         L.append(f"        o[{i}] = {name_prefix}_blade_{i:02d}<T>(x, y);")
     if is_join:
         L.append("        if constexpr (HasRef) {")
-        L.append("            const T s = R[16 * n + 14];")
+        L.append("            const T s = R[n];")
         L.append("            for (int i = 0; i < 16; ++i) o[i] *= s;")
         L.append("        }")
     L.append("    }")

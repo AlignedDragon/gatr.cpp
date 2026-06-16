@@ -160,8 +160,11 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("scale") = py::none(),
             "Equivariant geometric attention version 2 alias.");
 
+      // ver_3 = v4 fused flash SDPA (fused feature assembly, V-prefetch,
+      // panel-batched O-rescale). Old ver_3_1 (AVX-512 QK/PV, separate
+      // assembly) is kept accessible as ver_3_1 for comparison.
       m.def("equi_geometric_attention_mv_only_ver_3",
-            &ezgatr::opt::equi_geometric_attention_mv_only_ver_3_1,
+            &ezgatr::opt::equi_geometric_attention_mv_only_ver_4,
             py::arg("query"),
             py::arg("key"),
             py::arg("value"),
@@ -171,9 +174,9 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("dropout_p") = 0.0,
             py::arg("is_causal") = false,
             py::arg("scale") = py::none(),
-            "Equivariant geometric attention v3: hoisted K-pack + vectorized row-max + NR-reblocked P@V (AVX-512 kernels when available).");
+            "Equivariant geometric attention v3: fused AVX2 flash SDPA with panel-batched O-rescale and V-prefetch.");
       m.def("equi_geometric_attention_ver_3",
-            &ezgatr::opt::equi_geometric_attention_mv_only_ver_3_1,
+            &ezgatr::opt::equi_geometric_attention_mv_only_ver_4,
             py::arg("query"),
             py::arg("key"),
             py::arg("value"),
@@ -208,7 +211,7 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("dropout_p") = 0.0,
             py::arg("is_causal") = false,
             py::arg("scale") = py::none(),
-            "Equivariant geometric attention version 3_2 alias.");
+            "Equivariant geometric attention v3_1: hoisted K-pack + AVX-512 QK/PV micro-kernels.");
 
       m.def("equi_geometric_attention_mv_only_ver_4",
             &ezgatr::opt::equi_geometric_attention_mv_only_ver_4,
@@ -221,7 +224,7 @@ PYBIND11_MODULE(_opt_ops, m) {
             py::arg("dropout_p") = 0.0,
             py::arg("is_causal") = false,
             py::arg("scale") = py::none(),
-            "Equivariant geometric attention v4: optimized AVX2 fused flash SDPA (kiko-kernel-opt branch).");
+            "Equivariant geometric attention v4: alias for ver_3 (same implementation).");
       m.def("equi_geometric_attention_ver_4",
             &ezgatr::opt::equi_geometric_attention_mv_only_ver_4,
             py::arg("query"),

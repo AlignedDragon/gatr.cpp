@@ -32,6 +32,7 @@ equi_join_v2_7 = _opt_ops.equi_join_v2_7
 equi_join_v3 = _opt_ops.equi_join_v3
 
 geometric_bilinear_v3 = _opt_ops.geometric_bilinear_v3
+geometric_bilinear_v3_1 = geometric_bilinear_v3
 
 outer_product = _opt_ops.outer_product
 #inner_product = _opt_ops.inner_product
@@ -138,4 +139,5 @@ __all__ = [
     "equi_join_v2_7",
     "equi_join_v3",
     "geometric_bilinear_v3",
+    "geometric_bilinear_v3_1",
 ]

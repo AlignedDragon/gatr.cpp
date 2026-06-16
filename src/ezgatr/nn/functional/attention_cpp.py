@@ -152,7 +152,7 @@ def equi_geometric_attention_cpp_ver_3(
     is_causal: bool = False,
     scale: float | None = None,
 ) -> GeometricQKVType:
-    r"""v3 SIMD: fused per-head Q/K assembly + AVX2 flash SDPA (cache-resident scratch so query/key never hit DRAM, packed-K register-blocked QK^T micro-kernel, register-blocked P@V, vectorized exp)."""
+    r"""v3: fused AVX2 flash SDPA with panel-batched O-rescale and V-prefetch (supersedes v3_1; v3_1 kept for reference with AVX-512 QK/PV kernels)."""
 
     if isinstance(query, tuple) or isinstance(key, tuple) or isinstance(value, tuple):
         raise NotImplementedError(
