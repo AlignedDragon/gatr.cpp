@@ -2379,7 +2379,7 @@ torch::Tensor geometric_product_v3(const torch::Tensor& x, const torch::Tensor& 
     return run_gp_variant(x, y, "geometric_product_v3",
         [](auto X, auto Y, auto O, int64_t N){
             using T = std::remove_pointer_t<decltype(O)>;
-            gp_kernel_v3<T>(X, Y, O, N);
+            gp_kernel_v4<T>(X, Y, O, N);
         });
 }
 
@@ -2387,7 +2387,7 @@ torch::Tensor geometric_product_v4(const torch::Tensor& x, const torch::Tensor& 
     return run_gp_variant(x, y, "geometric_product_v4",
         [](auto X, auto Y, auto O, int64_t N){
             using T = std::remove_pointer_t<decltype(O)>;
-            gp_kernel_v4<T>(X, Y, O, N);
+            gp_kernel_v3<T>(X, Y, O, N);
         });
 }
 
@@ -2430,8 +2430,8 @@ torch::Tensor equi_join_v3(const torch::Tensor& x,
     return run_join_variant(x, y, reference, "equi_join_v3",
         [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
             using T = std::remove_pointer_t<decltype(O)>;
-            if (has_ref) join_kernel_v3<T, true>(X, Y, R, O, N);
-            else         join_kernel_v3<T, false>(X, Y, nullptr, O, N);
+            if (has_ref) join_kernel_v4<T, true>(X, Y, R, O, N);
+            else         join_kernel_v4<T, false>(X, Y, nullptr, O, N);
         });
 }
 
@@ -2441,8 +2441,8 @@ torch::Tensor equi_join_v4(const torch::Tensor& x,
     return run_join_variant(x, y, reference, "equi_join_v4",
         [](auto X, auto Y, auto R, auto O, int64_t N, bool has_ref){
             using T = std::remove_pointer_t<decltype(O)>;
-            if (has_ref) join_kernel_v4<T, true>(X, Y, R, O, N);
-            else         join_kernel_v4<T, false>(X, Y, nullptr, O, N);
+            if (has_ref) join_kernel_v3<T, true>(X, Y, R, O, N);
+            else         join_kernel_v3<T, false>(X, Y, nullptr, O, N);
         });
 }
 
