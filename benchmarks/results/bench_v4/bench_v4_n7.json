@@ -1,0 +1,88 @@
+{
+  "n": 7,
+  "cfg": {
+    "batch": 14,
+    "tokens": 896,
+    "channels": 8,
+    "heads": 28
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 7,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.106175314025382,
+      "p50_ms": 1.0503699886612594,
+      "min_ms": 1.0077600018121302,
+      "max_ms": 2.3175679962150753
+    },
+    {
+      "target": "geometric_product_v3",
+      "n": 7,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.1184581410901753,
+      "p50_ms": 1.054596999892965,
+      "min_ms": 1.01609701232519,
+      "max_ms": 2.1075230033602566
+    },
+    {
+      "target": "geometric_product_v4",
+      "n": 7,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.1482918079957165,
+      "p50_ms": 1.1000490048900247,
+      "min_ms": 1.052480991347693,
+      "max_ms": 2.161194002837874
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 7,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.336285665562703,
+      "p50_ms": 1.2866069955634885,
+      "min_ms": 1.2312440085224807,
+      "max_ms": 2.42244299442973
+    },
+    {
+      "target": "equi_join_v3",
+      "n": 7,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.377790188147539,
+      "p50_ms": 1.319700008025393,
+      "min_ms": 1.2725090055027977,
+      "max_ms": 2.7474649978103116
+    },
+    {
+      "target": "equi_join_v4",
+      "n": 7,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.3947559206321047,
+      "p50_ms": 1.3417879963526502,
+      "min_ms": 1.289088002522476,
+      "max_ms": 2.677286000107415
+    }
+  ]
+}

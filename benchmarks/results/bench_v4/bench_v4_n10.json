@@ -1,0 +1,88 @@
+{
+  "n": 10,
+  "cfg": {
+    "batch": 20,
+    "tokens": 1280,
+    "channels": 8,
+    "heads": 40
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 10,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 2.528372103796646,
+      "p50_ms": 2.413537004031241,
+      "min_ms": 2.3140109988162294,
+      "max_ms": 3.8955920026637614
+    },
+    {
+      "target": "geometric_product_v3",
+      "n": 10,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 2.4314311853323107,
+      "p50_ms": 2.336097997613251,
+      "min_ms": 2.2622279939241707,
+      "max_ms": 4.469602994504385
+    },
+    {
+      "target": "geometric_product_v4",
+      "n": 10,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 2.605240739209329,
+      "p50_ms": 2.4802190018817782,
+      "min_ms": 2.411683992249891,
+      "max_ms": 3.9165299967862666
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 10,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.0689864259368638,
+      "p50_ms": 2.9389659903245047,
+      "min_ms": 2.7931510121561587,
+      "max_ms": 5.319157004123554
+    },
+    {
+      "target": "equi_join_v3",
+      "n": 10,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.045278363373496,
+      "p50_ms": 2.9369319963734597,
+      "min_ms": 2.810431004036218,
+      "max_ms": 5.339775001630187
+    },
+    {
+      "target": "equi_join_v4",
+      "n": 10,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.155543124585212,
+      "p50_ms": 2.9999319958733395,
+      "min_ms": 2.8793920064345,
+      "max_ms": 5.479359009768814
+    }
+  ]
+}

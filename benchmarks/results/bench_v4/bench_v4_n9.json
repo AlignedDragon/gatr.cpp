@@ -1,0 +1,88 @@
+{
+  "n": 9,
+  "cfg": {
+    "batch": 18,
+    "tokens": 1152,
+    "channels": 8,
+    "heads": 36
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.990016894428424,
+      "p50_ms": 1.9089795023319311,
+      "min_ms": 1.8256729963468388,
+      "max_ms": 3.8213969964999706
+    },
+    {
+      "target": "geometric_product_v3",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.9323936588098463,
+      "p50_ms": 1.860814998508431,
+      "min_ms": 1.8001360003836453,
+      "max_ms": 3.4112129942514002
+    },
+    {
+      "target": "geometric_product_v4",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 2.059609846702714,
+      "p50_ms": 1.980320994334761,
+      "min_ms": 1.9179189985152334,
+      "max_ms": 4.0836770058376715
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 2.4426429507244998,
+      "p50_ms": 2.3537605011370033,
+      "min_ms": 2.2171599994180724,
+      "max_ms": 3.735139995114878
+    },
+    {
+      "target": "equi_join_v3",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 2.4225959979669627,
+      "p50_ms": 2.340880993870087,
+      "min_ms": 2.233637002063915,
+      "max_ms": 3.985190996900201
+    },
+    {
+      "target": "equi_join_v4",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 2.520332354440152,
+      "p50_ms": 2.3917750077089295,
+      "min_ms": 2.2893349960213527,
+      "max_ms": 4.298954008845612
+    }
+  ]
+}

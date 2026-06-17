@@ -1,0 +1,88 @@
+{
+  "n": 6,
+  "cfg": {
+    "batch": 12,
+    "tokens": 768,
+    "channels": 8,
+    "heads": 24
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.7677064920133768,
+      "p50_ms": 0.7399590103887022,
+      "min_ms": 0.7063469965942204,
+      "max_ms": 1.3172309991205111
+    },
+    {
+      "target": "geometric_product_v3",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.7946308286242779,
+      "p50_ms": 0.7542090024799109,
+      "min_ms": 0.7204319990705699,
+      "max_ms": 1.6615339991403744
+    },
+    {
+      "target": "geometric_product_v4",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.8283683319525982,
+      "p50_ms": 0.7877609969000332,
+      "min_ms": 0.7455989980371669,
+      "max_ms": 1.7199880094267428
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.9699018929156688,
+      "p50_ms": 0.9467460040468723,
+      "min_ms": 0.8487339946441352,
+      "max_ms": 1.8038510024780408
+    },
+    {
+      "target": "equi_join_v3",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.0056837313492544,
+      "p50_ms": 0.9842984945862554,
+      "min_ms": 0.9009680070448667,
+      "max_ms": 2.008365001529455
+    },
+    {
+      "target": "equi_join_v4",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.028010607006126,
+      "p50_ms": 0.9805479930946603,
+      "min_ms": 0.8995409880299121,
+      "max_ms": 2.3032229946693406
+    }
+  ]
+}

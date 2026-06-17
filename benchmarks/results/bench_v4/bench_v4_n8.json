@@ -1,0 +1,88 @@
+{
+  "n": 8,
+  "cfg": {
+    "batch": 16,
+    "tokens": 1024,
+    "channels": 8,
+    "heads": 32
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 8,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.5331627201370799,
+      "p50_ms": 1.4737220044480637,
+      "min_ms": 1.3977049966342747,
+      "max_ms": 3.0762980022700503
+    },
+    {
+      "target": "geometric_product_v3",
+      "n": 8,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.4874882881862164,
+      "p50_ms": 1.4293539934442379,
+      "min_ms": 1.3718800037167966,
+      "max_ms": 2.929316004156135
+    },
+    {
+      "target": "geometric_product_v4",
+      "n": 8,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.5776117602727777,
+      "p50_ms": 1.5261964945239015,
+      "min_ms": 1.4404340035980567,
+      "max_ms": 2.766088000498712
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 8,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.8300332201835312,
+      "p50_ms": 1.7625009932089597,
+      "min_ms": 1.6806509956950322,
+      "max_ms": 3.126880998024717
+    },
+    {
+      "target": "equi_join_v3",
+      "n": 8,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.8922373040927103,
+      "p50_ms": 1.7836734987213276,
+      "min_ms": 1.7185030010296032,
+      "max_ms": 3.6853519995929673
+    },
+    {
+      "target": "equi_join_v4",
+      "n": 8,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.8956225229533195,
+      "p50_ms": 1.8262840021634474,
+      "min_ms": 1.7485040007159114,
+      "max_ms": 3.1141579966060817
+    }
+  ]
+}

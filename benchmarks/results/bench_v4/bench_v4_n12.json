@@ -1,0 +1,88 @@
+{
+  "n": 12,
+  "cfg": {
+    "batch": 24,
+    "tokens": 1536,
+    "channels": 8,
+    "heads": 48
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 12,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.6321666749204646,
+      "p50_ms": 3.5291940002935007,
+      "min_ms": 3.4010349918389693,
+      "max_ms": 4.937439996865578
+    },
+    {
+      "target": "geometric_product_v3",
+      "n": 12,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.524059396677432,
+      "p50_ms": 3.3851685002446175,
+      "min_ms": 3.286872000899166,
+      "max_ms": 6.196734000695869
+    },
+    {
+      "target": "geometric_product_v4",
+      "n": 12,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.734331948698002,
+      "p50_ms": 3.607398502936121,
+      "min_ms": 3.5208619956392795,
+      "max_ms": 5.873011003131978
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 12,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 4.475601354753163,
+      "p50_ms": 4.306973496568389,
+      "min_ms": 4.111034999368712,
+      "max_ms": 6.257058004848659
+    },
+    {
+      "target": "equi_join_v3",
+      "n": 12,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 4.408717409693264,
+      "p50_ms": 4.2722194993984886,
+      "min_ms": 4.103364000911824,
+      "max_ms": 6.384024993167259
+    },
+    {
+      "target": "equi_join_v4",
+      "n": 12,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 4.5855511405941485,
+      "p50_ms": 4.369567992398515,
+      "min_ms": 4.241413000272587,
+      "max_ms": 7.097691996023059
+    }
+  ]
+}

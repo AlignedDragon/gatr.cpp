@@ -1,0 +1,88 @@
+{
+  "n": 6,
+  "cfg": {
+    "batch": 12,
+    "tokens": 768,
+    "channels": 8,
+    "heads": 24
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.103461662249174,
+      "p50_ms": 2.9781810007989407,
+      "min_ms": 2.9221199947642162,
+      "max_ms": 4.412334004882723
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.849595832141136,
+      "p50_ms": 1.7709770036162809,
+      "min_ms": 1.7262869951082394,
+      "max_ms": 2.9241019947221503
+    },
+    {
+      "target": "equi_linear_ver_2",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.006833580590378,
+      "p50_ms": 2.931087998149451,
+      "min_ms": 2.8930150001542643,
+      "max_ms": 4.3050590029452
+    },
+    {
+      "target": "equi_rms_norm_ver_2",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.7332720590778289,
+      "p50_ms": 0.7078554990584962,
+      "min_ms": 0.6669919966952875,
+      "max_ms": 1.3960469950689003
+    },
+    {
+      "target": "scaler_gated_gelu_ver_2",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.2752480531826278,
+      "p50_ms": 1.2140765029471368,
+      "min_ms": 1.190844996017404,
+      "max_ms": 2.684576000319794
+    },
+    {
+      "target": "equi_geometric_attention_ver_2",
+      "n": 6,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 88584.58317180048,
+      "p50_ms": 86421.8418859964,
+      "min_ms": 85653.26974699565,
+      "max_ms": 96735.58332500397
+    }
+  ]
+}

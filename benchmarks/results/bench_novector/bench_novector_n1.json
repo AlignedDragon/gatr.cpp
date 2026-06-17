@@ -1,0 +1,88 @@
+{
+  "n": 1,
+  "cfg": {
+    "batch": 2,
+    "tokens": 128,
+    "channels": 8,
+    "heads": 4
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 1,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.08523743657278829,
+      "p50_ms": 0.08194499969249591,
+      "min_ms": 0.08167100895661861,
+      "max_ms": 0.17966399900615215
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 1,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.04937773122669525,
+      "p50_ms": 0.04831999831367284,
+      "min_ms": 0.04791600804310292,
+      "max_ms": 0.17918700177688152
+    },
+    {
+      "target": "equi_linear_ver_2",
+      "n": 1,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.08574198490241543,
+      "p50_ms": 0.08110900671454147,
+      "min_ms": 0.08075799269136041,
+      "max_ms": 0.2593649987829849
+    },
+    {
+      "target": "equi_rms_norm_ver_2",
+      "n": 1,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.02040211159037426,
+      "p50_ms": 0.01990499731618911,
+      "min_ms": 0.01977100328076631,
+      "max_ms": 0.05038299423176795
+    },
+    {
+      "target": "scaler_gated_gelu_ver_2",
+      "n": 1,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.03644400467455853,
+      "p50_ms": 0.03485899651423097,
+      "min_ms": 0.034594006137922406,
+      "max_ms": 0.06808999751228839
+    },
+    {
+      "target": "equi_geometric_attention_ver_2",
+      "n": 1,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 61.88327084467011,
+      "p50_ms": 61.88087799819186,
+      "min_ms": 60.12894501327537,
+      "max_ms": 64.30121501034591
+    }
+  ]
+}

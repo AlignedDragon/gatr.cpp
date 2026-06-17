@@ -1,0 +1,69 @@
+{
+  "description": "ezgatr benchmark results - Tiger Lake i7-1165G7, 1 thread, turbo boost OFF, -O3 -march=native",
+  "build_flags": "-O3 -std=c++17 -march=native (EZGATR_NO_VECTORIZE=1 for bench_novector)",
+  "datasets": {
+    "bench_repo_new_dims": {
+      "description": "Full timing sweep v0-v3_1, n=1..12, all kernels (measured)",
+      "files": [
+        "bench_repo_n1.json",
+        "bench_repo_n10.json",
+        "bench_repo_n11.json",
+        "bench_repo_n12.json",
+        "bench_repo_n2.json",
+        "bench_repo_n3.json",
+        "bench_repo_n4.json",
+        "bench_repo_n5.json",
+        "bench_repo_n6.json",
+        "bench_repo_n7.json",
+        "bench_repo_n8.json",
+        "bench_repo_n9.json"
+      ]
+    },
+    "bench_v4": {
+      "description": "v2 vs v3 vs v4 timing for gp + join, n=1..12 (measured)",
+      "files": [
+        "bench_v4_n1.json",
+        "bench_v4_n10.json",
+        "bench_v4_n11.json",
+        "bench_v4_n12.json",
+        "bench_v4_n2.json",
+        "bench_v4_n3.json",
+        "bench_v4_n4.json",
+        "bench_v4_n5.json",
+        "bench_v4_n6.json",
+        "bench_v4_n7.json",
+        "bench_v4_n8.json",
+        "bench_v4_n9.json"
+      ]
+    },
+    "bench_novector": {
+      "description": "v2 no-auto-vectorize timing, n=1..12 non-attn + n=1..6 attn (measured), n=7..9 attn extrapolated",
+      "files": [
+        "bench_novector_n1.json",
+        "bench_novector_n10.json",
+        "bench_novector_n11.json",
+        "bench_novector_n12.json",
+        "bench_novector_n2.json",
+        "bench_novector_n3.json",
+        "bench_novector_n4.json",
+        "bench_novector_n5.json",
+        "bench_novector_n6.json",
+        "bench_novector_n7.json",
+        "bench_novector_n8.json",
+        "bench_novector_n9.json"
+      ]
+    },
+    "papi_1thread_n3.json": {
+      "description": "PAPI FLOPs/bytes/AI at n=3 (measured)",
+      "files": [
+        "papi_1thread_n3.json"
+      ]
+    },
+    "papi_1thread_n9.json": {
+      "description": "PAPI FLOPs/bytes/AI at n=9 (measured)",
+      "files": [
+        "papi_1thread_n9.json"
+      ]
+    }
+  }
+}

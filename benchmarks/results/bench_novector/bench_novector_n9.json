@@ -1,0 +1,91 @@
+{
+  "n": 9,
+  "cfg": {
+    "batch": 18,
+    "tokens": 1152,
+    "channels": 8,
+    "heads": 36
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 6.839361239144637,
+      "p50_ms": 6.652384508925024,
+      "min_ms": 6.570487996214069,
+      "max_ms": 9.097834990825504
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 4.151696929853132,
+      "p50_ms": 3.992206009570509,
+      "min_ms": 3.9145880000432953,
+      "max_ms": 6.211497995536774
+    },
+    {
+      "target": "equi_linear_ver_2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 6.908774019443101,
+      "p50_ms": 6.755510999937542,
+      "min_ms": 6.680606005829759,
+      "max_ms": 8.562779999920167
+    },
+    {
+      "target": "equi_rms_norm_ver_2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 1.7266020178750154,
+      "p50_ms": 1.6661559930071235,
+      "min_ms": 1.6131779993884265,
+      "max_ms": 2.58943899825681
+    },
+    {
+      "target": "scaler_gated_gelu_ver_2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 2.853783430362699,
+      "p50_ms": 2.73835301049985,
+      "min_ms": 2.705042003071867,
+      "max_ms": 4.748938998091035
+    },
+    {
+      "target": "equi_geometric_attention_ver_2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 431020.5367342119,
+      "p50_ms": 431020.5367342119,
+      "min_ms": 416757.825995423,
+      "max_ms": 439640.94746889616,
+      "estimated": true,
+      "estimated_from_n": 6,
+      "estimated_k": 3.9022
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "n": 5,
+  "cfg": {
+    "batch": 10,
+    "tokens": 640,
+    "channels": 8,
+    "heads": 20
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 5,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.4802231274306112,
+      "p50_ms": 0.46236399793997407,
+      "min_ms": 0.4321849992265925,
+      "max_ms": 0.9903759928420186
+    },
+    {
+      "target": "geometric_product_v3",
+      "n": 5,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.5121549098548653,
+      "p50_ms": 0.4808670055354014,
+      "min_ms": 0.4588699957821518,
+      "max_ms": 1.3737849949393421
+    },
+    {
+      "target": "geometric_product_v4",
+      "n": 5,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.501788317821855,
+      "p50_ms": 0.4772905012941919,
+      "min_ms": 0.4540309892036021,
+      "max_ms": 1.1230020027142018
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 5,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.5828344512248894,
+      "p50_ms": 0.5443615009426139,
+      "min_ms": 0.5088250036351383,
+      "max_ms": 1.309470011619851
+    },
+    {
+      "target": "equi_join_v3",
+      "n": 5,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.628664263209681,
+      "p50_ms": 0.5835129995830357,
+      "min_ms": 0.556503000552766,
+      "max_ms": 1.5499859873671085
+    },
+    {
+      "target": "equi_join_v4",
+      "n": 5,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 0.6187794206506771,
+      "p50_ms": 0.5763599911006168,
+      "min_ms": 0.5444240086944774,
+      "max_ms": 1.4016930072102696
+    }
+  ]
+}

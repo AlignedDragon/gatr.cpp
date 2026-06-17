@@ -1,0 +1,88 @@
+{
+  "n": 11,
+  "cfg": {
+    "batch": 22,
+    "tokens": 1408,
+    "channels": 8,
+    "heads": 44
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.00753107863105,
+      "p50_ms": 2.9343600035645068,
+      "min_ms": 2.8285009902901947,
+      "max_ms": 4.25440700200852
+    },
+    {
+      "target": "geometric_product_v3",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 2.934859059378727,
+      "p50_ms": 2.8313259972492233,
+      "min_ms": 2.7520000003278255,
+      "max_ms": 4.7464809904340655
+    },
+    {
+      "target": "geometric_product_v4",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.1524503670995347,
+      "p50_ms": 3.0192339909262955,
+      "min_ms": 2.9325309878913686,
+      "max_ms": 4.943352003465407
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.7405766932209317,
+      "p50_ms": 3.590966502088122,
+      "min_ms": 3.4418879949953407,
+      "max_ms": 5.283737991703674
+    },
+    {
+      "target": "equi_join_v3",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.679825301853568,
+      "p50_ms": 3.5507185020833276,
+      "min_ms": 3.419319007662125,
+      "max_ms": 5.993593003950082
+    },
+    {
+      "target": "equi_join_v4",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 3.7941219363684304,
+      "p50_ms": 3.668617006042041,
+      "min_ms": 3.5265210026409477,
+      "max_ms": 5.590350992861204
+    }
+  ]
+}

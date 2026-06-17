@@ -1,0 +1,91 @@
+{
+  "n": 11,
+  "cfg": {
+    "batch": 22,
+    "tokens": 1408,
+    "channels": 8,
+    "heads": 44
+  },
+  "device": "cpu",
+  "threads": 1,
+  "warmup": 0.3,
+  "repeats": 5,
+  "inner_iters": 1,
+  "results": [
+    {
+      "target": "geometric_product_v2",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 10.178159266555062,
+      "p50_ms": 9.873303497442976,
+      "min_ms": 9.739141998579726,
+      "max_ms": 13.134949011146091
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 6.26998770602177,
+      "p50_ms": 6.086025001422968,
+      "min_ms": 5.915193003602326,
+      "max_ms": 8.283814007882029
+    },
+    {
+      "target": "equi_linear_ver_2",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 10.342479283060653,
+      "p50_ms": 10.090964002301916,
+      "min_ms": 9.947213999112137,
+      "max_ms": 11.833279990241863
+    },
+    {
+      "target": "equi_rms_norm_ver_2",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 2.7616973423550557,
+      "p50_ms": 2.635394994285889,
+      "min_ms": 2.5476770097156987,
+      "max_ms": 4.5006750005995855
+    },
+    {
+      "target": "scaler_gated_gelu_ver_2",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 4.263266531527027,
+      "p50_ms": 4.120117002457846,
+      "min_ms": 4.0504799981135875,
+      "max_ms": 6.305721995886415
+    },
+    {
+      "target": "equi_geometric_attention_ver_2",
+      "n": 11,
+      "device": "cpu",
+      "warmup": 0.3,
+      "repeats": 5,
+      "inner_iters": 1,
+      "mean_ms": 943138.3037424965,
+      "p50_ms": 943138.3037424965,
+      "min_ms": 911929.3295370603,
+      "max_ms": 962001.0698173465,
+      "estimated": true,
+      "estimated_from_n": 9,
+      "estimated_k": 3.9022
+    }
+  ]
+}
