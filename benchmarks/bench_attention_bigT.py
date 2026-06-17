@@ -63,7 +63,7 @@ def main() -> None:
                     default=[128, 256, 512, 1024, 2048, 4096])
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--heads", type=int, default=4)
-    ap.add_argument("--channels", type=int, default=16)
+    ap.add_argument("--channels", type=int, default=8)
     ap.add_argument("--causal", action="store_true")
     ap.add_argument("--warmup", type=int, default=2)
     ap.add_argument("--repeats", type=int, default=5)
