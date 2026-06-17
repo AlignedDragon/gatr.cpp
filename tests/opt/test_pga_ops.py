@@ -9,7 +9,7 @@ from ezgatr.nn.functional import equi_linear as el_py
 from ezgatr.nn.functional import scaler_gated_gelu as gelu_py
 from ezgatr.opt import equi_join as join_cpp
 from ezgatr.opt import (
-    equi_join_v0, equi_join_v1, equi_join_v2, equi_join_v3,
+    equi_join_v0, equi_join_v1, equi_join_v2, equi_join_v3, equi_join_v4,
     equi_join_v2_1, equi_join_v2_2, equi_join_v2_3, equi_join_v2_4,
     equi_join_v2_5, equi_join_v2_6, equi_join_v2_7,
 )
@@ -17,6 +17,7 @@ from ezgatr.opt import geometric_bilinear_v3_1
 from ezgatr.opt import geometric_product as gp_cpp
 from ezgatr.opt import (
     geometric_product_v0, geometric_product_v1, geometric_product_v2, geometric_product_v3,
+    geometric_product_v4,
     geometric_product_v2_1, geometric_product_v2_2, geometric_product_v2_3, geometric_product_v2_4,
     geometric_product_v2_5, geometric_product_v2_6, geometric_product_v2_7,
 )
@@ -335,3 +336,68 @@ def test_scaler_gated_gelu_v3_float32(n):
     torch.testing.assert_close(gelu_v3(x, "tanh"), gelu_py(x, "tanh"), rtol=2e-4, atol=2e-6)
     # "none" (erf) path delegates to the exact ver_2 implementation.
     torch.testing.assert_close(gelu_v3(x, "none"), gelu_py(x, "none"), rtol=1e-5, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# v4 - AVX-512 SoA with a native 512-bit 16x16 transpose (float32).
+#
+# IMPORTANT: v4's native path is compiled only when the build target defines
+# __AVX512F__ (e.g. -march=native on the Tiger Lake i7-1165G7). On a non-AVX-512
+# host (e.g. the Raptor Lake dev box) v4 transparently delegates to the AVX2 v3
+# kernel, so these tests PASS everywhere but only exercise the native-512 tile on
+# an AVX-512 build. We deliberately do NOT skip on non-AVX-512 hosts (the fallback
+# is worth checking too) but we warn loudly so it is obvious which path ran.
+#
+# The 16-multivector tile means correctness must be checked at sizes that span
+# the tile boundary (N = 16k) AND the scalar remainder (N % 16 != 0); a random
+# small batch_shape would not reliably do that.
+# ---------------------------------------------------------------------------
+def _cpu_has_avx512() -> bool:
+    try:
+        with open("/proc/cpuinfo") as f:
+            return "avx512f" in f.read()
+    except OSError:
+        return False
+
+
+_HAS_AVX512 = _cpu_has_avx512()
+
+# 1, 15 -> remainder only; 16, 32, 48 -> whole tiles; 17, 31, 33, 127, 257 -> tile + remainder.
+_V4_TILE_SIZES = [1, 15, 16, 17, 31, 32, 33, 48, 127, 128, 257, 2048]
+
+
+def test_v4_avx512_path_active():
+    """Informational: makes the build's ISA explicit in the test log."""
+    if not _HAS_AVX512:
+        import warnings
+        warnings.warn(
+            "No AVX-512 on this host: geometric_product_v4 / equi_join_v4 are "
+            "running the AVX2 v3 FALLBACK, not the native-512 path. Run on the "
+            "Tiger Lake i7-1165G7 to validate the AVX-512 kernel.",
+            stacklevel=1,
+        )
+
+
+@pytest.mark.parametrize("n", _V4_TILE_SIZES)
+def test_geometric_product_v4_float32(n):
+    torch.manual_seed(n)
+    x = torch.randn(n, 16, dtype=torch.float32)
+    y = torch.randn(n, 16, dtype=torch.float32)
+    # vs the Python reference (the ground truth) and vs v3 (same algorithm, AVX2).
+    torch.testing.assert_close(geometric_product_v4(x, y), gp_py(x, y), rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(geometric_product_v4(x, y), geometric_product_v3(x, y),
+                               rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("n", _V4_TILE_SIZES)
+def test_equi_join_v4_float32(n):
+    torch.manual_seed(n)
+    x = torch.randn(n, 16, dtype=torch.float32)
+    y = torch.randn(n, 16, dtype=torch.float32)
+    ref = torch.randn(n, 16, dtype=torch.float32)
+    # no-reference and with-reference (the reference scale is applied in the SoA
+    # domain on the native-512 path, so it must be checked explicitly).
+    torch.testing.assert_close(equi_join_v4(x, y),      join_py(x, y),      rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(equi_join_v4(x, y, ref), join_py(x, y, ref), rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(equi_join_v4(x, y, ref), equi_join_v3(x, y, ref),
+                               rtol=1e-5, atol=1e-6)

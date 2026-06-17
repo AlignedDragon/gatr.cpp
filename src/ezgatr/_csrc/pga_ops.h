@@ -15,6 +15,7 @@ torch::Tensor geometric_product_v2_5(const torch::Tensor& x, const torch::Tensor
 torch::Tensor geometric_product_v2_6(const torch::Tensor& x, const torch::Tensor& y);
 torch::Tensor geometric_product_v2_7(const torch::Tensor& x, const torch::Tensor& y);
 torch::Tensor geometric_product_v3(const torch::Tensor& x, const torch::Tensor& y);
+torch::Tensor geometric_product_v4(const torch::Tensor& x, const torch::Tensor& y);
 
 torch::Tensor equi_join(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 torch::Tensor equi_join_v0(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
@@ -28,6 +29,7 @@ torch::Tensor equi_join_v2_5(const torch::Tensor& x, const torch::Tensor& y, con
 torch::Tensor equi_join_v2_6(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 torch::Tensor equi_join_v2_7(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 torch::Tensor equi_join_v3(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
+torch::Tensor equi_join_v4(const torch::Tensor& x, const torch::Tensor& y, const c10::optional<torch::Tensor>& reference);
 
 torch::Tensor geometric_bilinear_v3_1(const torch::Tensor& p, const c10::optional<torch::Tensor>& reference);
 
