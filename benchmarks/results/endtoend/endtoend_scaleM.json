@@ -1,0 +1,192 @@
+{
+  "dim_formula": "B=2n,H=4n,T=128n,C=8",
+  "layers": 2,
+  "num_threads": 1,
+  "cache_bytes": {
+    "L1D": 49152,
+    "L2": 1310720,
+    "L3": 12582912
+  },
+  "rows": [
+    {
+      "n": 1,
+      "B": 2,
+      "T": 128,
+      "heads": 4,
+      "channels": 8,
+      "layers": 2,
+      "footprint_bytes": 131072,
+      "cache_level": "L2",
+      "times_us": {
+        "ref": 18377.81300127972,
+        "v0": 132313.25898959767,
+        "v1": 19675.62000209,
+        "v2": 7134.093000786379,
+        "v3": 3520.1519931433722
+      },
+      "speedup_v3_over_ref": 5.220744171580209,
+      "speedup_v3_over_v0": 37.58737101333132,
+      "max_abs_diff_vs_ref": 8.940696716308594e-08
+    },
+    {
+      "n": 2,
+      "B": 4,
+      "T": 256,
+      "heads": 8,
+      "channels": 8,
+      "layers": 2,
+      "footprint_bytes": 524288,
+      "cache_level": "L2",
+      "times_us": {
+        "ref": 119246.66599952616,
+        "v0": 930233.6039982038,
+        "v1": 159826.26999903005,
+        "v2": 69683.23400360532,
+        "v3": 47037.03800623771
+      },
+      "speedup_v3_over_ref": 2.5351652879101896,
+      "speedup_v3_over_v0": 19.77661952002256,
+      "max_abs_diff_vs_ref": 7.450580596923828e-08
+    },
+    {
+      "n": 3,
+      "B": 6,
+      "T": 384,
+      "heads": 12,
+      "channels": 8,
+      "layers": 2,
+      "footprint_bytes": 1179648,
+      "cache_level": "L2",
+      "times_us": {
+        "ref": 411175.9960069321,
+        "v0": 3065102.434004075,
+        "v1": 566312.5689898152,
+        "v2": 289689.7950122366,
+        "v3": 206291.69700259808
+      },
+      "speedup_v3_over_ref": 1.9931776313893703,
+      "speedup_v3_over_v0": 14.858098888805362,
+      "max_abs_diff_vs_ref": 5.960464477539063e-08
+    },
+    {
+      "n": 4,
+      "B": 8,
+      "T": 512,
+      "heads": 16,
+      "channels": 8,
+      "layers": 2,
+      "footprint_bytes": 2097152,
+      "cache_level": "L3",
+      "times_us": {
+        "ref": null,
+        "v0": null,
+        "v1": null,
+        "v2": 816513.9790071407,
+        "v3": 720404.3039964745
+      },
+      "speedup_v3_over_ref": NaN,
+      "speedup_v3_over_v0": NaN,
+      "max_abs_diff_vs_ref": 1.1920928955078125e-07
+    },
+    {
+      "n": 5,
+      "B": 10,
+      "T": 640,
+      "heads": 20,
+      "channels": 8,
+      "layers": 2,
+      "footprint_bytes": 3276800,
+      "cache_level": "L3",
+      "times_us": {
+        "ref": null,
+        "v0": null,
+        "v1": null,
+        "v2": 2215118.9270080067,
+        "v3": 1586211.2970062299
+      },
+      "speedup_v3_over_ref": NaN,
+      "speedup_v3_over_v0": NaN,
+      "max_abs_diff_vs_ref": 1.257285475730896e-07
+    },
+    {
+      "n": 6,
+      "B": 12,
+      "T": 768,
+      "heads": 24,
+      "channels": 8,
+      "layers": 2,
+      "footprint_bytes": 4718592,
+      "cache_level": "L3",
+      "times_us": {
+        "ref": null,
+        "v0": null,
+        "v1": null,
+        "v2": null,
+        "v3": 3485558.8280042866
+      },
+      "speedup_v3_over_ref": NaN,
+      "speedup_v3_over_v0": NaN,
+      "max_abs_diff_vs_ref": 1.1920928955078125e-07
+    },
+    {
+      "n": 7,
+      "B": 14,
+      "T": 896,
+      "heads": 28,
+      "channels": 8,
+      "layers": 2,
+      "footprint_bytes": 6422528,
+      "cache_level": "L3",
+      "times_us": {
+        "ref": null,
+        "v0": null,
+        "v1": null,
+        "v2": null,
+        "v3": 6531810.481988941
+      },
+      "speedup_v3_over_ref": NaN,
+      "speedup_v3_over_v0": NaN,
+      "max_abs_diff_vs_ref": 1.4901161193847656e-07
+    },
+    {
+      "n": 8,
+      "B": 16,
+      "T": 1024,
+      "heads": 32,
+      "channels": 8,
+      "layers": 2,
+      "footprint_bytes": 8388608,
+      "cache_level": "L3",
+      "times_us": {
+        "ref": null,
+        "v0": null,
+        "v1": null,
+        "v2": null,
+        "v3": 11797117.812995566
+      },
+      "speedup_v3_over_ref": NaN,
+      "speedup_v3_over_v0": NaN,
+      "max_abs_diff_vs_ref": 1.1664815247058868e-07
+    },
+    {
+      "n": 9,
+      "B": 18,
+      "T": 1152,
+      "heads": 36,
+      "channels": 8,
+      "layers": 2,
+      "footprint_bytes": 10616832,
+      "cache_level": "L3",
+      "times_us": {
+        "ref": null,
+        "v0": null,
+        "v1": null,
+        "v2": null,
+        "v3": 17670649.035004318
+      },
+      "speedup_v3_over_ref": NaN,
+      "speedup_v3_over_v0": NaN,
+      "max_abs_diff_vs_ref": 7.450580596923828e-08
+    }
+  ]
+}

@@ -40,8 +40,8 @@ MODEL_VERSIONS = [
     ("v3",  MVOnlyGATrModelASL_ver_3),
 ]
 
-# v0/v1 OOM / too slow past n=3 (T=384); v2 past n=5 (T=640)
-SLOW_VERSION_MAX_N = {"v0": 3, "v1": 3, "v2": 5}
+# v0/v1 OOM / too slow past n=3 (T=384); v2 past n=5 (T=640); ref uses Python attention so same limit
+SLOW_VERSION_MAX_N = {"ref": 3, "v0": 3, "v1": 3, "v2": 5}
 
 DEFAULT_N = list(range(1, 10))  # n=1..9 (attention v3 measured to n=9)
 
