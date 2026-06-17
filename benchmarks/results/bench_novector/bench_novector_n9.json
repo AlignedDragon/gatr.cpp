@@ -22,7 +22,8 @@
       "mean_ms": 6.839361239144637,
       "p50_ms": 6.652384508925024,
       "min_ms": 6.570487996214069,
-      "max_ms": 9.097834990825504
+      "max_ms": 9.097834990825504,
+      "vectorized": false
     },
     {
       "target": "equi_join_v2",
@@ -34,7 +35,8 @@
       "mean_ms": 4.151696929853132,
       "p50_ms": 3.992206009570509,
       "min_ms": 3.9145880000432953,
-      "max_ms": 6.211497995536774
+      "max_ms": 6.211497995536774,
+      "vectorized": false
     },
     {
       "target": "equi_linear_ver_2",
@@ -46,7 +48,8 @@
       "mean_ms": 6.908774019443101,
       "p50_ms": 6.755510999937542,
       "min_ms": 6.680606005829759,
-      "max_ms": 8.562779999920167
+      "max_ms": 8.562779999920167,
+      "vectorized": false
     },
     {
       "target": "equi_rms_norm_ver_2",
@@ -58,7 +61,8 @@
       "mean_ms": 1.7266020178750154,
       "p50_ms": 1.6661559930071235,
       "min_ms": 1.6131779993884265,
-      "max_ms": 2.58943899825681
+      "max_ms": 2.58943899825681,
+      "vectorized": false
     },
     {
       "target": "scaler_gated_gelu_ver_2",
@@ -70,7 +74,8 @@
       "mean_ms": 2.853783430362699,
       "p50_ms": 2.73835301049985,
       "min_ms": 2.705042003071867,
-      "max_ms": 4.748938998091035
+      "max_ms": 4.748938998091035,
+      "vectorized": false
     },
     {
       "target": "equi_geometric_attention_ver_2",
@@ -85,7 +90,89 @@
       "max_ms": 439640.94746889616,
       "estimated": true,
       "estimated_from_n": 6,
-      "estimated_k": 3.9022
+      "estimated_k": 3.9022,
+      "vectorized": false
+    },
+    {
+      "target": "geometric_product_v2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 1,
+      "repeats": 3,
+      "inner_iters": 1,
+      "mean_ms": 2.0166103349765763,
+      "p50_ms": 1.9969760032836348,
+      "min_ms": 1.9764260068768635,
+      "max_ms": 2.0764289947692305,
+      "vectorized": true
+    },
+    {
+      "target": "equi_join_v2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 1,
+      "repeats": 3,
+      "inner_iters": 1,
+      "mean_ms": 2.2241556677424037,
+      "p50_ms": 2.242073998786509,
+      "min_ms": 2.173829998355359,
+      "max_ms": 2.2565630060853437,
+      "vectorized": true
+    },
+    {
+      "target": "equi_linear_ver_2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 1,
+      "repeats": 3,
+      "inner_iters": 1,
+      "mean_ms": 4.344048337467636,
+      "p50_ms": 4.341625011875294,
+      "min_ms": 4.325034009525552,
+      "max_ms": 4.3654859910020605,
+      "vectorized": true
+    },
+    {
+      "target": "equi_rms_norm_ver_2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 1,
+      "repeats": 3,
+      "inner_iters": 1,
+      "mean_ms": 1.1165803346860532,
+      "p50_ms": 1.0953570017591119,
+      "min_ms": 1.0882420028792694,
+      "max_ms": 1.1661419994197786,
+      "vectorized": true
+    },
+    {
+      "target": "scaler_gated_gelu_ver_2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 1,
+      "repeats": 3,
+      "inner_iters": 1,
+      "mean_ms": 2.970398335795229,
+      "p50_ms": 2.9748329980066046,
+      "min_ms": 2.937169003416784,
+      "max_ms": 2.9991930059622973,
+      "vectorized": true
+    },
+    {
+      "target": "equi_geometric_attention_ver_2",
+      "n": 9,
+      "device": "cpu",
+      "warmup": 1,
+      "repeats": 3,
+      "inner_iters": 1,
+      "mean_ms": 99733.8573497073,
+      "p50_ms": 99733.8573497073,
+      "min_ms": 99709.54610083133,
+      "max_ms": 101728.53449670144,
+      "estimated": true,
+      "estimated_from_n": 5,
+      "estimated_k": 4.0171,
+      "vectorized": true
     }
   ]
 }
