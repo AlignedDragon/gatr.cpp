@@ -366,8 +366,8 @@ PYBIND11_MODULE(_opt_ops, m) {
 
       m.def("geometric_product_v4", &ezgatr::opt::geometric_product_v4,
             py::arg("x"), py::arg("y"),
-            "Geometric product: AVX-512 SoA with a native 512-bit 16x16 transpose "
-            "(fp32; falls back to the AVX2 v3 kernel on non-AVX-512 targets).");
+            "Geometric product: register-resident AVX2 SoA (8-MV tiles transposed "
+            "and computed in registers, no stack buffers); fp32. Beats v2/v3.");
 
       m.def("equi_join_v2_5", &ezgatr::opt::equi_join_v2_5,
             py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
@@ -387,8 +387,8 @@ PYBIND11_MODULE(_opt_ops, m) {
 
       m.def("equi_join_v4", &ezgatr::opt::equi_join_v4,
             py::arg("x"), py::arg("y"), py::arg("reference") = py::none(),
-            "Equivariant join: AVX-512 SoA with a native 512-bit 16x16 transpose "
-            "(fp32; falls back to the AVX2 v3 kernel on non-AVX-512 targets).");
+            "Equivariant join: register-resident AVX2 SoA (8-MV tiles transposed "
+            "and computed in registers, no stack buffers); fp32. Beats v2/v3.");
 
       m.def("geometric_bilinear_v3", &ezgatr::opt::geometric_bilinear_v3_1,
             py::arg("p"), py::arg("reference") = py::none(),

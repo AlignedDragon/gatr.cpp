@@ -46,6 +46,8 @@ namespace {
 #include "kernels/join_soa_avx.inc"
 #include "kernels/gp_soa_avx512.inc"
 #include "kernels/join_soa_avx512.inc"
+#include "kernels/gp_soa_reg.inc"
+#include "kernels/join_soa_reg.inc"
 
 using BasisTable = int8_t[16][16][16];
 
@@ -758,81 +760,82 @@ static inline void soa_out_octet_f32(const float ob[16][16], int64_t n, int col,
 #endif  // __AVX512F__ && __AVX2__ && __FMA__
 
 // ---------------------------------------------------------------------------
-// v4 - AVX-512 SoA with a NATIVE 512-bit 16x16 transpose.
-//
-// The disabled AVX-512 path in v3 widened only the FMA block to ZMM while the
-// AoS<->SoA transpose still ran as two 256-bit transpose8x8_ps calls — so it
-// paid the AVX-512 frequency-license penalty (from the ZMM FMAs) but got none
-// of the width on the transpose, which is the dominant cost for this
-// bandwidth-bound op. v4 fixes that: the transpose itself is a native 512-bit
-// unpack/shuffle network (one multivector = one __m512 of 16 fp32), so loads,
-// stores, shuffles AND FMAs all run at 512-bit. On a non-AVX-512 target v4
-// falls back to the proven AVX2 v3 kernel so it stays correct & benchmarkable.
-//
-// The transpose network below is a standard 4-stage 16x16 fp32 transpose
-// (unpcklps/hi -> unpcklpd/hi -> 2x shuff_f32x4). It was verified bit-exact
-// against the reference permutation by simulating each intrinsic's index map,
-// and is its own inverse (an involution), so the same routine serves both the
-// AoS->SoA load transpose and the SoA->AoS store transpose.
+// v4 - register-resident AoS<->SoA SIMD (AVX2). Like v3 (8-MV ymm tiles, 8x8
+// unpck transpose, pure-FMA block) but the SoA tile stays in __m256 locals
+// instead of xb/yb/ob stack buffers, so it avoids v3's store-then-reload of all
+// 48 tile vectors.
 // ---------------------------------------------------------------------------
-#if defined(__AVX512F__)
-static inline void transpose16x16_ps(__m512 r[16]) {
-    __m512 t[16];
-    // stage 1: 32-bit interleave within each 128-bit lane.
-    for (int i = 0; i < 8; ++i) {
-        t[2 * i]     = _mm512_unpacklo_ps(r[2 * i], r[2 * i + 1]);
-        t[2 * i + 1] = _mm512_unpackhi_ps(r[2 * i], r[2 * i + 1]);
-    }
-    // stage 2: 64-bit interleave (pairs (0,2),(1,3),(4,6),(5,7),...).
-    static const int pa[8] = {0, 1, 4, 5, 8, 9, 12, 13};
-    static const int pb[8] = {2, 3, 6, 7, 10, 11, 14, 15};
-    for (int i = 0; i < 8; ++i) {
-        const __m512d a = _mm512_castps_pd(t[pa[i]]);
-        const __m512d b = _mm512_castps_pd(t[pb[i]]);
-        r[2 * i]     = _mm512_castpd_ps(_mm512_unpacklo_pd(a, b));
-        r[2 * i + 1] = _mm512_castpd_ps(_mm512_unpackhi_pd(a, b));
-    }
-    // stage 3: assemble 128-bit lanes (stride 4).
-    for (int i = 0; i < 4; ++i) {
-        t[i]      = _mm512_shuffle_f32x4(r[i],     r[i + 4],  0x88);
-        t[i + 4]  = _mm512_shuffle_f32x4(r[i],     r[i + 4],  0xdd);
-        t[i + 8]  = _mm512_shuffle_f32x4(r[i + 8], r[i + 12], 0x88);
-        t[i + 12] = _mm512_shuffle_f32x4(r[i + 8], r[i + 12], 0xdd);
-    }
-    // stage 4: assemble 128-bit lanes across the two halves (stride 8).
-    for (int i = 0; i < 8; ++i) {
-        r[i]     = _mm512_shuffle_f32x4(t[i], t[i + 8], 0x88);
-        r[i + 8] = _mm512_shuffle_f32x4(t[i], t[i + 8], 0xdd);
-    }
+#if defined(__AVX2__) && defined(__FMA__)
+// AoS -> SoA in registers: 8 consecutive multivectors -> sb[j] = component j
+// across the 8 lanes (j = 0..15). Two 8x8 transposes (low/high halves), no buffer.
+static inline __attribute__((always_inline)) void soa_in_reg_f32(
+        const float* __restrict__ S, int64_t n, __m256 sb[16]) {
+    __m256 r0 = _mm256_loadu_ps(S + 16 * (n + 0));
+    __m256 r1 = _mm256_loadu_ps(S + 16 * (n + 1));
+    __m256 r2 = _mm256_loadu_ps(S + 16 * (n + 2));
+    __m256 r3 = _mm256_loadu_ps(S + 16 * (n + 3));
+    __m256 r4 = _mm256_loadu_ps(S + 16 * (n + 4));
+    __m256 r5 = _mm256_loadu_ps(S + 16 * (n + 5));
+    __m256 r6 = _mm256_loadu_ps(S + 16 * (n + 6));
+    __m256 r7 = _mm256_loadu_ps(S + 16 * (n + 7));
+    transpose8x8_ps(r0, r1, r2, r3, r4, r5, r6, r7);
+    sb[0] = r0; sb[1] = r1; sb[2] = r2; sb[3] = r3;
+    sb[4] = r4; sb[5] = r5; sb[6] = r6; sb[7] = r7;
+    r0 = _mm256_loadu_ps(S + 16 * (n + 0) + 8);
+    r1 = _mm256_loadu_ps(S + 16 * (n + 1) + 8);
+    r2 = _mm256_loadu_ps(S + 16 * (n + 2) + 8);
+    r3 = _mm256_loadu_ps(S + 16 * (n + 3) + 8);
+    r4 = _mm256_loadu_ps(S + 16 * (n + 4) + 8);
+    r5 = _mm256_loadu_ps(S + 16 * (n + 5) + 8);
+    r6 = _mm256_loadu_ps(S + 16 * (n + 6) + 8);
+    r7 = _mm256_loadu_ps(S + 16 * (n + 7) + 8);
+    transpose8x8_ps(r0, r1, r2, r3, r4, r5, r6, r7);
+    sb[8] = r0;  sb[9] = r1;  sb[10] = r2; sb[11] = r3;
+    sb[12] = r4; sb[13] = r5; sb[14] = r6; sb[15] = r7;
 }
 
-// AoS -> SoA: load 16 consecutive multivectors (rows of 16 contiguous floats)
-// and transpose so sb[j] = component j across the 16 lanes.
-static inline void soa_transpose_in_f32_avx512(const float* __restrict__ S,
-                                               int64_t n, float sb[16][16]) {
-    __m512 r[16];
-    for (int l = 0; l < 16; ++l) r[l] = _mm512_loadu_ps(S + 16 * (n + l));
-    transpose16x16_ps(r);
-    for (int j = 0; j < 16; ++j) _mm512_store_ps(sb[j], r[j]);
-}
-
-// SoA -> AoS: transpose ob[16][16] (component-major) back to 16 output rows.
-// When Scale, each component vector is first multiplied by sv (the 16 reference
-// scalars, lane l = multivector n+l) in the SoA domain — cheaper than a
-// per-lane broadcast after the transpose, and numerically identical.
+// SoA -> AoS in registers: ob[j] = component j across 8 multivectors -> 8 output
+// rows. When Scale, each component vector is multiplied by sv (lane l = the
+// reference scalar for multivector n+l) in the SoA domain before transposing back.
 template <bool Scale>
-static inline void soa_transpose_out_f32_avx512(const float ob[16][16], int64_t n,
-                                                float* __restrict__ O, __m512 sv) {
-    __m512 r[16];
-    for (int j = 0; j < 16; ++j) {
-        __m512 v = _mm512_load_ps(ob[j]);
-        if constexpr (Scale) v = _mm512_mul_ps(v, sv);
-        r[j] = v;
+static inline __attribute__((always_inline)) void soa_out_reg_f32(
+        const __m256 ob[16], int64_t n, float* __restrict__ O, __m256 sv) {
+    __m256 r0 = ob[0], r1 = ob[1], r2 = ob[2], r3 = ob[3];
+    __m256 r4 = ob[4], r5 = ob[5], r6 = ob[6], r7 = ob[7];
+    if constexpr (Scale) {
+        r0 = _mm256_mul_ps(r0, sv); r1 = _mm256_mul_ps(r1, sv);
+        r2 = _mm256_mul_ps(r2, sv); r3 = _mm256_mul_ps(r3, sv);
+        r4 = _mm256_mul_ps(r4, sv); r5 = _mm256_mul_ps(r5, sv);
+        r6 = _mm256_mul_ps(r6, sv); r7 = _mm256_mul_ps(r7, sv);
     }
-    transpose16x16_ps(r);
-    for (int l = 0; l < 16; ++l) _mm512_storeu_ps(O + 16 * (n + l), r[l]);
+    transpose8x8_ps(r0, r1, r2, r3, r4, r5, r6, r7);
+    _mm256_storeu_ps(O + 16 * (n + 0), r0);
+    _mm256_storeu_ps(O + 16 * (n + 1), r1);
+    _mm256_storeu_ps(O + 16 * (n + 2), r2);
+    _mm256_storeu_ps(O + 16 * (n + 3), r3);
+    _mm256_storeu_ps(O + 16 * (n + 4), r4);
+    _mm256_storeu_ps(O + 16 * (n + 5), r5);
+    _mm256_storeu_ps(O + 16 * (n + 6), r6);
+    _mm256_storeu_ps(O + 16 * (n + 7), r7);
+    r0 = ob[8];  r1 = ob[9];  r2 = ob[10]; r3 = ob[11];
+    r4 = ob[12]; r5 = ob[13]; r6 = ob[14]; r7 = ob[15];
+    if constexpr (Scale) {
+        r0 = _mm256_mul_ps(r0, sv); r1 = _mm256_mul_ps(r1, sv);
+        r2 = _mm256_mul_ps(r2, sv); r3 = _mm256_mul_ps(r3, sv);
+        r4 = _mm256_mul_ps(r4, sv); r5 = _mm256_mul_ps(r5, sv);
+        r6 = _mm256_mul_ps(r6, sv); r7 = _mm256_mul_ps(r7, sv);
+    }
+    transpose8x8_ps(r0, r1, r2, r3, r4, r5, r6, r7);
+    _mm256_storeu_ps(O + 16 * (n + 0) + 8, r0);
+    _mm256_storeu_ps(O + 16 * (n + 1) + 8, r1);
+    _mm256_storeu_ps(O + 16 * (n + 2) + 8, r2);
+    _mm256_storeu_ps(O + 16 * (n + 3) + 8, r3);
+    _mm256_storeu_ps(O + 16 * (n + 4) + 8, r4);
+    _mm256_storeu_ps(O + 16 * (n + 5) + 8, r5);
+    _mm256_storeu_ps(O + 16 * (n + 6) + 8, r6);
+    _mm256_storeu_ps(O + 16 * (n + 7) + 8, r7);
 }
-#endif  // __AVX512F__
+#endif  // __AVX2__ && __FMA__
 
 template <typename T>
 static void gp_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
@@ -903,57 +906,50 @@ static void join_kernel_v3(const T* __restrict__ X, const T* __restrict__ Y,
                        "AVX2/FMA build; got an unsupported dtype or target.");
 }
 
-// ---------------------------------------------------------------------------
-// v4 - native-512 SoA geometric product / equi-join (fp32).
-// On AVX-512 targets: 16-multivector tiles, native 512-bit transpose + ZMM FMA
-// block, scalar remainder. On non-AVX-512 targets: delegates to the proven
-// AVX2 v3 kernel (so the variant is correct and benchmarkable everywhere).
-// ---------------------------------------------------------------------------
+// v4 kernels: 8-MV tiles via soa_in_reg/reg-block/soa_out_reg, scalar remainder
+// for N % 8. fp32 + AVX2/FMA only (fails loudly otherwise, like v3).
 template <typename T>
 static void gp_kernel_v4(const T* __restrict__ X, const T* __restrict__ Y,
                          T* __restrict__ O, int64_t N) {
-#if defined(__AVX512F__)
+#if defined(__AVX2__) && defined(__FMA__)
     if constexpr (std::is_same_v<T, float>) {
         int64_t n = 0;
-        for (; n + 16 <= N; n += 16) {
-            alignas(64) float xb[16][16], yb[16][16], ob[16][16];
-            soa_transpose_in_f32_avx512(X, n, xb);
-            soa_transpose_in_f32_avx512(Y, n, yb);
-            gp_soa_block_f32_avx512(xb, yb, ob);
-            soa_transpose_out_f32_avx512<false>(ob, n, O, _mm512_setzero_ps());
+        for (; n + 8 <= N; n += 8) {
+            __m256 xb[16], yb[16], ob[16];
+            soa_in_reg_f32(X, n, xb);
+            soa_in_reg_f32(Y, n, yb);
+            gp_soa_block_f32_reg(xb, yb, ob);
+            soa_out_reg_f32<false>(ob, n, O, _mm256_setzero_ps());
         }
         for (; n < N; ++n) {
             gp_block_ilp2<float>(X + 16 * n, Y + 16 * n, O + 16 * n);
         }
         return;
     }
-    (void)X; (void)Y; (void)O; (void)N;
-    TORCH_CHECK(false, "geometric_product_v4: requires float32 inputs.");
-#else
-    // No AVX-512 on this target: reuse the proven AVX2 v3 kernel verbatim so v4
-    // stays correct and benchmarkable (it simply equals v3 here).
-    gp_kernel_v3<T>(X, Y, O, N);
 #endif
+    (void)X; (void)Y; (void)O; (void)N;
+    TORCH_CHECK(false, "geometric_product_v4: requires float32 inputs and an "
+                       "AVX2/FMA build.");
 }
 
 template <typename T, bool HasRef>
 static void join_kernel_v4(const T* __restrict__ X, const T* __restrict__ Y,
                            const T* __restrict__ R, T* __restrict__ O, int64_t N) {
-#if defined(__AVX512F__)
+#if defined(__AVX2__) && defined(__FMA__)
     if constexpr (!HasRef) (void)R;
     if constexpr (std::is_same_v<T, float>) {
         int64_t n = 0;
-        for (; n + 16 <= N; n += 16) {
-            alignas(64) float xb[16][16], yb[16][16], ob[16][16];
-            soa_transpose_in_f32_avx512(X, n, xb);
-            soa_transpose_in_f32_avx512(Y, n, yb);
-            join_soa_block_f32_avx512(xb, yb, ob);
+        for (; n + 8 <= N; n += 8) {
+            __m256 xb[16], yb[16], ob[16];
+            soa_in_reg_f32(X, n, xb);
+            soa_in_reg_f32(Y, n, yb);
+            join_soa_block_f32_reg(xb, yb, ob);
             if constexpr (HasRef) {
-                // 16 reference scalars for this tile (lane l -> multivector n+l).
-                const __m512 sv = _mm512_loadu_ps(R + n);
-                soa_transpose_out_f32_avx512<true>(ob, n, O, sv);
+                // 8 reference scalars for this tile (lane l -> multivector n+l).
+                const __m256 sv = _mm256_loadu_ps(R + n);
+                soa_out_reg_f32<true>(ob, n, O, sv);
             } else {
-                soa_transpose_out_f32_avx512<false>(ob, n, O, _mm512_setzero_ps());
+                soa_out_reg_f32<false>(ob, n, O, _mm256_setzero_ps());
             }
         }
         for (; n < N; ++n) {
@@ -966,11 +962,10 @@ static void join_kernel_v4(const T* __restrict__ X, const T* __restrict__ Y,
         }
         return;
     }
-    (void)X; (void)Y; (void)R; (void)O; (void)N;
-    TORCH_CHECK(false, "equi_join_v4: requires float32 inputs.");
-#else
-    join_kernel_v3<T, HasRef>(X, Y, R, O, N);
 #endif
+    (void)X; (void)Y; (void)R; (void)O; (void)N;
+    TORCH_CHECK(false, "equi_join_v4: requires float32 inputs and an "
+                       "AVX2/FMA build.");
 }
 
 using CacheKey = std::tuple<c10::DeviceType, c10::DeviceIndex, c10::ScalarType>;

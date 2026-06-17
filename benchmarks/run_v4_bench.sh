@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
-# Build the extension for the *native* ISA and benchmark the v4 AVX-512 hand-SIMD
-# geometric_product / equi_join against v2 (autovectorized) and v3 (AVX2 hand-SIMD).
+# Build the extension for the native ISA and benchmark the v4 register-resident
+# SoA geometric_product / equi_join against v2 (autovectorized) and v3 (SoA via
+# stack buffers). v4 is AVX2 + FMA (the autovectorizer never uses AVX-512 for
+# these ops), so the win shows up on any AVX2 host, including the Tiger Lake
+# i7-1165G7 and the dev box.
 #
-# Run this ON the Tiger Lake i7-1165G7 (where -march=native enables AVX-512):
 #     bash benchmarks/run_v4_bench.sh
-#
-# On a non-AVX-512 host it still runs, but v4 falls back to the AVX2 v3 kernel
-# (v4 == v3), so the AVX-512 win is not exercised.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Use the project's python (the one that has torch). Adjust if your env differs.
 PY="${EZGATR_PYTHON:-python}"
 
-echo "=== host CPU / AVX-512 capability ==="
+echo "=== host CPU ==="
 grep -m1 "model name" /proc/cpuinfo || true
-if grep -q avx512f /proc/cpuinfo; then echo "AVX-512: YES (v4 will use the native-512 path)";
-else echo "AVX-512: NO  (v4 falls back to AVX2 v3 -- run on the i7-1165G7 for the real comparison)"; fi
 echo
 
 echo "=== [1/2] rebuild extension with -march=native ==="

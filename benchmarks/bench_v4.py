@@ -1,21 +1,18 @@
-"""Correctness + benchmark for the v4 AVX-512 hand-SIMD GP / equi_join kernels.
+"""Correctness + benchmark for the v4 register-resident SoA GP / equi_join kernels.
 
-v4 is the SoA kernel with a *native* 512-bit 16x16 transpose (one multivector =
-one __m512 of 16 fp32). It exists to beat the AVX-512 *autovectorized* v2 on the
-Tiger Lake target, where the older hand-SIMD v3 (AVX2, 256-bit) loses because it
-leaves half the SIMD width on the floor. On a non-AVX-512 host v4 transparently
-falls back to the AVX2 v3 kernel, so this script runs (and the correctness check
-passes) anywhere — but the speedup it is meant to demonstrate only shows up on an
-AVX-512 build (e.g. `-march=native` on the i7-1165G7).
+v4 beats the autovectorized v2 (and the earlier hand-SIMD v3) by doing the SoA
+rearrange the way the Tiger Lake autovectorizer does — 8 multivectors per 256-bit
+ymm tile, transposed and computed **in registers** with no xb/yb/ob stack round-
+trip — but with v3's minimal `unpck` transpose and pure-FMA block instead of the
+autovec's ~190 `vpermt2ps`. It is AVX2 + FMA (the autovec never uses AVX-512 for
+these ops, on Tiger Lake or anywhere), so the win shows up on any AVX2 host,
+including this dev box.
 
-Run on the Tiger Lake box, single thread:
-
-    python scripts/build_ext.py            # build with -march=native (=> AVX-512 on TGL)
+    python scripts/build_ext.py            # build with -march=native
     python benchmarks/bench_v4.py
 
-Reports, per op and per size: v2 (autovec), v3 (AVX2 hand), v4 (AVX-512 hand) in
-ms, plus the v4/v2 and v4/v3 speedups. The headline number is v4-over-v2: > 1.0x
-means hand-written AVX-512 finally beats the autovectorizer for GP / join.
+Reports, per op and per size: v2 (autovec), v3 (SoA via stack buffers), v4 (SoA in
+registers) in ms, plus the v4/v2 and v4/v3 speedups (>1 = v4 is faster).
 """
 import argparse
 import time
@@ -25,14 +22,6 @@ import torch
 import ezgatr.opt as o
 
 torch.set_num_threads(1)
-
-
-def cpu_has_avx512() -> bool:
-    try:
-        with open("/proc/cpuinfo") as f:
-            return "avx512f" in f.read()
-    except OSError:
-        return False
 
 
 def best_ms(fn, warmup_s=0.15, measure_s=0.6, min_reps=5, max_reps=2000) -> float:
@@ -54,8 +43,8 @@ def check_correctness() -> None:
     print("== correctness (v4 vs v2 reference, fp32) ==")
     torch.manual_seed(0)
     ok = True
-    # include sizes that exercise the 16-MV main loop and the scalar remainder.
-    for n in (16, 17, 31, 2048, 8193):
+    # sizes that exercise the 8-MV main loop and the scalar remainder.
+    for n in (8, 15, 16, 2048, 8193):
         x = torch.randn(n, 16, dtype=torch.float32)
         y = torch.randn(n, 16, dtype=torch.float32)
         ref = torch.randn(n, 16, dtype=torch.float32)
@@ -75,12 +64,9 @@ def check_correctness() -> None:
 
 
 def bench(sizes) -> None:
-    avx512 = cpu_has_avx512()
-    print(f"== benchmark (single thread; AVX-512 active = {avx512}) ==")
-    if not avx512:
-        print("  NOTE: no AVX-512 on this host -> v4 runs the AVX2 v3 fallback, so v4≈v3.")
-        print("        Run this on the Tiger Lake i7-1165G7 to see the AVX-512 win.\n")
-    hdr = f"{'op':18s}{'N':>9s}{'v2(auto)':>11s}{'v3(AVX2)':>11s}{'v4(512)':>11s}{'v4/v2':>9s}{'v4/v3':>9s}"
+    print("== benchmark (single thread) ==")
+    hdr = (f"{'op':18s}{'N':>9s}{'v2(auto)':>11s}{'v3(SoA-mem)':>13s}"
+           f"{'v4(SoA-reg)':>13s}{'v4/v2':>9s}{'v4/v3':>9s}")
     print(hdr)
     print("-" * len(hdr))
     for n in sizes:
@@ -102,7 +88,7 @@ def bench(sizes) -> None:
         for name, (f2, f3, f4) in ops.items():
             with torch.inference_mode():
                 t2, t3, t4 = best_ms(f2), best_ms(f3), best_ms(f4)
-            print(f"{name:18s}{n:>9d}{t2:>11.4f}{t3:>11.4f}{t4:>11.4f}"
+            print(f"{name:18s}{n:>9d}{t2:>11.4f}{t3:>13.4f}{t4:>13.4f}"
                   f"{t2 / t4:>8.2f}x{t3 / t4:>8.2f}x")
     print()
 
