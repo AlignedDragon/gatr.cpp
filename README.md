@@ -18,6 +18,38 @@ Slides: https://docs.google.com/presentation/d/1znu0kcxWRBG2q-T0RSiTfL3pvKltQKpe
 
 ---
 
+## Repository overview
+
+We optimized the hot CPU-inference kernels of EzGATr (geometric product, equi-join,
+equi-linear, RMS norm, gated GELU, and geometric attention) and rewrote them in C++
+with hand-vectorized AVX2 / AVX-512 variants. The unmodified PyTorch library is the
+baseline; our work is additive and lives in a few places:
+
+| Where | What |
+|-------|------|
+| [src/ezgatr/_csrc/](src/ezgatr/_csrc/) | **All optimized kernels** (C++/AVX). `pga_ops.cpp` (geometric product + join), `attention_ops.cpp` / `attention_ops_v4.cpp`, `rms_ops.cpp`, plus `kernels/*.inc` (per-strategy SIMD bodies) and `bindings.cpp` (pybind exports). |
+| [src/ezgatr/opt/](src/ezgatr/opt/) | Python entry points exposing every kernel version to benchmarks and the model. |
+| [src/ezgatr/nn/functional/](src/ezgatr/nn/functional/) | Thin wiring so the existing model can call the optimized ops (e.g. `attention_cpp.py`). |
+| [benchmarks/](benchmarks/) | Benchmark runners, plotting scripts, and recorded results. |
+| [26_report.pdf](26_report.pdf) | Final report. |
+
+**Versioning.** Each op carries numbered variants showing the optimization path:
+`*_v0` / `*_ver_0` is the straight scalar C++ port of the baseline, and higher numbers
+are successive steps (instruction-level parallelism, SoA + AVX2, register-resident,
+AVX-512). The **unsuffixed name** (e.g. `geometric_product`) is the selected best
+variant used in the end-to-end model.
+
+**Diff against the upstream port.** Everything after the original code was ported is ours:
+```bash
+git diff 81cd4f1 -- src/ezgatr   # 81cd4f1 = "all code from original ezgatr is ported"
+```
+
+**Build & reproduce.** Build the extension with `python setup.py build_ext --inplace`,
+then follow [benchmarks/README.md](benchmarks/README.md) for the benchmark and roofline
+commands. All numbers are single-thread on a Tiger Lake i7-1165G7.
+
+---
+
 Below is the original README for the project.
 
 <html>
