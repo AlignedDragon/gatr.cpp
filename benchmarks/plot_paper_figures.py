@@ -26,6 +26,7 @@ PEAK_BW_GBS = 45.0
 RIDGE       = PEAK_GFLOPS / PEAK_BW_GBS   # ~1.99 FLOP/byte
 L2_BYTES    = 1280 * 1024                  # Tiger Lake i7-1165G7
 L3_BYTES    = 12   * 1024 * 1024
+BASE_GHZ    = 2.8                          # Tiger Lake base clock (turbo-off)
 
 # ── Style ─────────────────────────────────────────────────────────────────────
 VC = {
@@ -78,9 +79,12 @@ def draw_roofline(ax):
 
 
 def papi_point(target):
+    """Clock-honest: FLOP/cycle * BASE_GHZ, immune to turbo boost."""
     p = PAPI3[target]
-    ai = p["arithmetic_intensity"]
-    gf = p["flops_per_call"] / p["min_s"] / 1e9
+    ai   = p["arithmetic_intensity"]
+    cyc  = p["papi_counters_mean_total_region"]["PAPI_TOT_CYC"]
+    flops = p["papi_counters_mean_total_region"]["PAPI_FP_OPS"]
+    gf   = (flops / cyc) * BASE_GHZ
     return ai, gf
 
 
@@ -165,9 +169,11 @@ KERN = {
 }
 
 def gflops_at_n(tgt, exp, n_ref=3):
-    """PAPI-anchored GFLOP/s at each n, using bench_repo timing ratios."""
+    """Clock-honest GFLOP/s at each n, using bench_repo timing ratios."""
     p = PAPI3[tgt]
-    papi_gf_n3 = p["flops_per_call"] / p["min_s"] / 1e9
+    cyc   = p["papi_counters_mean_total_region"]["PAPI_TOT_CYC"]
+    flops = p["papi_counters_mean_total_region"]["PAPI_FP_OPS"]
+    papi_gf_n3 = (flops / cyc) * BASE_GHZ  # clock-honest anchor at n=3
     t_n3 = REPO[tgt][n_ref]["min_ms"] / 1000.0
     results = []
     for n in range(1, 13):
@@ -307,7 +313,9 @@ PY_TIMING = {
 for name, t0, t3, py_key in summary_rows:
     s0, s3 = PAPI3[t0]["min_s"], PAPI3[t3]["min_s"]
     speedup_v0 = s0 / s3
-    gf3 = PAPI3[t3]["flops_per_call"] / s3 / 1e9
+    cyc3  = PAPI3[t3]["papi_counters_mean_total_region"]["PAPI_TOT_CYC"]
+    flops3 = PAPI3[t3]["papi_counters_mean_total_region"]["PAPI_FP_OPS"]
+    gf3 = (flops3 / cyc3) * BASE_GHZ  # clock-honest
     pct = gf3 / PEAK_GFLOPS * 100
     ai3 = PAPI3[t3]["arithmetic_intensity"]
     bound = "compute" if ai3 > RIDGE else "memory"
