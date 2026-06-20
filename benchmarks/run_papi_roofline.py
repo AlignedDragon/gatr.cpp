@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import math
 import statistics
 import sys
 import time
@@ -153,16 +154,38 @@ def measure_target_with_papi(
     event_names: list[str],
     warmup: int,
     repeats: int,
-    inner_iters: int,
+    inner_iters: int | None,
     cache_line_bytes: int,
     dtype_bytes: int,
     estimate_missing: bool,
+    target_region_s: float = 0.1,
 ) -> dict:
     fn = br.build_target(target_name, device=device, n=n)
 
     with torch.inference_mode():
-        for _ in range(warmup):
+        # settle lazy init before probing
+        for _ in range(3):
             fn()
+        synchronize(device)
+
+        # auto-size inner_iters so each region runs ~target_region_s
+        if inner_iters is None:
+            probe_iters = 5
+            probe_start = time.perf_counter()
+            for _ in range(probe_iters):
+                fn()
+            synchronize(device)
+            per_call_s = (time.perf_counter() - probe_start) / probe_iters
+            inner_iters = (
+                max(1, min(200000, math.ceil(target_region_s / per_call_s)))
+                if per_call_s > 0
+                else 1
+            )
+
+        # warm up by whole regions
+        for _ in range(warmup):
+            for _ in range(inner_iters):
+                fn()
         synchronize(device)
 
         rows = []
@@ -244,8 +267,19 @@ def parse_args():
     parser.add_argument("--n", type=int, default=1)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--warmup", type=int, default=3)
-    parser.add_argument("--repeats", type=int, default=5)
-    parser.add_argument("--inner-iters", type=int, default=10)
+    parser.add_argument("--repeats", type=int, default=20)
+    parser.add_argument(
+        "--inner-iters",
+        type=int,
+        default=None,
+        help="Calls per timed region. Default: auto-sized to ~--target-region-ms.",
+    )
+    parser.add_argument(
+        "--target-region-ms",
+        type=float,
+        default=100.0,
+        help="Target wall time per region when --inner-iters is auto.",
+    )
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--event", action="append", default=None)
@@ -278,6 +312,7 @@ def main() -> None:
         "warmup": args.warmup,
         "repeats": args.repeats,
         "inner_iters": args.inner_iters,
+        "target_region_ms": args.target_region_ms,
         "events": event_names,
         "cache_line_bytes": args.cache_line_bytes,
         "dtype_bytes": args.dtype_bytes,
@@ -296,6 +331,7 @@ def main() -> None:
             cache_line_bytes=args.cache_line_bytes,
             dtype_bytes=args.dtype_bytes,
             estimate_missing=args.estimate_missing,
+            target_region_s=args.target_region_ms / 1000.0,
         )
         results.append(row)
         ai = row.get("arithmetic_intensity")

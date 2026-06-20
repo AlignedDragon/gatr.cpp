@@ -2,6 +2,29 @@
 
 Lets keep any benchmarking stuff here.
 
+### Reproducing our results
+
+All numbers are single-thread with Turbo Boost **off** (to pin the clock), on the
+Tiger Lake i7-1165G7. Build, pin, then run:
+
+```bash
+.venv/bin/python setup.py build_ext --inplace
+echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo   # turbo off
+
+# 1. Full data + plots (~70 min)
+bash benchmarks/run_all_benchmarks.sh
+
+# 2. Roofline counters (needs PAPI), n=3 and n=9 — inner-iters auto-size per kernel
+.venv/bin/python benchmarks/run_papi_roofline.py --n 3 --threads 1 \
+  $(printf -- '--target %s ' geometric_product_v{0,1,2,3} equi_join_v{0,1,2,3} \
+    equi_linear_ver_{0,1,2,3} equi_rms_norm_ver_{0,1,2,3} \
+    scaler_gated_gelu_ver_{0,1,2,3} equi_geometric_attention_ver_{0,1,2,3}) \
+  --json-out benchmarks/results/papi_1thread_n3.json   # repeat with --n 9 for n9.json
+
+# 3. Paper figures (reads the JSON above)
+.venv/bin/python benchmarks/plot_paper_figures.py      # -> FINAL_PLOTS/paper_plots/
+```
+
 ### 1. Runtime measurements
 
 Run one target:
@@ -75,13 +98,14 @@ Run a small set of final targets:
   --target equi_rms_norm_ver_3 \
   --target equi_geometric_attention_ver_3 \
   --n 1 \
-  --warmup 3 \
-  --repeats 5 \
-  --inner-iters 10 \
   --threads 1 \
   --estimate-missing \
   --json-out benchmarks/results/roofline/papi_project_n1.json
 ```
+
+`inner-iters` now auto-sizes per kernel so each timed region runs
+~`--target-region-ms` (default 100); defaults are `--warmup 3 --repeats 20`.
+Pass `--inner-iters N` to override.
 
 Plot the roofline after filling in the machine peak values:
 
